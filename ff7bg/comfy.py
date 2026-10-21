@@ -363,19 +363,26 @@ def _prompt(s):
     return f"{s['prompt'].strip()} The scene: {scene}" if scene else s["prompt"]
 
 
-def build_caption_workflow(input_name):
-    """Describe a field (TextGenerate); the text comes back through PreviewAny (Comfy.run_text)."""
+CAPTION_MP = 1.0  # the describer looks at the enlarged original art at about this size
+
+
+def build_caption_workflow(input_name, s, w, h):
+    """Describe a field (TextGenerate) from its original art as the AI gets it: enlarged by the workflow's
+    original-art upscaler (a sharper read of the 1x art's tiny details), then scaled to about CAPTION_MP.
+    w, h: the original's size. The text comes back through PreviewAny (Comfy.run_text)."""
     clip, clip_type = CAPTION_CLIP
-    return {
-        "img": {"class_type": "LoadImage", "inputs": {"image": input_name}},
+    wf = {"img": {"class_type": "LoadImage", "inputs": {"image": input_name}}}
+    work = _resize(wf, "work", s, ["img", 0], *work_size(s, w, h))
+    wf.update({
         "small": {"class_type": "ImageScaleToTotalPixels", "inputs": {
-            "image": ["img", 0], "upscale_method": "lanczos", "megapixels": 0.6, "resolution_steps": 32}},
+            "image": work, "upscale_method": "lanczos", "megapixels": CAPTION_MP, "resolution_steps": 32}},
         "clip": {"class_type": "CLIPLoader", "inputs": {"clip_name": clip, "type": clip_type}},
         "gen": {"class_type": "TextGenerate", "inputs": {
             "clip": ["clip", 0], "prompt": CAPTION_ASK, "max_length": 160, "sampling_mode": "off",
             "image": ["small", 0], "thinking": False}},
         "show": {"class_type": "PreviewAny", "inputs": {"source": ["gen", 0]}},
-    }
+    })
+    return wf
 
 
 def clean_caption(text):

@@ -212,9 +212,17 @@ class Project:
             s.update(out_scale=min(4, s["out_scale"]), detail_pass=False, tries=1, retry=False)
         return s
 
-    def describe(self, name, comfy):
-        """Make (or remake) the field's description; returns it."""
-        text = clean_caption(comfy.run_text(build_caption_workflow(comfy.upload(AI / "input" / f"{name}.png"))))
+    def describe(self, name, comfy, s):
+        """Make (or remake) the field's description from its original art, enlarged the way workflow s
+        enlarges it for the AI; returns it."""
+        w, h = self.jobs[name]["canvas"][2:]
+        src = AI / "input" / f"{name}.png"
+        if is_local(s["input_upscaler"]):  # ImageMagick / Upscayl run here; the graph's resize then changes nothing
+            img = np.asarray(Image.open(src).convert("RGB"))
+            src = AI / "input_up" / f"{name}_describe.png"
+            src.parent.mkdir(exist_ok=True)
+            Image.fromarray(upscalers.upscale(img, s["input_upscaler"], *work_size(s, w, h))).save(src)
+        text = clean_caption(comfy.run_text(build_caption_workflow(comfy.upload(src), s, w, h)))
         self.update_meta(name, caption=text)
         return text
 
@@ -222,7 +230,7 @@ class Project:
         """The field's description for the prompt ("" unless describe_scene), made the first time."""
         if not s.get("describe_scene") or s.get("family") == "upscale":
             return ""
-        return self.meta(name).get("caption") or self.describe(name, comfy)
+        return self.meta(name).get("caption") or self.describe(name, comfy, s)
 
     def render_k(self, name, s):
         """How many times its size the AI renders this field at."""
@@ -895,7 +903,7 @@ def api_field_caption(name):
         if not comfy.online():
             return jsonify(message="ComfyUI isn't reachable"), 503
         try:
-            project.describe(name, comfy)
+            project.describe(name, comfy, project.job_settings(name, "final"))
         except ComfyError as e:
             return jsonify(message=str(e)), 502
     elif "text" in body:

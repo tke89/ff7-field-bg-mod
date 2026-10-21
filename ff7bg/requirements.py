@@ -131,7 +131,7 @@ def needs(s):
     if s["states_pass"]:
         wfs.append(build_states_workflow(s, "c.png", "o.png", "m.png", 1024, 768, 2560, 1920, "p", refs))
     if s.get("describe_scene") and s.get("family") != "upscale":
-        wfs.append(build_caption_workflow("x.png"))
+        wfs.append(build_caption_workflow("x.png", s, 640, 480))
     files, nodes = {}, set()
     for wf in wfs:
         for node in wf.values():

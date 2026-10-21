@@ -208,8 +208,10 @@ Every workflow ends with an upscaler (Output → **Upscaler**) that takes the re
 
 With **Describe the scene in the prompt** (Look card), the prompt gets a short description of the field: what
 it shows, what things are made of, the ground and the light. Qwen3.5 9B (MOSS-Image's text encoder, through
-ComfyUI's TextGenerate) writes it once per field, in about 2 s, the first time a render needs it. It's saved
-with the field and can be edited; **Describe again** replaces it.
+ComfyUI's TextGenerate) writes it once per field, in a few seconds, the first time a render needs it. It looks at
+the original art the way the AI gets it: enlarged by the workflow's Original art upscaler, then scaled to about
+1 MP, so the small details of the 1x art read clearly. It's saved with the field and can be edited; **Describe
+again** replaces it.
 
 The style prompt tells a model how to paint; the description tells it what it's painting. On Kalm:
 
