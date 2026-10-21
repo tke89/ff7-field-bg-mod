@@ -16,7 +16,7 @@ You need:
 Set up the project:
 
 ```bat
-git clone https://github.com/<you>/ff7-field-bg-mod
+git clone https://github.com/tke89/ff7-field-bg-mod
 cd ff7-field-bg-mod
 python -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt

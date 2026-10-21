@@ -27,7 +27,7 @@ You need Windows, a copy of the game on Steam, Python 3.11+, the
 [ComfyUI Desktop](https://www.comfy.org/download) app and a recent NVIDIA GPU (16 GB+ VRAM; developed on an RTX 5090).
 
 ```bat
-git clone https://github.com/<you>/ff7-field-bg-mod
+git clone https://github.com/tke89/ff7-field-bg-mod
 cd ff7-field-bg-mod
 python -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt
