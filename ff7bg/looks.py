@@ -111,9 +111,12 @@ def patch_layer(layer, patch, family, below, below_family):
                 del settings[k]
         elif below.get(k) == settings[k]:
             del settings[k]
+    # a workflow's value is redundant only if the layer would give the same without it: the layer's own
+    # shared settings can hold one too (from before the key became per-workflow), and they'd show through
+    without = below | {k: v for k, v in settings.items() if k != "family"}
     prof = layer.get("profiles", {}).get(family, {})
     for k in list(prof):
-        if below.get(k) == prof[k]:
+        if without.get(k) == prof[k]:
             del prof[k]
     if family in layer.get("profiles", {}) and not layer["profiles"][family]:
         del layer["profiles"][family]
@@ -122,8 +125,9 @@ def patch_layer(layer, patch, family, below, below_family):
 
 def prune(layer, below_layers=()):
     """Drop values a layer repeats from the built-in defaults (and any layers below it)."""
+    shared = {k: v for k, v in layer.get("settings", {}).items() if k != "family"}
     for fam in list(layer.get("profiles", {})):
-        below = resolve(list(below_layers), fam)
+        below = resolve(list(below_layers), fam) | shared  # what the layer gives without this profile
         prof = layer["profiles"][fam]
         for k in list(prof):
             if below.get(k) == prof[k]:
