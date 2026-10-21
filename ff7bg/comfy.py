@@ -45,6 +45,9 @@ DEFAULT_SETTINGS = {
     # Add a description of the field (made once by a vision-language model, editable) to the prompt.
     "describe_scene": False,
     "keep_colors": 0.0,       # pull the new art's colours back toward the original palette (0-1)
+    # Signs and lettering (ff7bg/signs.py): repainted only this much, fading into the rest of the scene
+    "protect_text": False,
+    "text_repaint": 0.15,
     "out_scale": 4,
     "work_mp": 1.4,           # megapixels Flux renders at before the final upscale
     # Detail pass: upscale the render to the output size, then re-run Flux over 1024px tiles at low
@@ -645,9 +648,16 @@ def build_workflow(s, input_name, canvas_w, canvas_h, prefix, style_ref_names=()
     (positive, negative), plain = _conditioning(wf, s, clip, vae, work, refs)
     styled = _style_chain(wf, s, base, refs, ww, wh)
     model = _control_chain(wf, s, styled, work, ["enc", 0], vae)
-    wf["sample"] = _sampler(s, model, positive, negative, ["enc", 0], s["steps"], s["denoise"])
+    latent = ["enc", 0]
+    if s.get("text_mask"):  # signs repainted less, fading into the rest (Differential Diffusion)
+        wf["tmask"] = {"class_type": "LoadImageMask", "inputs": {"image": s["text_mask"], "channel": "red"}}
+        wf["tnoise"] = {"class_type": "SetLatentNoiseMask", "inputs": {"samples": latent, "mask": ["tmask", 0]}}
+        wf["tdd"] = {"class_type": "DifferentialDiffusion", "inputs": {"model": model}}
+        model, latent = ["tdd", 0], ["tnoise", 0]
+    wf["sample"] = _sampler(s, model, positive, negative, latent, s["steps"], s["denoise"])
     wf["dec"] = {"class_type": "VAEDecode", "inputs": {"samples": ["sample", 0], "vae": vae}}
     result = _resize(wf, "final", s, ["dec", 0], ow, oh, outside=not s["detail_pass"])
+    before_detail = result
     if s["detail_pass"]:
         # Tiles are processed as a list: every node below runs once per tile.
         wf["tiles"] = {"class_type": "SplitImageToTileList", "inputs": {
@@ -669,6 +679,12 @@ def build_workflow(s, input_name, canvas_w, canvas_h, prefix, style_ref_names=()
         wf["merge"] = {"class_type": "ImageMergeTileList", "inputs": {
             "image_list": ["tdec", 0], "final_width": ow, "final_height": oh, "overlap": TILE_OVERLAP}}
         result = ["merge", 0]
+        if s.get("text_keep"):  # the tiles would repaint the signs again: keep them from before
+            wf["tkeep"] = {"class_type": "LoadImageMask", "inputs": {"image": s["text_keep"], "channel": "red"}}
+            wf["tkept"] = {"class_type": "ImageCompositeMasked", "inputs": {
+                "destination": result, "source": before_detail, "x": 0, "y": 0, "resize_source": False,
+                "mask": ["tkeep", 0]}}
+            result = ["tkept", 0]
     wf["save"] = {"class_type": "SaveImage", "inputs": {"images": result, "filename_prefix": prefix}}
     return wf
 

@@ -103,6 +103,9 @@ its own tuning inside a look, so switching a look from Qwen to Flux and back los
   settings; picking it lists them, with download links. See [Workflows](workflows.md) for which to use.
 - **Prompt:** describe the rendering, not the content. Naming materials ("timber, tiles") turned Midgar's
   train station into a medieval alley in testing.
+- **Protect signs and text** (Flux.1, Krea 2, MOSS): repaints signs and lettering only lightly (**Sign
+  repaint**), so they stay readable at stronger repaints. The signs are found automatically; **Show and edit on
+  the image** lets you add the ones it missed and remove wrong ones ([Workflows](workflows.md#signs-and-text)).
 - **Describe the scene in the prompt:** adds the field's own description (made once by a vision-language
   model, editable here, **Describe again** to remake it). See [Workflows](workflows.md#scene-descriptions).
 - **Style images:** click to toggle, **+ Add** to upload. Off by default for the edit models, which copy content

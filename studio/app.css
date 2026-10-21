@@ -140,6 +140,12 @@ code { background: #12151a; border: 1px solid var(--line); border-radius: 4px; p
 .badge.side-l b { color: var(--warn); }
 .badge.side-r b { color: var(--accent); }
 #leftSel { border: 1px solid var(--warn); }
+/* drawing sign areas on the image */
+.viewport.sign-edit { cursor: crosshair; }
+.badge.sign-hint { top: auto; bottom: 10px; pointer-events: auto; border: 2px solid #ff3cc8; font-weight: 400; }
+.badge.sign-hint b { color: #ff3cc8; }
+.badge.sign-hint button { margin-left: 8px; }
+.signs { margin: 2px 0 8px; }
 #rightSel { border: 1px solid var(--accent); }
 .empty { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; color: var(--muted); text-align: center; padding: 30px; }
 .stage-status { padding: 6px 10px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; min-height: 28px; }

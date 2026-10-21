@@ -119,6 +119,11 @@ const SL = {
     up: "colours closer to the original",
     down: "the model's own colours; 0 is off",
     rec: "0 if you like the new colours; 50–70% to bring back the original mood. Rebuild a version to try a value without rendering again" },
+  text_repaint: { label: "Sign repaint", min: 0, max: 0.5, step: 0.01,
+    what: "How much the protected signs and lettering are repainted. It fades smoothly into the rest of the scene.",
+    up: "signs take on more of the new style, but letters start to warp",
+    down: "signs stay closer to the original; 0 keeps them as they are",
+    rec: "0.15", recValue: 0.15 },
   tries: { label: "Renders per field", min: 1, max: 4, step: 1, fmt: (v) => v > 1 ? `best of ${v}` : "1",
     what: "Final renders only: paints each field several times, each from a different random start, and keeps the one that matches the original layout best. The others are deleted.",
     up: "a better chance of a clean result, but it takes that many times as long",
@@ -229,7 +234,7 @@ const LOOK_SLIDERS = {
 };
 const KEY_LABELS = {
   family: "workflow", prompt: "prompt", style_refs: "style images", seed: "seed", upscaler: "upscaler",
-  describe_scene: "scene description", retry: "retry",
+  describe_scene: "scene description", retry: "retry", protect_text: "sign protection",
   seedvr2_input: "SeedVR2 input", detail_pass: "detail pass", states_pass: "states pass", align: "auto-align",
   model_source: "model source", checkpoint: "checkpoint", unet: "diffusion model", clip1: "text encoder",
   clip2: "text encoder 2", clip_type: "encoder type", vae: "VAE", controlnet: "ControlNet", lora: "LoRA",
@@ -331,11 +336,13 @@ function verBits(v) {
   if (kc > 0) out.push(["colours", `original colours ${Math.round(kc * 100)}%`, `colours ${Math.round(kc * 100)}%`]);
   if (s.detail_pass) out.push(["detail", `detail pass ${s.detail_denoise}`, `detail ${s.detail_denoise}`]);
   if (s.describe_scene) out.push(["scene", "scene description", "scene text"]);
+  if (s.protect_text && usesRepaint(f)) out.push(["signs", `signs protected at ${s.text_repaint}`, `signs ${s.text_repaint}`]);
   return out;
 }
 
 // Said on a card that lacks a setting the viewed version has
-const VER_OFF = { depth: "no depth lock", colours: "colours off", detail: "no detail pass", scene: "no scene text" };
+const VER_OFF = { depth: "no depth lock", colours: "colours off", detail: "no detail pass", scene: "no scene text",
+                  signs: "signs not protected" };
 
 // The card's summary; what differs from the version being viewed stands out
 function verBitsHtml(v, viewed) {
@@ -1008,6 +1015,7 @@ function renderStyle() {
   if (document.activeElement !== ta) ta.value = v.prompt;
   $('label[for="prompt"]').className = `lbl ${mark("prompt")}`;
   renderScene(v);
+  renderSigns(v);
 
   $("#refsLbl").className = `lbl ${mark("style_refs")}`;
   $("#refsLbl").textContent = fam === "moss" ? "Style reference images (MOSS doesn't use them)" : "Style reference images";
@@ -1089,6 +1097,71 @@ function renderScene(v) {
     catch (e) { toast(`Couldn't describe: ${e.message}`); b.disabled = false; b.textContent = "Describe now"; }
   };
   box.appendChild(w);
+}
+
+// Signs and lettering, repainted lightly (server: ff7bg/signs.py); their areas are drawn on the image
+function renderSigns(v) {
+  const box = $("#signBox"), d = S.detail;
+  box.innerHTML = "";
+  const usable = usesRepaint(v.family) && v.protect_text;
+  if (S.signEdit && (!usable || S.signEditField !== d.name)) setSignEdit(false, false);
+  if (!usesRepaint(v.family)) return;
+  box.appendChild(check("protect_text", "Protect signs and text", v, helpText(
+    "Repaints signs, lettering and logos only lightly, so the text stays readable while the rest of the scene is repainted more strongly. The signs are found automatically, once per field, and you can add or remove areas on the image.",
+    "on for fields with signs, whenever Repaint strength is above about 0.15")));
+  if (!v.protect_text) return;
+  box.appendChild(slider("text_repaint", v));
+  const boxes = d.text_boxes, n = boxes ? boxes.length : 0, mine = boxes ? boxes.filter((b) => !b.auto).length : 0;
+  const status = boxes == null ? "Not looked for yet: the next render finds them, or press Find signs."
+    : n ? `${n} sign area${n === 1 ? "" : "s"} protected${mine ? ` (${mine} drawn by you)` : ""}.`
+    : "No signs found. If it missed some, draw them on the image.";
+  const row = document.createElement("div");
+  row.className = "signs";
+  row.innerHTML = `<div class="hint">${status}</div><div class="row-btns tight">` +
+    `<button class="small ${S.signEdit ? "primary" : "ghost"}">${S.signEdit ? "Done editing" : "Show and edit on the image"}</button>` +
+    `<button class="small ghost" title="Look for signs again; areas you drew stay">${boxes == null ? "Find signs" : "Find again"}</button></div>`;
+  const [edit, find] = row.querySelectorAll("button");
+  edit.onclick = () => setSignEdit(!S.signEdit);
+  find.onclick = async () => {
+    find.disabled = true;
+    find.textContent = "Looking…";
+    try { applyDetail(await api(`/api/field/${d.name}/signs`, { body: { find: true } })); }
+    catch (e) { toast(`Couldn't look for signs: ${e.message}`); find.disabled = false; find.textContent = "Find again"; }
+  };
+  box.appendChild(row);
+}
+
+function setSignEdit(on, rerender = true) {
+  S.signEdit = on;
+  S.signEditField = on && S.detail ? S.detail.name : null;
+  S.signDrag = null;
+  vp.classList.toggle("sign-edit", on);
+  const hint = $("#signHint");
+  hint.hidden = !on;
+  if (on) {
+    hint.innerHTML = `<b>Sign areas</b> · drag to add one · click one to remove it · Shift+drag moves the picture` +
+      `<button class="small primary">Done</button>`;
+    hint.querySelector("button").onclick = () => setSignEdit(false);
+  }
+  if (rerender) { renderStyle(); draw(); }
+}
+
+const imagePoint = (e) => {
+  const r = vp.getBoundingClientRect();
+  return { x: (e.clientX - r.left - S.panX) / S.zoom, y: (e.clientY - r.top - S.panY) / S.zoom };
+};
+
+let signSave = null;
+function saveSigns(boxes) {
+  const d = S.detail;
+  d.text_boxes = boxes;
+  draw();
+  renderStyle();
+  clearTimeout(signSave);
+  signSave = setTimeout(async () => {
+    try { applyDetail(await api(`/api/field/${d.name}/signs`, { body: { boxes } })); }
+    catch (e) { toast(`Couldn't save the sign areas: ${e.message}`); }
+  }, 300);
 }
 
 // Turbo / full switch for the edit models
@@ -1610,6 +1683,24 @@ function draw() {
     ctx.drawImage(S.imgs.overlay, 0, 0, W, H);
     ctx.globalAlpha = 1;
   }
+  if (S.signEdit && S.signEditField === d.name) {
+    ctx.save();
+    ctx.lineWidth = 2 / S.zoom;
+    for (const b of d.text_boxes || []) {
+      ctx.fillStyle = "rgba(255, 60, 200, 0.15)";
+      ctx.fillRect(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1);
+      ctx.strokeStyle = "#ff3cc8";
+      ctx.setLineDash(b.auto ? [] : [6 / S.zoom, 4 / S.zoom]);  // dashed: drawn by you
+      ctx.strokeRect(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1);
+    }
+    const g = S.signDrag;
+    if (g && g.moved) {
+      ctx.strokeStyle = "#fff";
+      ctx.setLineDash([4 / S.zoom, 4 / S.zoom]);
+      ctx.strokeRect(Math.min(g.x0, g.x1), Math.min(g.y0, g.y1), Math.abs(g.x1 - g.x0), Math.abs(g.y1 - g.y0));
+    }
+    ctx.restore();
+  }
   $("#modeBadge").textContent = badge;
   $("#modeBadge").hidden = !badge;
 }
@@ -1624,6 +1715,11 @@ function setMode(m) {
 
 let drag = null;
 vp.addEventListener("mousedown", (e) => {
+  if (S.signEdit && S.detail && !e.shiftKey && e.button === 0) {
+    const p = imagePoint(e);
+    S.signDrag = { x0: p.x, y0: p.y, x1: p.x, y1: p.y, sx: e.clientX, sy: e.clientY, moved: false };
+    return;
+  }
   const r = vp.getBoundingClientRect();
   const x = e.clientX - r.left;
   const divider = S.panX + S.zoom * (S.detail ? S.detail.w : 0) * S.split;
@@ -1633,6 +1729,14 @@ vp.addEventListener("mousedown", (e) => {
   vp.classList.add("dragging");
 });
 window.addEventListener("mousemove", (e) => {
+  if (S.signDrag) {
+    const p = imagePoint(e), g = S.signDrag;
+    g.x1 = p.x;
+    g.y1 = p.y;
+    g.moved = g.moved || Math.hypot(e.clientX - g.sx, e.clientY - g.sy) > 4;
+    draw();
+    return;
+  }
   const r = vp.getBoundingClientRect();
   const x = e.clientX - r.left;
   if (!drag) {
@@ -1650,7 +1754,30 @@ window.addEventListener("mousemove", (e) => {
   }
   draw();
 });
-window.addEventListener("mouseup", () => { drag = null; vp.classList.remove("dragging"); });
+window.addEventListener("mouseup", () => {
+  const g = S.signDrag, d = S.detail;
+  if (g && d) {
+    S.signDrag = null;
+    const boxes = (d.text_boxes || []).slice();
+    const clampX = (v) => Math.max(0, Math.min(d.w, v)), clampY = (v) => Math.max(0, Math.min(d.h, v));
+    if (g.moved) {  // a new area
+      const b = { x1: clampX(Math.min(g.x0, g.x1)), y1: clampY(Math.min(g.y0, g.y1)),
+                  x2: clampX(Math.max(g.x0, g.x1)), y2: clampY(Math.max(g.y0, g.y1)), text: "", auto: false };
+      if (b.x2 - b.x1 < 1 || b.y2 - b.y1 < 1) { draw(); return; }
+      boxes.push(b);
+    } else {  // a click removes the smallest area under it
+      const area = (b) => (b.x2 - b.x1) * (b.y2 - b.y1);
+      const hits = boxes.map((b, i) => [b, i]).filter(([b]) => g.x0 >= b.x1 && g.x0 <= b.x2 && g.y0 >= b.y1 && g.y0 <= b.y2);
+      if (!hits.length) { draw(); return; }
+      hits.sort((a, b) => area(a[0]) - area(b[0]));
+      boxes.splice(hits[0][1], 1);
+    }
+    saveSigns(boxes);
+    return;
+  }
+  drag = null;
+  vp.classList.remove("dragging");
+});
 vp.addEventListener("wheel", (e) => {
   e.preventDefault();
   const r = vp.getBoundingClientRect();
@@ -1661,7 +1788,8 @@ window.addEventListener("keydown", (e) => {
   if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) return;
   if (!$("#looksModal").hidden) { if (e.key === "Escape") $("#looksModal").hidden = true; return; }
   if (e.key === "Escape") {
-    if (!$("#queuePop").hidden) $("#queuePop").hidden = true;
+    if (S.signEdit) setSignEdit(false);
+    else if (!$("#queuePop").hidden) $("#queuePop").hidden = true;
     else if (S.sel.size) clearPicks();
     return;
   }

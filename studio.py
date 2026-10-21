@@ -23,7 +23,7 @@ import numpy as np
 from flask import Flask, abort, jsonify, request, send_file, send_from_directory
 from PIL import Image
 
-from ff7bg import ai, looks, requirements, states, upscalers
+from ff7bg import ai, looks, requirements, signs, states, upscalers
 from ff7bg.comfy import (
     DEFAULT_SETTINGS, FAMILIES, FAMILY_PRESETS, Comfy, ComfyError, build_caption_workflow, build_workflow,
     clean_caption, edit_keep, edit_padding, tile_count, work_size,
@@ -56,7 +56,7 @@ AVG_STATE_RUNS = 488 / 670  # states-pass sheets per field, game-wide (batch est
 SUMMARY_KEYS = ("denoise", "structure", "seed", "style_refs", "style_ref_strength", "detail_pass",
                 "detail_denoise", "out_scale", "upscaler", "states_pass", "align", "work_mp", "unet", "steps",
                 "cfg", "depth_lock", "input_upscaler", "input_scale", "keep_colors", "describe_scene", "tries",
-                "seedvr2_unet", "seedvr2_input")
+                "seedvr2_unet", "seedvr2_input", "protect_text", "text_repaint")
 
 app = Flask(__name__, static_folder=None)
 
@@ -233,6 +233,27 @@ class Project:
         if not s.get("describe_scene") or s.get("family") == "upscale":
             return ""
         return self.meta(name).get("caption") or self.describe(name, comfy, s)
+
+    def find_signs(self, name, comfy, s):
+        """Look for the field's signs (replacing the ones found before; the user's own stay); returns all."""
+        w, h = self.jobs[name]["canvas"][2:]
+        src = AI / "input" / f"{name}.png"
+        if is_local(s["input_upscaler"]):  # ImageMagick / Upscayl run here, before ComfyUI
+            img = np.asarray(Image.open(src).convert("RGB"))
+            src = AI / "input_up" / f"{name}_describe.png"
+            src.parent.mkdir(exist_ok=True)
+            Image.fromarray(upscalers.upscale(img, s["input_upscaler"], *work_size(s, w, h))).save(src)
+        found = signs.parse_boxes(comfy.run_text(signs.build_find_workflow(comfy.upload(src), s, w, h)), w, h)
+        mine = [b for b in self.meta(name).get("text_boxes") or [] if not b.get("auto")]
+        self.update_meta(name, text_boxes=mine + found)
+        return mine + found
+
+    def sign_boxes(self, name, s, comfy):
+        """The field's sign areas when these settings protect text ([] when not), found the first time."""
+        if not s.get("protect_text") or s.get("family") not in REPAINT_FAMILIES:
+            return []
+        boxes = self.meta(name).get("text_boxes")
+        return self.find_signs(name, comfy, s) if boxes is None else boxes
 
     def render_k(self, name, s):
         """How many times its size the AI renders this field at."""
@@ -414,6 +435,7 @@ class Project:
             "effective": eff, "look_values": look_values, "look_keys": look_keys, "override_keys": ov_keys,
             "estimate": {"final": self.estimate(name, eff), "preview": self.estimate(name, prev, True)},
             "state_runs": runs, "state_panels": panels, "caption": meta.get("caption", ""),
+            "text_boxes": meta.get("text_boxes"),
         }
 
     def looks_view(self):
@@ -618,6 +640,18 @@ class Worker(threading.Thread):
         scene = self.p.scene(name, s, comfy)
         if scene:
             s = dict(s, scene=scene)
+        boxes = self.p.sign_boxes(name, s, comfy)
+        inside = s["text_repaint"] / max(s["denoise"], 1e-3)
+        if boxes and inside < 1:  # signs: a lighter repaint, fading into the scene's
+            k = work_size(s, w, h)[0] // w
+            repaint, keep = signs.masks(boxes, w, h, k, inside)
+            up = AI / "input_up"
+            up.mkdir(exist_ok=True)
+            Image.fromarray(repaint).save(up / f"{name}_signs.png")
+            s = dict(s, text_mask=comfy.upload(up / f"{name}_signs.png"), signs=len(boxes))
+            if s["detail_pass"]:
+                Image.fromarray(keep).save(up / f"{name}_signs_keep.png")
+                s["text_keep"] = comfy.upload(up / f"{name}_signs_keep.png")
         self._stage("uploading", 0.02)
         if s.get("family") in EDIT_FAMILIES:
             # edit models reframe slightly: give them a blurred margin, mostly cropped off inside the workflow
@@ -685,6 +719,7 @@ class Worker(threading.Thread):
             "rendered_defaults": fjob.get("defaults", {}),  # states on in the image sent to the generator
             "frame": list(edit_keep(pad)),  # margin returned around the canvas
             "scene": s.get("scene", ""),  # the field description added to the prompt
+            "signs": s.get("signs", 0),  # sign areas repainted lightly
             "render_seconds": round(time.time() - started, 1),
         })
         self.p.thumb(name, vid)
@@ -910,6 +945,28 @@ def api_field_caption(name):
             return jsonify(message=str(e)), 502
     elif "text" in body:
         project.update_meta(name, caption=" ".join(str(body["text"]).split()) or None)
+    return jsonify(field_detail(name))
+
+
+@app.post("/api/field/<name>/signs")
+def api_field_signs(name):
+    """The field's sign areas: {"boxes": [...]} saves the user's edits, {"find": true} looks again (keeping
+    the user's own), {"clear": true} forgets them (they're looked for again on the next render)."""
+    _field_or_404(name)
+    body = request.get_json(force=True)
+    w, h = project.jobs[name]["canvas"][2:]
+    if body.get("find"):
+        comfy = Comfy(project.comfy_url)
+        if not comfy.online():
+            return jsonify(message="ComfyUI isn't reachable"), 503
+        try:
+            project.find_signs(name, comfy, project.job_settings(name, "final"))
+        except ComfyError as e:
+            return jsonify(message=str(e)), 502
+    elif body.get("clear"):
+        project.update_meta(name, text_boxes=None)
+    elif "boxes" in body:
+        project.update_meta(name, text_boxes=signs.clean_boxes(body["boxes"], w, h))
     return jsonify(field_detail(name))
 
 

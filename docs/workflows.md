@@ -222,6 +222,23 @@ The style prompt tells a model how to paint; the description tells it what it's 
 The descriptions aren't perfect: Kalm's says "dusk or dawn" for a night scene. Correct them where it matters.
 Edit models see the image anyway and need it least.
 
+## Signs and text
+
+Above a repaint of about 0.15, lettering turns into made-up glyphs: Kalm's shop signs, the Shin-Ra lobby's sign
+(MOSS at 0.4 turned "Shin-Ra" into a blank panel and the logo into "6 2"). **Protect signs and text** (Look card;
+Flux.1, Krea 2 and MOSS) repaints only the signs lightly, at **Sign repaint** (0.15), while the rest of the
+scene gets the full Repaint strength.
+
+- **Finding the signs.** Qwen3.5 9B (the scene describer) is asked for a box around every sign, logo and label,
+  once per field, the first time a render needs them, in about 2 s. It finds most but not all: on blin1 it got
+  "Shin-Ra", the yellow warning signs and the counter logo, but missed the pink logo. **Show and edit on the
+  image** draws the areas over the picture: drag to add one, click one to remove it (Shift+drag moves the
+  picture). **Find again** looks again and keeps the areas you drew.
+- **No visible edge.** The repaint strength rises from the signs' to the scene's over about 18 original pixels
+  (with smoothstep easing), around boxes padded by 10%. A short fade left a hard line beside "Shin-Ra".
+- It's a per-pixel repaint strength (ComfyUI's Differential Diffusion), so it costs no time. The detail pass
+  leaves the signs as the main render made them. Doors, lights and animation frames aren't covered yet.
+
 ## Keeping the original colours
 
 **Keep original colours** (Output) pulls a render's colours back toward the original's palette. A colour
