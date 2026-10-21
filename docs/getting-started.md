@@ -103,9 +103,9 @@ The **Upscale** workflow needs only the SeedVR2 or UltraSharp files.
 4. Pick a workflow you have models for (Style tab → Look card), select a field such as `elm` (Kalm) and press
    **Preview**. The [Studio guide](studio-guide.md) walks through the rest.
 
-**Style images** go in `studio\styles\` (or use **+ Add** in the Studio). The repository doesn't include any; the
-built-in default look refers to three that aren't shipped, and missing ones are skipped. The edit-model
-workflows start with style images off; see [Workflows](workflows.md#style-images).
+**Style images** go in `studio\styles\` (or use **+ Add** in the Studio). None are included: use images you
+have the rights to. The edit-model workflows start with style images off; see
+[Workflows](workflows.md#style-images).
 
 ## 4. FFNx
 

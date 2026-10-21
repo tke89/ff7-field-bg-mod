@@ -15,7 +15,7 @@ import websocket
 
 # The user's tuned defaults (2026-10-20). Keep the prompt about the rendering, not the content:
 # naming materials like timber or tiles turned Midgar's train station into a medieval alley in
-# testing. The look of the reference remasters comes from the USO style images instead.
+# testing. Style images (studio/styles, none shipped) are the better way to steer the look.
 DEFAULT_PROMPT = (
     "A modern high-end remaster of this video game scene, drawn by hand with a stylised chibi painterly "
     "look. crisp detailed geometry, richly textured surfaces, warm glowing practical lights, soft global "
@@ -51,7 +51,7 @@ DEFAULT_SETTINGS = {
     # Edit models: how much of each state's own (original) art the states pass repaints. 1 repaints from
     # scratch, which gave every animation frame its own design; lower keeps each frame's shape.
     "state_denoise": 0.5,
-    "style_refs": ["kalm_remaster.png", "nibelheim_remaster.png", "efffd165-cb21-4e2e-9d5c-dfea0e40a05c.png"],
+    "style_refs": [],             # file names in studio/styles; none by default
     "style_ref_strength": 0.5,
     # Models. "family" picks the workflow (see FAMILIES): Flux.1-based models, or Krea 2.
     "family": "flux1",
