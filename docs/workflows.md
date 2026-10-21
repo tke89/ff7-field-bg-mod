@@ -12,7 +12,8 @@ settings for every workflow. Model files and download links are in
 | **Qwen 2.1 Full** | very well, after alignment | Turbo plus more detail (brick, ground texture) | about 15–20 s | finals where detail matters |
 | **FLUX 3 Klein** | the best (0.1 px drift) | clean, closer to the original colours, less painterly | Distilled about 15–20 s (estimated), Base 50–85 s | fields where exact layout matters most |
 | **Mage-Flow Turbo** | very well | keeps the original colours; flattens some surfaces | about 2–5 s | fast drafts and big batches |
-| **FIBO 2 Edit Turbo** | not tested yet | not tested yet | not measured | needs a ComfyUI newer than 0.42.1 |
+| **FIBO 2 Edit Turbo** | very well (99% of outlines on Kalm) | clean and neutral; loses night grading | about 13 s | a clean, realistic take |
+| **MOSS-Image** | well, with its depth lock | strong painterly restyle | about 7–15 s | bold restyles that keep the scene |
 | **Flux.1** | well (ControlNet structure lock) | depends heavily on settings | about 15–20 s | style images (USO), the detail pass |
 | **Krea 2 Turbo** | only at low repaint | good, stylised | about 9–19 s | experimenting; no structure lock |
 | **Upscale** | exactly (no restyle) | the original, sharper | about 2–4 s | a faithful HD version, or a baseline |
@@ -65,8 +66,8 @@ Microsoft's 4B edit model.
 ## FIBO 2 (Edit Turbo, Dev)
 
 Bria's 8B FIBO 2.0 (released 20 October 2026), the top open-weights image editor on Artificial Analysis at
-release. It runs through ComfyUI's native support (`TextEncodeFibo2`, PR #17240), which is newer than ComfyUI
-0.42.1. Until ComfyUI Desktop updates past that, the workflow button shows ⚠ and **Try all workflows** skips it.
+release. It runs through ComfyUI's native support (`TextEncodeFibo2`, PR #17240, from late October 2026). On an
+older ComfyUI the workflow button shows ⚠ and **Try all workflows** skips it.
 
 - The original goes in as `<image_1>`. The result size is set explicitly; the default render size is 2 MP,
   against its native size of about 1 MP. The instruction is plain text; FIBO also understands Bria's structured
@@ -75,7 +76,34 @@ release. It runs through ComfyUI's native support (`TextEncodeFibo2`, PR #17240)
   `fibo2_dev_int8_convrot`).
 - It uses the bf16 Qwen3-VL-4B text encoder, because the int8 one has a vision bug (ComfyUI issue #17248).
 - License: CC BY-NC 4.0, non-commercial only.
-- Not tested yet: compare it with Try all workflows once ComfyUI has updated.
+- Tested on Kalm (Edit Turbo): a 13 s render with SeedVR2 before and after, 99% of outlines kept. It came out
+  clean and evenly lit, like a neutral 3D render: the layout holds, but the original's night grading is gone.
+
+## MOSS-Image (SFT)
+
+OpenMOSS's 5B MOSS-Image (released 16 October 2026) is a text-to-image model, so like Krea 2 it repaints the
+original partially (**Repaint strength**) instead of editing it. No style images.
+
+- **Depth lock** (the **Structure lock** slider; 0 turns it off). Depth Anything 3 measures the original's depth
+  and MOSS's color/depth control adapter holds the scene to it, through ComfyUI's `MOSSImageControl` node. It
+  needs two extra files ([Getting started](getting-started.md#moss-image)).
+- Kalm, outlines kept:
+
+  | Repaint | No lock | Depth lock |
+  |---|---|---|
+  | 0.35 | 97% | – |
+  | 0.5 | 91% | 91–93% |
+  | 0.6 | 85% | 84% |
+  | 0.7 | 67%, a different town | 73–76%, the same town |
+
+  The numbers hide the difference. Without the lock, objects change from about 0.6 (the tower, the machinery)
+  and at 0.85 MOSS paints another scene entirely. With it, the town stays the same while the brushwork, light
+  and materials change. The default is 0.5 with the lock at its trained strength 1.
+- Strength 2 looked no better; 4 turns sketchy. The adapter's color-region half needs object segmentations,
+  which FF7's backgrounds don't split into, so only depth is used.
+- Settings from ComfyUI's template: 25 steps, CFG 2.5, `er_sde`, `simple`. The sampler runs every step whatever
+  the repaint strength: about 7 s at 1.2 MP.
+- License: Apache 2.0 (the model, the adapter and Depth Anything 3 Mono Large).
 
 ## Flux.1
 
@@ -139,8 +167,6 @@ Every workflow ends with an upscaler (Output → **Upscaler**) that takes the re
   (5120×3840).
   - **3B** stays smooth and faithful. **7B** adds crisper, hatched texture (cobbles, brickwork) and is about 3 s
     slower at 8×.
-  - The first enlargement of the original low-res art uses the ESRGAN input upscaler unless "Also enlarge the
-    original art with SeedVR2" is on, because that changes what the AI sees.
 - **ESRGAN models** (4x-UltraSharp and others in `upscale_models`) are faster and sharper, but grainier.
 - **None** uses a plain Lanczos resize inside ComfyUI.
 - **Lanczos (ImageMagick)** and **Upscayl** run on your PC outside ComfyUI:
@@ -153,9 +179,27 @@ Every workflow ends with an upscaler (Output → **Upscaler**) that takes the re
     It isn't tested on real Upscayl yet; the wiring was tested with a stand-in tool.
   - In the **Upscale** workflow they're the whole job, and ComfyUI doesn't need to run.
   - In the other workflows, ComfyUI returns the render at its working size and the Studio enlarges it, the
-    states too. The AI's input (the original art) is enlarged by the input upscaler (Advanced → Original
-    art). With the detail pass on, the render is enlarged with a plain Lanczos resize inside ComfyUI before the
-    pass, instead.
+    states too. With the detail pass on, the render is enlarged with a plain Lanczos resize inside ComfyUI
+    before the pass, instead.
+
+## Original art
+
+Before any AI sees it, the 1× original art is enlarged to the size the model renders at. Advanced → **Original
+art** sets how, per workflow:
+
+- **Upscaler**: any of the upscalers above. 4x-UltraSharp is the default; SeedVR2 adds detail to the original
+  but can invent texture; Lanczos keeps it soft. ImageMagick and Upscayl run before ComfyUI.
+- **Scale**: how many times its size the original is enlarged, which is also the size the AI renders at.
+  **Auto** uses **Render size** (the largest whole multiple within that many megapixels: 2× for most fields at
+  1.4 MP). The panel shows what that comes to for the field. Flux.1 on Kalm took 44 s at 3× instead of 18 s
+  at 2×. Most models were trained around 1–2 MP (the edit models up to 4) and start repeating details well
+  above that.
+
+Doors, lights and animation frames (the states pass) are repainted from the main render plus the original art
+blended in, so this setting doesn't apply to them.
+
+Until 21 October 2026 the original art went through the Output upscaler. Looks that relied on that were
+converted on the first start, so their results don't change.
 
 ## Style images
 
@@ -188,7 +232,8 @@ Use looks to vary the prompt by area (Midgar, Kalm, the Northern Crater) rather 
 
 Workflows live in `ff7bg/comfy.py`. Each one needs:
 - an entry in `FAMILIES` and `FAMILY_PRESETS` (default model files and settings);
-- for edit models, a branch in `_edit_conditioning` and `_edit_sample`;
+- for edit models, a branch in `_edit_conditioning` and `_edit_sample`; for others, `_conditioning` (and
+  `_model_chain` for anything that patches the model);
 - an entry in `looks.FAMILIES`;
 - the UI's `FAMILIES`, `LOOK_SLIDERS` and help texts in `studio/app.js`;
 - time estimates in `Project.estimate`.

@@ -213,6 +213,7 @@ code { background: #12151a; border: 1px solid var(--line); border-radius: 4px; p
 .seg.wf-var button { flex: 1; }
 .fam-hint { margin-top: 4px; font-size: 11px; }
 .refs { display: flex; flex-wrap: wrap; gap: 6px; }
+.refs.unused { opacity: 0.4; }
 .ref { position: relative; width: 84px; height: 63px; border-radius: 5px; overflow: hidden; cursor: pointer; border: 2px solid transparent; opacity: .45; }
 .ref.on { border-color: var(--accent); opacity: 1; }
 .ref img { width: 100%; height: 100%; object-fit: cover; }

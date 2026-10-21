@@ -26,7 +26,7 @@ from PIL import Image
 
 from . import upscalers
 from .ai import apply_color
-from .comfy import FAMILIES, build_states_workflow, working_size
+from .comfy import FAMILIES, SEEDVR2, build_states_workflow, work_size
 from .sheets import PageCache, render_composite
 
 MARGIN = 32           # context around a cluster's tiles, in original pixels (>= the 32px big tiles)
@@ -170,12 +170,12 @@ def _rounds(clusters, defaults):
     return keys, derived
 
 
-def count_runs(bg, rect, rendered_defaults, work_mp):
-    """How many ComfyUI runs the states pass needs (for time estimates), and how many panels."""
+def count_runs(bg, rect, rendered_defaults, k):
+    """How many ComfyUI runs the states pass needs (for time estimates), and how many panels.
+    k: the render scale (comfy.work_size over the canvas)."""
     clusters = plan(bg, rect, rendered_defaults)
     if not clusters:
         return 0, 0
-    k = working_size(rect[2], rect[3], work_mp)[0] // rect[2]
     keys, derived = _rounds(clusters, rendered_defaults)
     return len(_pack_items(keys, k)) + len(_pack_items(derived, k)), len(keys) + len(derived)
 
@@ -219,11 +219,14 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
         old.unlink()
     scale, ai_hi, M, defaults = main["scale"], main["ai_hi"], main["M"], main["defaults"]
     default_view = main["orig"]  # the original as the main render saw it
-    k = working_size(rect[2], rect[3], settings["work_mp"])[0] // rect[2]
+    k = work_size(settings, rect[2], rect[3])[0] // rect[2]
     cache = PageCache(bg)
     clusters = plan(bg, rect, defaults)
     upscale_only = settings.get("family") == "upscale"
     outside = upscalers.is_local(settings["upscaler"])  # ImageMagick / Upscayl, after ComfyUI
+    # Upscale workflow, an outside upscaler before SeedVR2: run it here, the graph then only resizes
+    pre_up = (upscale_only and settings["upscaler"] == SEEDVR2 and not settings["seedvr2_input"]
+              and upscalers.is_local(settings["input_upscaler"]))
     edit = FAMILIES.get(settings.get("family"), {}).get("edit", False)
 
     views, matched = {}, {}
@@ -289,6 +292,8 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
             if upscale_only and outside:
                 res = start  # nothing for ComfyUI to do: enlarged by finish() below
             else:
+                if pre_up:
+                    start = upscalers.upscale(start, settings["input_upscaler"], W * scale, H * scale, cancelled)
                 tag = f"{bg.name}_{done[0]}"
                 names = []
                 for kind, arr in (("ctx", ctx), ("orig", start), ("mask", mask)):

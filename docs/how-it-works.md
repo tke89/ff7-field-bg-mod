@@ -31,8 +31,8 @@ copy (`ai/jobs.json` lists the copies).
 
 1. **Input.** The field composed the way the game shows it on entry: static tiles plus the states its scripts
    switch on before the first `RET` of the init code. Edit models get an extra 8% blurred margin.
-2. **Main render.** The workflow restyles the input and the upscaler takes it to the output scale
-   ([Workflows](workflows.md)).
+2. **Main render.** The input is enlarged to the render size ([Original art](workflows.md#original-art)), the
+   workflow restyles it, and the upscaler takes it to the output scale ([Workflows](workflows.md)).
 3. **Alignment** (when on). See below.
 4. **Color fit.** A robust 3×4 color transform maps original colors to the new look. It's used wherever original
    art has to sit next to new art.

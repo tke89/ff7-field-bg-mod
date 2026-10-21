@@ -74,8 +74,12 @@ DEFAULT_SETTINGS = {
     "seedvr2_unet": "seedvr2_3b_int8_convrot.safetensors",
     "seedvr2_vae": "seedvr2_ema_vae_fp16.safetensors",
     "seedvr2_color": "lab",                       # lab / wavelet / adain / none
-    "seedvr2_input": False,                       # also use it for the first enlargement of the original art
-    "input_upscaler": "4x-UltraSharp.safetensors",  # ...otherwise this one (also with an outside upscaler)
+    "seedvr2_input": False,                       # Upscale workflow: SeedVR2 works from the original pixels
+    # The original art, enlarged for the AI: with this upscaler (any of the above, also "seedvr2"), to
+    # input_scale times its size, or with input_scale 0 to the render size (work_mp). In the Upscale
+    # workflow it's the upscaler before SeedVR2 (when seedvr2_input is off).
+    "input_upscaler": "4x-UltraSharp.safetensors",
+    "input_scale": 0,
     # The ControlNet already pins the layout; warping on top of it misreads redesigned textures
     # (e.g. a new floor-tile pattern) as drift and bends the image. Meant for outside images.
     "align": False,
@@ -118,6 +122,13 @@ FAMILY_PRESETS = {
               "clip1": "qwen3vl_4b_bf16.safetensors", "clip2": "", "clip_type": "fibo2",
               "vae": "flux2-vae.safetensors", "steps": 4, "cfg": 1.0, "work_mp": 2.0, "align": True,
               "detail_pass": False, "style_ref_strength": 0.0},
+    # MOSS-Image SFT (OpenMOSS, 5B): a text-to-image model repainting the original, like Krea 2, with a
+    # depth lock (structure = its strength, 0 = off). Settings from ComfyUI's image_moss_image_t2i template.
+    "moss": {"family": "moss", "model_source": "separate",
+             "unet": "moss_image_sft_int8_convrot.safetensors", "unet_dtype": "default",
+             "clip1": "qwen3.5_9b_w4a8_gptq.safetensors", "clip2": "", "clip_type": "moss_image",
+             "vae": "flux2-vae.safetensors", "steps": 25, "cfg": 2.5, "denoise": 0.5,
+             "structure": 1.0, "structure_end": 1.0, "detail_steps": 8},
     # Upscale only: no diffusion model; the original art goes straight through the upscaler.
     "upscale": {"family": "upscale", "align": False, "detail_pass": False},
 }
@@ -159,6 +170,13 @@ def working_size(w, h, target_mp):
     """Largest integer multiple of the canvas within target_mp (canvases are multiples of 16)."""
     k = max(1, int(math.sqrt(target_mp * 1e6 / (w * h))))
     return w * k, h * k
+
+
+def work_size(s, w, h):
+    """The size the AI renders a w x h image at: input_scale times it, or by default the render size."""
+    if s.get("input_scale"):
+        return w * s["input_scale"], h * s["input_scale"]
+    return working_size(w, h, s["work_mp"])
 
 
 def _loaders(wf, s):
@@ -204,13 +222,22 @@ FAMILIES = {
     # Mage-Flow-Edit: instruction + reference images through its own encoder node
     # (ComfyUI's image_mage_flow_edit_*_int8 templates).
     "mageflow": {"scheduler": "simple", "controlnet": False, "edit": True},
-    # Bria FIBO 2.0: the original as <image_1> of TextEncodeFibo2, which needs a ComfyUI newer than 0.42.1
-    # (PR #17240); the result size is set explicitly, since a single image is cropped to it pixel for pixel.
+    # Bria FIBO 2.0: the original as <image_1> of TextEncodeFibo2 (in ComfyUI since late October 2026,
+    # PR #17240); the result size is set explicitly, since a single image is cropped to it pixel for pixel.
     "fibo2": {"scheduler": "simple", "controlnet": False, "edit": True, "node": "TextEncodeFibo2"},
+    # MOSS-Image: a text-to-image model, so a partial repaint of the original like Krea 2 (no style images).
+    # Its structure lock is a depth lock: Depth Anything 3 measures the original's depth and MOSS's
+    # color/depth control adapter (a LoRA plus MOSSImageControl) holds the scene to it. On Kalm, plain
+    # MOSS at 0.6 swapped objects (the tower, the machinery); with the lock they stayed.
+    "moss": {"scheduler": "simple", "sampler": "er_sde", "cfg": True, "controlnet": False, "refs": False,
+             "node": "MOSSImageControl"},
     # No restyle: the original enlarged by the chosen upscaler (SeedVR2 or an ESRGAN-style model),
     # states included, as a faithful HD baseline.
     "upscale": {"scheduler": "simple", "controlnet": False, "upscale": True},
 }
+MOSS_CONTROL_LORA = "moss_image_color_depth_control.safetensors"
+DEPTH_MODEL = "depth_anything_3_mono_large.safetensors"
+DEPTH_RES = 1008  # Depth Anything 3's working size (longest side, multiple of 14); the map is resized back
 KREA2_STYLE_LORA = "krea2_style_reference.safetensors"
 QWEN21_TURBO_SIGMAS = "1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568, 0"
 
@@ -334,6 +361,24 @@ def _conditioning(wf, s, clip, vae, control_image, refs):
         wf["refneg"] = {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["refpos", 0]}}
         return (["refpos", 0], ["refneg", 0]), plain
 
+    if fam["name"] == "moss":
+        wf["neg"] = {"class_type": "CLIPTextEncode", "inputs": {"clip": clip, "text": ""}}
+        plain = (["pos", 0], ["neg", 0])
+        if s["structure"] <= 0:
+            return plain, plain
+        # near is white, as the adapter was trained (Depth Anything V2); resized back to the render size
+        wf["da3m"] = {"class_type": "LoadDA3Model", "inputs": {"model_name": DEPTH_MODEL, "weight_dtype": "default"}}
+        wf["da3"] = {"class_type": "DA3Inference", "inputs": {
+            "da3_model": ["da3m", 0], "image": control_image, "resolution": DEPTH_RES,
+            "resize_method": "upper_bound_resize", "mode": "mono"}}
+        wf["depth"] = {"class_type": "DA3Render", "inputs": {
+            "da3_geometry": ["da3", 0], "output": "depth", "output.normalization": "v2_style",
+            "output.apply_sky_clip": False}}
+        wf["cn"] = {"class_type": "MOSSImageControl", "inputs": {
+            "positive": ["pos", 0], "negative": ["neg", 0], "vae": vae, "strength": s["structure"],
+            "start_percent": 0.0, "end_percent": s["structure_end"], "depth_map": ["depth", 0]}}
+        return (["cn", 0], ["cn", 1]), plain
+
     wf["guid"] = {"class_type": "FluxGuidance", "inputs": {"conditioning": ["pos", 0], "guidance": s["guidance"]}}
     wf["neg"] = {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["pos", 0]}}
     plain = (["guid", 0], ["neg", 0])
@@ -375,17 +420,15 @@ def _seedvr2(wf, key, s, image, w, h):
 def _resize(wf, key, s, image, w, h, outside=True):
     """Enlarge with the chosen upscaler (if any), then resize exactly to w x h.
 
-    SeedVR2 handles the enlargements of rendered images; the first enlargement of the original low-res
-    art ("work", "orig_gen") uses the ESRGAN-style input upscaler, unless seedvr2_input is set.
+    The first enlargement of the original low-res art ("work", "orig_gen") uses input_upscaler, every
+    later one (the render) the output upscaler.
 
-    Upscalers that run outside ComfyUI (ImageMagick, Upscayl) can't be in the graph: the input upscaler
-    stands in for the original art, and the render comes back at its own size for the Studio to enlarge
-    (upscalers.finish), or, when the graph needs it at full size (outside=False: the detail pass), it
-    gets a plain Lanczos resize."""
-    upscaler = s["upscaler"]
+    Upscalers that run outside ComfyUI (ImageMagick, Upscayl) can't be in the graph. The Studio enlarges
+    the original art with them before uploading it (so the resize here changes nothing), and the render
+    comes back at its own size for the Studio to enlarge (upscalers.finish), or, when the graph needs it
+    at full size (outside=False: the detail pass), it gets a plain Lanczos resize."""
     first = key in ("work", "orig_gen")
-    if first and (is_local(upscaler) or (upscaler == SEEDVR2 and not s["seedvr2_input"])):
-        upscaler = s["input_upscaler"]
+    upscaler = s["input_upscaler"] if first else s["upscaler"]
     if is_local(upscaler):
         if outside and not first:
             return image
@@ -393,7 +436,7 @@ def _resize(wf, key, s, image, w, h, outside=True):
     if upscaler == SEEDVR2:
         image = _seedvr2(wf, key, s, image, w, h)
     elif upscaler:
-        loader = "upm" if upscaler == s["upscaler"] else "upm_input"
+        loader = "upm_input" if first else "upm"
         wf.setdefault(loader, {"class_type": "UpscaleModelLoader", "inputs": {"model_name": upscaler}})
         wf[f"{key}_up"] = {"class_type": "ImageUpscaleWithModel", "inputs": {"upscale_model": [loader, 0], "image": image}}
         image = [f"{key}_up", 0]
@@ -408,6 +451,17 @@ def _upscale_chain(wf, s, image, w, h):
     if s["upscaler"] == SEEDVR2 and not s["seedvr2_input"] and s["input_upscaler"]:
         image = _resize(wf, "work", s, image, w, h)
     return _resize(wf, "final", s, image, w, h)
+
+
+def _model_chain(wf, s, model, refs, w, h):
+    """The model for the main sampler: patched for style images, or with MOSS's control adapter."""
+    if _family(s)["name"] == "moss":
+        if s["structure"] <= 0:
+            return model
+        wf["ctl_lora"] = {"class_type": "LoraLoaderModelOnly", "inputs": {
+            "model": model, "lora_name": MOSS_CONTROL_LORA, "strength_model": 1.0}}
+        return ["ctl_lora", 0]
+    return _style_chain(wf, s, model, refs, w, h)
 
 
 def _style_chain(wf, s, model, refs, w, h):
@@ -436,10 +490,11 @@ def _style_chain(wf, s, model, refs, w, h):
 
 
 def _sampler(s, model, positive, negative, latent, steps, denoise):
+    fam = _family(s)
     return {"class_type": "KSampler", "inputs": {
-        "model": model, "seed": s["seed"], "steps": steps, "cfg": 1.0, "sampler_name": "euler",
-        "scheduler": _family(s)["scheduler"], "positive": positive, "negative": negative,
-        "latent_image": latent, "denoise": denoise}}
+        "model": model, "seed": s["seed"], "steps": steps, "cfg": s["cfg"] if fam.get("cfg") else 1.0,
+        "sampler_name": fam.get("sampler", "euler"), "scheduler": fam["scheduler"], "positive": positive,
+        "negative": negative, "latent_image": latent, "denoise": denoise}}
 
 
 def edit_padding(w, h, margin):
@@ -461,7 +516,7 @@ def _build_edit_workflow(s, input_name, canvas_w, canvas_h, prefix, style_ref_na
     result keeps edit_keep(pad) of that margin around the canvas."""
     l, t, r, b = pad
     pw, ph = canvas_w + l + r, canvas_h + t + b
-    ww, wh = working_size(pw, ph, s["work_mp"])
+    ww, wh = work_size(s, pw, ph)
     k = ww // pw
     wf = {"src": {"class_type": "LoadImage", "inputs": {"image": input_name}}}
     base, clip, vae = _loaders(wf, s)
@@ -490,15 +545,15 @@ def build_workflow(s, input_name, canvas_w, canvas_h, prefix, style_ref_names=()
         return wf
     if _family(s).get("edit"):
         return _build_edit_workflow(s, input_name, canvas_w, canvas_h, prefix, style_ref_names, pad)
-    ww, wh = working_size(canvas_w, canvas_h, s["work_mp"])
+    ww, wh = work_size(s, canvas_w, canvas_h)
     ow, oh = canvas_w * s["out_scale"], canvas_h * s["out_scale"]
     wf = {"src": {"class_type": "LoadImage", "inputs": {"image": input_name}}}
     base, clip, vae = _loaders(wf, s)
-    refs = _load_refs(wf, style_ref_names)
+    refs = _load_refs(wf, style_ref_names) if _family(s).get("refs", True) else []
     work = _resize(wf, "work", s, ["src", 0], ww, wh)
     wf["enc"] = {"class_type": "VAEEncode", "inputs": {"pixels": work, "vae": vae}}
     (positive, negative), plain = _conditioning(wf, s, clip, vae, work, refs)
-    styled = _style_chain(wf, s, base, refs, ww, wh)
+    styled = _model_chain(wf, s, base, refs, ww, wh)
     wf["sample"] = _sampler(s, styled, positive, negative, ["enc", 0], s["steps"], s["denoise"])
     wf["dec"] = {"class_type": "VAEDecode", "inputs": {"samples": ["sample", 0], "vae": vae}}
     result = _resize(wf, "final", s, ["dec", 0], ow, oh, outside=not s["detail_pass"])
@@ -547,7 +602,7 @@ def build_states_workflow(s, ctx_name, orig_name, mask_name, gen_w, gen_h, out_w
         "mask": {"class_type": "LoadImageMask", "inputs": {"image": mask_name, "channel": "red"}},
     }
     base, clip, vae = _loaders(wf, s)
-    refs = _load_refs(wf, style_ref_names)
+    refs = _load_refs(wf, style_ref_names) if _family(s).get("refs", True) else []
     orig_gen = ["orig", 0]  # already at the sheet's size
     wf["inp"] = {"class_type": "ImageCompositeMasked", "inputs": {
         "destination": ["ctx", 0], "source": orig_gen, "x": 0, "y": 0, "resize_source": False,
@@ -561,7 +616,7 @@ def build_states_workflow(s, ctx_name, orig_name, mask_name, gen_w, gen_h, out_w
                      denoise=s["state_denoise"] if denoise is None else denoise)
     else:
         (positive, negative), _ = _conditioning(wf, s, clip, vae, orig_gen, refs)
-        styled = _style_chain(wf, s, base, refs, gen_w, gen_h)
+        styled = _model_chain(wf, s, base, refs, gen_w, gen_h)
         wf["sample"] = _sampler(s, styled, positive, negative, ["noise_mask", 0], s["steps"],
                                 min(0.95, s["denoise"] + s["state_denoise_boost"]))
     wf["dec"] = {"class_type": "VAEDecode", "inputs": {"samples": ["sample", 0], "vae": vae}}

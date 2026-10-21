@@ -47,9 +47,10 @@ const FAMILIES = {
   flux3k: { short: "FLUX 3", hint: "FLUX 3 Image Klein (Black Forest Labs, Oct 2026): an edit model that renders up to 4K natively; style images as references." },
   mageflow: { short: "Mage-Flow", hint: "Mage-Flow Edit (Microsoft, 4B): a small, very fast edit model; style images as references." },
   fibo2: { short: "FIBO 2", hint: "Bria FIBO 2.0 Edit (Oct 2026): an 8B edit model, the top open-weights editor at release; 4 steps in Turbo. Non-commercial license (CC BY-NC 4.0)." },
+  moss: { short: "MOSS", hint: "MOSS-Image SFT (OpenMOSS, Oct 2026): a 5B image model that repaints the original. A depth lock (Depth Anything 3 + MOSS's control adapter) keeps the scene in place at strong repaints. No style images." },
   upscale: { short: "Upscale", hint: "No AI restyle: the original art enlarged by the upscaler under Output." },
 };
-const usesRepaint = (f) => f === "flux1" || f === "krea2";
+const usesRepaint = (f) => f === "flux1" || f === "krea2" || f === "moss";
 const EDIT = new Set(["qwen21", "flux3k", "mageflow", "fibo2"]);  // edit models: no repaint strength or detail pass
 // Fast and full versions of the edit models; mirrors EDIT_VARIANTS in ff7bg/comfy.py
 const VARIANTS = {
@@ -68,9 +69,13 @@ const pct = (v) => `${Math.round(v * 100)}%`;
 // Sliders; helpBy overrides the help text for one workflow.
 const SL = {
   denoise: { label: "Repaint strength", min: 0.1, max: 0.95, step: 0.01, help: "How much the AI may repaint. Low keeps the original, high restyles more.",
-    helpBy: { krea2: "No structure lock on Krea 2: about 0.2-0.3 keeps the layout." } },
-  structure: { label: "Structure lock", min: 0, max: 1.5, step: 0.05, help: "How strongly edges are held to the original layout." },
+    helpBy: { krea2: "No structure lock on Krea 2: about 0.2-0.3 keeps the layout.",
+              moss: "With the depth lock, 0.5 restyles strongly and kept 90% of Kalm's outlines; much above 0.6, walk-behind spots stop lining up. Without the lock, stay around 0.3-0.35." } },
+  structure: { label: "Structure lock", min: 0, max: 1.5, step: 0.05, help: "How strongly edges are held to the original layout.",
+    helpBy: { moss: "Depth lock: Depth Anything 3 measures the original's depth and MOSS's control adapter holds the scene to it. 1 is its trained strength; 0 turns it off. Much higher looks sketchy." } },
   structure_end: { label: "Lock until", min: 0.3, max: 1, step: 0.05, help: "Share of the render steps the structure lock applies to.", fmt: pct },
+  input_scale: { label: "Scale", min: 0, max: 8, step: 1, fmt: (v) => v ? `${v}×` : "Auto",
+    help: "How much the original art is enlarged for the AI, which renders at that size. Auto: the largest whole multiple within Render size." },
   canny_low: { label: "Edge sensitivity", min: 0.05, max: 0.5, step: 0.01, help: "Lower picks up more fine edges for the structure lock." },
   guidance: { label: "Prompt guidance", min: 1.5, max: 5, step: 0.1, help: "How literally Flux follows the prompt." },
   style_ref_strength: { label: "Style image influence", min: 0, max: 1.2, step: 0.05, help: "Weight of the selected style images.",
@@ -81,7 +86,8 @@ const SL = {
               krea2: "Strength of the style-reference LoRA; it was trained on 1-2 images." } },
   out_scale: { label: "Output scale", min: 2, max: 10, step: 1, help: "Final texture resolution vs. the original. 6× suits 1440p, 8× is close to 4K.", fmt: (v) => `${v}×` },
   detail_denoise: { label: "Detail strength", min: 0.1, max: 0.5, step: 0.01, help: "How much the detail pass repaints at full resolution. Above ~0.45 tiles may disagree." },
-  cfg: { label: "CFG", min: 1, max: 8, step: 0.5, help: "How strongly the instruction is enforced. Turbo and distilled versions want 1; Mage-Flow Full uses 5." },
+  cfg: { label: "CFG", min: 1, max: 8, step: 0.5, help: "How strongly the instruction is enforced. Turbo and distilled versions want 1; Mage-Flow Full uses 5.",
+    helpBy: { moss: "How strongly MOSS follows the prompt. Its template uses 2.5; 1 runs twice as fast but follows the prompt less." } },
   steps: { label: "Render steps", min: 4, max: 40, step: 1, help: "More steps, more detail, slower. Turbo models want about 8." },
   work_mp: { label: "Render size", min: 0.8, max: 4, step: 0.1, help: "Megapixels the model renders at before upscaling. More gives finer detail and takes longer.", fmt: (v) => `${v} MP` },
   edit_margin: { label: "Edit margin", min: 0, max: 0.15, step: 0.01, help: "Blurred border around the scene so the edit model's slight zoom doesn't crop it.", fmt: pct },
@@ -99,6 +105,7 @@ const LOOK_SLIDERS = {
   flux3k: ["style_ref_strength"],
   mageflow: ["style_ref_strength"],
   fibo2: ["style_ref_strength"],
+  moss: ["denoise", "structure", "structure_end"],
   upscale: [],
 };
 const KEY_LABELS = {
@@ -107,7 +114,7 @@ const KEY_LABELS = {
   model_source: "model source", checkpoint: "checkpoint", unet: "diffusion model", clip1: "text encoder",
   clip2: "text encoder 2", clip_type: "encoder type", vae: "VAE", controlnet: "ControlNet", lora: "LoRA",
   canny_high: "edge sensitivity", unet_dtype: "weight type", detail_style: "detail style images",
-  seedvr2_unet: "SeedVR2 model", seedvr2_vae: "SeedVR2 VAE", seedvr2_color: "SeedVR2 color", input_upscaler: "input upscaler",
+  seedvr2_unet: "SeedVR2 model", seedvr2_vae: "SeedVR2 VAE", seedvr2_color: "SeedVR2 color", input_upscaler: "original art upscaler",
 };
 const keyLabel = (k) => (SL[k] && SL[k].label.toLowerCase()) || KEY_LABELS[k] || k;
 
@@ -780,7 +787,9 @@ function renderStyle() {
   $('label[for="prompt"]').className = `lbl ${mark("prompt")}`;
 
   $("#refsLbl").className = `lbl ${mark("style_refs")}`;
+  $("#refsLbl").textContent = fam === "moss" ? "Style reference images (MOSS doesn't use them)" : "Style reference images";
   const refs = $("#styleRefs");
+  refs.classList.toggle("unused", fam === "moss");
   refs.innerHTML = "";
   for (const f of S.styles) {
     const el = document.createElement("div");
@@ -845,6 +854,27 @@ function upName(u) {
   return u.replace(/\.safetensors$|\.pth$/, "");
 }
 
+// Every upscaler there is to pick: ComfyUI's ESRGAN models, SeedVR2, ImageMagick and Upscayl
+function upscalerChoices(cur, { seedvr2 = true } = {}) {
+  const m = S.models, online = m && m.online, local = (m && m.local) || null;  // null: an older Studio
+  const svrReady = online && (m.unets || []).some((u) => /seedvr2/i.test(u)) && (m.vaes || []).some((u) => /seedvr2/i.test(u));
+  const ups = online ? m.upscalers.slice() : [];
+  if (seedvr2 && (svrReady || cur === "seedvr2")) ups.unshift("seedvr2");
+  if (local) ups.push("magick", ...local.upscayl_models.map((x) => `upscayl:${x}`));
+  const labels = { seedvr2: "SeedVR2 (diffusion upscaler, finer detail)" };
+  for (const u of [...ups, cur]) if (isOutside(u)) labels[u] = upName(u);
+  return { ups, labels, local };
+}
+
+function outsideHint(u, local) {
+  if (u === "magick") {
+    return local && local.magick ? "ImageMagick's Lanczos resize (-filter Lanczos), run outside ComfyUI."
+      : "ImageMagick isn't installed, so Pillow does it: the same Lanczos filter, identical to the plain Lanczos resize. " +
+        "For ImageMagick itself, install it and press Refresh models.";
+  }
+  return `Upscayl's ${esc(upName(u).slice(8))} model, run outside ComfyUI. It enlarges 4×; other sizes get a Lanczos resize after it.`;
+}
+
 // What the Upscale workflow runs, in words
 function upscalerLabel(v) {
   if (v.upscaler === "seedvr2") {
@@ -859,22 +889,11 @@ function renderOutput(v) {
   const fam = v.family, m = S.models;
   box.appendChild(slider("out_scale", v));
   const online = m && m.online;
-  const svrReady = online && (m.unets || []).some((u) => /seedvr2/i.test(u)) && (m.vaes || []).some((u) => /seedvr2/i.test(u));
-  const local = (m && m.local) || null;  // null: a Studio from before these existed
-  const ups = online ? m.upscalers.slice() : [];
-  if (svrReady || v.upscaler === "seedvr2") ups.unshift("seedvr2");
-  if (local) ups.push("magick", ...local.upscayl_models.map((x) => `upscayl:${x}`));
-  const labels = { seedvr2: "SeedVR2 (diffusion upscaler, finer detail)" };
-  for (const u of [...ups, v.upscaler]) if (isOutside(u)) labels[u] = upName(u);
+  const { ups, labels, local } = upscalerChoices(v.upscaler);
   let hint = online ? "Enlarges the render to the output size." : "ComfyUI isn't reachable; only the saved choice is listed.";
-  if (v.upscaler === "magick") {
-    hint = local && local.magick ? "ImageMagick's Lanczos resize (-filter Lanczos), run outside ComfyUI."
-      : "ImageMagick isn't installed, so Pillow does it: the same Lanczos filter, identical to the plain Lanczos resize. " +
-        "For ImageMagick itself, install it and press Refresh models.";
-  } else if (isOutside(v.upscaler)) {
-    hint = `Upscayl's ${esc(upName(v.upscaler).slice(8))} model, run outside ComfyUI. It enlarges 4×; other output scales get a Lanczos resize after it.`;
-  }
+  if (isOutside(v.upscaler)) hint = outsideHint(v.upscaler, local);
   if (isOutside(v.upscaler) && fam === "upscale") hint += " Doesn't need ComfyUI.";
+  if (fam !== "upscale") hint += " The original art the AI starts from has its own upscaler, in Advanced → Original art.";
   box.appendChild(selectRow("upscaler", "Upscaler", ups, v, { none: "(none: plain Lanczos resize)", labels, hint }));
   if (local && !local.upscayl) {
     const n = document.createElement("div");
@@ -882,12 +901,9 @@ function renderOutput(v) {
     n.textContent = "Upscayl isn't installed. Install it (or put upscayl-bin in tools/upscayl) and press Refresh models to list its models here.";
     box.appendChild(n);
   }
-  if (v.upscaler === "seedvr2") {
-    box.appendChild(fam === "upscale"
-      ? check("seedvr2_input", "SeedVR2 works from the original pixels", v,
-          "On: more new detail, but it can invent texture (e.g. cobblestones). Off: the input upscaler in Advanced enlarges first and SeedVR2 cleans that up, closer to the original.")
-      : check("seedvr2_input", "Also enlarge the original art with SeedVR2", v,
-          "Changes how the AI sees the input. Off: the input upscaler in Advanced."));
+  if (v.upscaler === "seedvr2" && fam === "upscale") {
+    box.appendChild(check("seedvr2_input", "SeedVR2 works from the original pixels", v,
+      "On: more new detail, but it can invent texture (e.g. cobblestones). Off: the upscaler in Advanced enlarges first and SeedVR2 cleans that up, closer to the original."));
   }
   if (fam === "upscale") {
     box.appendChild(check("states_pass", "States pass (Final only)", v, "Enlarges doors, lights and animation frames with the same upscaler, so they match the scene."));
@@ -905,6 +921,7 @@ function renderOutput(v) {
     krea2: "Undoes an overall zoom or shift (one correction for the whole image, so lines stay straight); local changes stay.",
     flux3k: "Keep on for edit models: they can zoom or shift slightly. One overall correction, so straight lines stay straight.",
     mageflow: "Keep on for edit models: they can zoom or shift slightly. One overall correction, so straight lines stay straight.",
+    moss: "Usually not needed: MOSS repaints in place. Undoes an overall zoom or shift if one creeps in.",
     fibo2: "Keep on for edit models: they can zoom or shift slightly. One overall correction, so straight lines stay straight.",
   }[fam];
   box.appendChild(check("align", "Auto-align to the original layout", v, alignHelp));
@@ -932,7 +949,11 @@ function renderAdvanced(v) {
       add(selectRow("seedvr2_vae", "SeedVR2 VAE", (m.vaes || []).filter((u) => /seedvr2/i.test(u)), v));
       add(selectRow("seedvr2_color", "Color correction", ["lab", "wavelet", "adain", "none"], v,
         { hint: "Matches colors back to the image before upscaling; lab is the most faithful." }));
-      if (!v.seedvr2_input) add(selectRow("input_upscaler", "Upscaler before SeedVR2", m.upscalers, v, { none: "(none: plain Lanczos resize)" }));
+      if (!v.seedvr2_input) {
+        const { ups, labels, local } = upscalerChoices(v.input_upscaler, { seedvr2: false });
+        add(selectRow("input_upscaler", "Upscaler before SeedVR2", ups, v, { none: "(none: plain Lanczos resize)", labels,
+          hint: isOutside(v.input_upscaler) ? outsideHint(v.input_upscaler, local) : "" }));
+      }
     } else {
       const n = document.createElement("div");
       n.className = "hint";
@@ -951,8 +972,8 @@ function renderAdvanced(v) {
   sub("Rendering");
   const fixedSchedule = fam === "qwen21" && /turbo/i.test(v.unet || "");  // Qwen Turbo: fixed 8 steps
   if (!fixedSchedule) add(slider("steps", v));
-  if (EDIT.has(fam) && !fixedSchedule) add(slider("cfg", v));
-  add(slider("work_mp", v));
+  if ((EDIT.has(fam) || fam === "moss") && !fixedSchedule) add(slider("cfg", v));
+  add(slider("work_mp", v, v.input_scale ? { dim: true, help: "Not used: Original art → Scale sets the render size." } : {}));
   if (EDIT.has(fam)) add(slider("edit_margin", v));
   if (v.detail_pass && !EDIT.has(fam)) {
     add(slider("detail_steps", v));
@@ -962,6 +983,26 @@ function renderAdvanced(v) {
     }
   }
   if (v.states_pass) add(slider(EDIT.has(fam) ? "state_denoise" : "state_denoise_boost", v));
+
+  sub("Original art");
+  {
+    const { ups, labels, local } = upscalerChoices(v.input_upscaler);
+    const hint = isOutside(v.input_upscaler) ? outsideHint(v.input_upscaler, local) + " Runs before ComfyUI."
+      : v.input_upscaler === "seedvr2" ? "Adds detail to the original before the AI sees it; it can invent texture (Kalm's cracked plaza became cobblestones)."
+      : "Enlarges the original art before the AI sees it.";
+    add(selectRow("input_upscaler", "Upscaler", ups, v, { none: "(none: plain Lanczos resize)", labels, hint }));
+    add(slider("input_scale", v));
+    // what that comes to for this field
+    const d = S.detail, edge = (n) => EDIT.has(fam) ? Math.round(n * v.edit_margin / 16) * 16 : 0;
+    const pw = d.w + 2 * edge(d.w), ph = d.h + 2 * edge(d.h);
+    const k = v.input_scale || Math.max(1, Math.floor(Math.sqrt(v.work_mp * 1e6 / (pw * ph))));
+    const mp = pw * k * ph * k / 1e6;
+    const n = document.createElement("div");
+    n.className = mp > 4.5 ? "model-warn" : "hint";
+    n.textContent = `${d.name} renders at ${pw * k}×${ph * k} (${mp.toFixed(1)} MP, ${k}× the original${EDIT.has(fam) ? " with the edit margin" : ""}).` +
+      (mp > 4.5 ? " That's large: slower, and models start repeating details well above the size they were trained at." : "");
+    add(n);
+  }
 
   sub(`Model files: ${famShort(fam)}`);
   const online = m && m.online;
@@ -987,11 +1028,12 @@ function renderAdvanced(v) {
       add(selectRow("unet_dtype", "Weight type", m.unet_dtypes, v));
       add(selectRow("clip1", "Text encoder 1", m.clips, v, {
         hint: { krea2: "Krea 2 uses qwen3vl_4b.", qwen21: "Qwen-Image 2.1 uses qwen3vl_8b.", flux3k: "FLUX 3 Klein uses qwen3vl_4b.",
-                mageflow: "Mage-Flow uses qwen3vl_4b.", fibo2: "FIBO 2 uses qwen3vl_4b (bf16: the int8 one has a vision bug)." }[fam] || "Flux.1 uses clip_l + t5xxl." }));
+                mageflow: "Mage-Flow uses qwen3vl_4b.", fibo2: "FIBO 2 uses qwen3vl_4b (bf16: the int8 one has a vision bug).",
+                moss: "MOSS-Image uses qwen3.5_9b (w4a8 or int8)." }[fam] || "Flux.1 uses clip_l + t5xxl." }));
       add(selectRow("clip2", "Text encoder 2", m.clips, v, { none: "(none: single encoder)" }));
       add(selectRow("clip_type", "Encoder type", types, v, {
         hint: { krea2: "\"krea2\" for Krea 2.", qwen21: "\"qwen_image\" for Qwen-Image 2.1.", flux3k: "\"flux3\" for FLUX 3 Klein.",
-                mageflow: "\"mage\" for Mage-Flow.", fibo2: "\"fibo2\" for FIBO 2." }[fam] || "\"flux\" for Flux.1 with two encoders." }));
+                mageflow: "\"mage\" for Mage-Flow.", fibo2: "\"fibo2\" for FIBO 2.", moss: "\"moss_image\" for MOSS-Image." }[fam] || "\"flux\" for Flux.1 with two encoders." }));
       add(selectRow("vae", "VAE", m.vaes, v));
     }
     if (fam === "flux1") {
@@ -1016,6 +1058,12 @@ function renderAdvanced(v) {
       if (base && !looksMage(base)) warns.push(`"${base}" doesn't look like a Mage-Flow Edit model.`);
     } else if (fam === "fibo2") {
       if (base && !/fibo/i.test(base)) warns.push(`"${base}" doesn't look like a FIBO 2.0 model.`);
+    } else if (fam === "moss") {
+      if (base && !/moss/i.test(base)) warns.push(`"${base}" doesn't look like a MOSS-Image model.`);
+      if (v.structure > 0 && !(m.loras || []).includes("moss_image_color_depth_control.safetensors"))
+        warns.push("The depth lock needs loras/moss_image_color_depth_control.safetensors (Comfy-Org/MOSS-Image); or set Structure lock to 0.");
+      if (v.structure > 0 && !(m.depth_models || []).includes("depth_anything_3_mono_large.safetensors"))
+        warns.push("The depth lock needs geometry_estimation/depth_anything_3_mono_large.safetensors (Comfy-Org/Depth-Anything-3); or set Structure lock to 0.");
     } else if (base && !looksFlux1(base)) {
       warns.push(`"${base}" doesn't look like a Flux.1 model; the Flux.1 workflow uses prompt guidance, the Flux ControlNet and USO style images.`);
     }
@@ -1027,18 +1075,12 @@ function renderAdvanced(v) {
       add(w);
     }
 
-    if (v.upscaler === "seedvr2") {
+    if (v.upscaler === "seedvr2" || v.input_upscaler === "seedvr2") {
       sub("SeedVR2 upscaler");
       add(selectRow("seedvr2_unet", "SeedVR2 model", (m.unets || []).filter((u) => /seedvr2/i.test(u)), v, { hint: "3B int8 is the one ComfyUI's template uses." }));
       add(selectRow("seedvr2_vae", "SeedVR2 VAE", (m.vaes || []).filter((u) => /seedvr2/i.test(u)), v));
       add(selectRow("seedvr2_color", "Color correction", ["lab", "wavelet", "adain", "none"], v,
         { hint: "Matches colors back to the image before upscaling; lab is the most faithful." }));
-      if (!v.seedvr2_input) add(selectRow("input_upscaler", "Upscaler for the original art", m.upscalers, v, { none: "(none: plain Lanczos resize)" }));
-    }
-    if (isOutside(v.upscaler)) {
-      sub("Original art");
-      add(selectRow("input_upscaler", "Upscaler for the original art", m.upscalers, v, { none: "(none: plain Lanczos resize)",
-        hint: `${esc(upName(v.upscaler))} runs outside ComfyUI, after it; this one enlarges the original art before the AI sees it.` }));
     }
   }
   const row = document.createElement("div");

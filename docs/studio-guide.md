@@ -97,7 +97,7 @@ its own tuning inside a look, so switching a look from Qwen to Flux and back los
 
 ### Look card
 
-- **Workflow:** Flux.1, Krea 2, Qwen 2.1, FLUX 3, Mage-Flow, FIBO 2 or Upscale. The edit models (Qwen, FLUX 3, Mage-Flow, FIBO 2)
+- **Workflow:** Flux.1, Krea 2, Qwen 2.1, FLUX 3, Mage-Flow, FIBO 2, MOSS or Upscale. The edit models (Qwen, FLUX 3, Mage-Flow, FIBO 2)
   have a fast/full switch underneath (Turbo · 8 steps / Full · 25 steps and so on). ⚠ marks a version whose model
   file isn't installed. See [Workflows](workflows.md) for which to use.
 - **Prompt:** describe the rendering, not the content. Naming materials ("timber, tiles") turned Midgar's
@@ -105,8 +105,8 @@ its own tuning inside a look, so switching a look from Qwen to Flux and back los
 - **Style images:** click to toggle, **+ Add** to upload. Off by default for the edit models, which copy content
   from them.
 - **Sliders:** only the ones the workflow uses. Flux.1 has repaint strength, structure lock, lock until, edge
-  sensitivity, prompt guidance and style influence; Krea 2 has repaint and style influence; the edit models have
-  style influence.
+  sensitivity, prompt guidance and style influence; Krea 2 has repaint and style influence; MOSS has repaint and
+  its depth lock; the edit models have style influence.
 - **Seed:** the same seed and settings give the same result. **New seed** for a different take.
 
 ### Output
@@ -115,9 +115,10 @@ its own tuning inside a look, so switching a look from Qwen to Flux and back los
   is 1280×960, 6× suits 1440p and 8× is close to 4K. Textures take about 1 MB per megapixel (roughly 8 GB for
   the whole game at 8×).
 - **Upscaler:** enlarges the render to the output size. The options are SeedVR2 (a diffusion upscaler, finer
-  detail), an ESRGAN model like 4x-UltraSharp, Lanczos (ImageMagick), or one of Upscayl's models. With SeedVR2,
-  "Also enlarge the original art with SeedVR2" uses it for the input too. Lanczos and Upscayl run outside ComfyUI
-  ([Workflows](workflows.md#upscalers)). Upscayl's models appear here once Upscayl is installed.
+  detail), an ESRGAN model like 4x-UltraSharp, Lanczos (ImageMagick), or one of Upscayl's models. Lanczos and
+  Upscayl run outside ComfyUI ([Workflows](workflows.md#upscalers)). Upscayl's models appear here once Upscayl is
+  installed. In the Upscale workflow with SeedVR2, "SeedVR2 works from the original pixels" skips the upscaler
+  before it.
 - **Detail pass** (Flux.1, Krea 2): repaints the full-size image in tiles for real texture at high scales. Slower.
 - **States pass:** repaints doors, lights and animation frames (Final only). See
   [How it works](how-it-works.md#doors-lights-and-animations).
@@ -127,7 +128,8 @@ its own tuning inside a look, so switching a look from Qwen to Flux and back los
 ### Advanced (collapsed)
 
 Render steps, CFG, render size (megapixels the model works at), edit margin, detail- and states-pass tuning
-(**States repaint** for the edit models), the model files (checkpoint, or diffusion model + text encoders + VAE),
+(**States repaint** for the edit models), **Original art** (the upscaler that enlarges the original for the AI,
+and by how much: [Workflows](workflows.md#original-art)), the model files (checkpoint, or diffusion model + text encoders + VAE),
 the Flux ControlNet, an extra LoRA, SeedVR2's model, VAE and color correction. **Refresh models** re-reads the
 lists from ComfyUI after you add files.
 

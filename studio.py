@@ -26,7 +26,7 @@ from PIL import Image
 from ff7bg import ai, looks, states, upscalers
 from ff7bg.comfy import (
     DEFAULT_SETTINGS, FAMILIES, FAMILY_PRESETS, Comfy, ComfyError, build_workflow, edit_keep, edit_padding,
-    tile_count, working_size,
+    tile_count, work_size,
 )
 from ff7bg.field import parse_background
 from ff7bg.lgp import LgpArchive
@@ -94,6 +94,7 @@ class Project:
             ai.prep(fields(), AI)
         self.jobs = json.loads(jobs_file.read_text())
         self.migrate()
+        self.migrate_input_upscaler()
         self.ready = True
         self.status = "ready"
 
@@ -128,6 +129,26 @@ class Project:
             if d.exists() and not any(p.is_file() for p in d.rglob("*")):
                 shutil.rmtree(d)
         marker.write_text(time.ctime())
+
+    def migrate_input_upscaler(self):
+        """One time (2026-10-21): the original art now always goes through "input_upscaler"; looks and
+        field overrides that relied on the output upscaler (or "seedvr2_input") for it keep their result."""
+        with self.looks.lock:
+            done = self.looks.data.setdefault("migrated", [])
+            if "input_upscaler" in done:
+                return
+            for look in self.looks.looks().values():
+                looks.pin_input_upscaler(look, DEFAULT_SETTINGS)
+        for name in self.jobs:
+            meta = self.meta(name)
+            ov = meta.get("override")
+            if ov:
+                look_id, _ = self.look_of(name, meta)
+                if looks.pin_input_upscaler(ov, looks.resolve([self.looks.get(look_id)])):
+                    self.update_meta(name, override=ov)
+        with self.looks.lock:
+            done.append("input_upscaler")
+            self.looks.save()
 
     def background(self, name):
         if name in self.bg_cache:
@@ -189,13 +210,18 @@ class Project:
             s.update(out_scale=min(4, s["out_scale"]), detail_pass=False)
         return s
 
-    def state_runs(self, name, work_mp):
-        """(ComfyUI runs, panels) the states pass needs for this field."""
-        key = (name, work_mp)
+    def render_k(self, name, s):
+        """How many times its size the AI renders this field at."""
+        w, h = self.jobs[name]["canvas"][2:]
+        return work_size(s, w, h)[0] // w
+
+    def state_runs(self, name, k):
+        """(ComfyUI runs, panels) the states pass needs for this field at render scale k."""
+        key = (name, k)
         if key not in self._state_runs:
             bg = self.background(name)
             defaults = {int(p): m for p, m in self.jobs[name].get("defaults", {}).items()}
-            self._state_runs[key] = states.count_runs(bg, canvas_rect(bg), defaults, work_mp)
+            self._state_runs[key] = states.count_runs(bg, canvas_rect(bg), defaults, k)
         return self._state_runs[key]
 
     def estimate(self, name, s, preview=False, exact_states=True):
@@ -207,6 +233,12 @@ class Project:
         no_detail = edit or fam == "upscale"
         outside = is_local(s["upscaler"])  # ImageMagick / Upscayl, after ComfyUI
         out_px = w * h * s["out_scale"] ** 2
+        pad = edit_padding(w, h, s["edit_margin"]) if edit else (0, 0, 0, 0)
+        in_w, in_h = w + pad[0] + pad[2], h + pad[1] + pad[3]
+        ww, wh = work_size(s, in_w, in_h)
+        mp = ww * wh / 1e6
+        size = mp / 1.23  # Flux.1 and Krea 2 were measured on Kalm at 1.23 MP
+        sheet_share = min(1.0, states.MAX_SHEET_MP / mp)  # states sheets stay within that size
         if fam == "upscale" and outside:
             # measured with Lanczos on elm: 3.1 s at 4x, 7.7 s at 8x, with 26 state panels
             up = upscalers.seconds(s["upscaler"], w * h, out_px)
@@ -221,11 +253,14 @@ class Project:
         elif fam == "krea2":
             # measured: 9 s at 8 steps without style images, 19 s with two (reference latents)
             per_step = 0.64 + 0.6 * min(len(s["style_refs"]), 3)
-            first, tile, sheet = 4 + per_step * s["steps"], 1.0 + 0.6 * s["detail_steps"], 4 + 1.2 * per_step * s["steps"]
+            first, tile, sheet = 4 + per_step * size * s["steps"], 1.0 + 0.6 * s["detail_steps"], 4 + 1.2 * per_step * s["steps"]
+        elif fam == "moss":
+            # measured on Kalm at 1.23 MP: about 7 s with 25 steps at CFG 2.5 (the sampler always runs
+            # every step, whatever the repaint strength), plus about 1 s for the depth lock
+            per = 0.085 * mp * s["steps"] * (2 if s["cfg"] > 1 else 1)
+            first = 1.5 + per + (1 if s["structure"] > 0 else 0)
+            tile, sheet = 1.0 + 0.18 * s["detail_steps"] * (2 if s["cfg"] > 1 else 1), 3 + 0.8 * per * sheet_share
         elif edit:
-            l, t, r, b = edit_padding(w, h, s["edit_margin"])
-            ww, wh = working_size(w + l + r, h + t + b, s["work_mp"])
-            mp = ww * wh / 1e6
             evals = s["steps"] * (2 if s["cfg"] > 1 else 1)  # CFG above 1 runs the model twice per step
             if fam == "qwen21":
                 # Turbo, measured: ~13 s at 1.5 MP, ~21 s at 2.9 MP (with style images)
@@ -233,18 +268,22 @@ class Project:
             elif fam == "flux3k":
                 per = 0.25 * mp * evals  # about 4 s per megapixel at 16 steps on a 5090
             elif fam == "fibo2":
-                per = 0.35 * mp * evals  # 8B; a guess until measured
+                per = 0.35 * mp * evals  # 8B; Kalm (1.6 MP, Edit Turbo): 13 s with SeedVR2 before and after
             else:  # mageflow; Turbo measured 1-3 s at 1.6 MP
                 per = 0.5 * mp * evals
-            first, tile, sheet = 4 + per, 0, 6 + 0.8 * per
+            first, tile, sheet = 4 + per, 0, 6 + 0.8 * per * sheet_share
         else:
-            first = 5 + 0.55 * s["steps"]
+            first = 5 + 0.55 * s["steps"] * size
             tile = 3.7 * s["detail_steps"] / 8 * (1.15 if s["detail_style"] else 1)
             sheet = 4 + 0.8 * s["steps"]
+        if fam != "upscale":  # the original art, enlarged for the AI
+            if s["input_upscaler"] == "seedvr2":
+                first += 2 * size
+            elif is_local(s["input_upscaler"]):
+                first += upscalers.seconds(s["input_upscaler"], in_w * in_h, ww * wh)
         if s["upscaler"] == "seedvr2":  # measured: 3.4 s at 4x, 23 s at 8x
-            first += 3.4 * (s["out_scale"] / 4) ** 2.75 + (2 if s["seedvr2_input"] else 0)
+            first += 3.4 * (s["out_scale"] / 4) ** 2.75 + (2 if fam == "upscale" and s["seedvr2_input"] else 0)
         elif outside and fam != "upscale":
-            ww, wh = working_size(w, h, s["work_mp"])
             up = upscalers.seconds(s["upscaler"], ww * wh, out_px)
             sheet += 0.5 * up  # states sheets are about half a field
             if not (s["detail_pass"] and not no_detail):  # the detail pass has a Lanczos resize in the graph
@@ -255,8 +294,8 @@ class Project:
                 out["tiles"] = tile_count(w * s["out_scale"], h * s["out_scale"])
                 out["detail"] = out["tiles"] * tile
             if s["states_pass"]:
-                key = (name, s["work_mp"])
-                runs = self.state_runs(name, s["work_mp"])[0] if exact_states or key in self._state_runs else AVG_STATE_RUNS
+                k = self.render_k(name, s)
+                runs = self.state_runs(name, k)[0] if exact_states or (name, k) in self._state_runs else AVG_STATE_RUNS
                 out["sheets"], out["states"] = runs, runs * sheet
         out["total"] = out["render"] + out["detail"] + out["states"]
         return out
@@ -339,7 +378,7 @@ class Project:
             look_keys = looks.layer_keys(look, look_family)
             ov_keys = looks.layer_keys(ov, eff["family"])
         prev = dict(eff, out_scale=min(4, eff["out_scale"]), detail_pass=False)
-        runs, panels = self.state_runs(name, eff["work_mp"])
+        runs, panels = self.state_runs(name, self.render_k(name, eff))
         auto_id, auto_how = self.looks.resolve_look(name, self.jobs[name]["copies"])
         return {
             "look": {"id": look_id, "how": how, "name": look.get("name", look_id),
@@ -522,6 +561,16 @@ class Worker(threading.Thread):
             source = AI / "input_edit" / f"{name}.png"
             source.parent.mkdir(exist_ok=True)
             Image.fromarray(padded).save(source)
+        if is_local(s["input_upscaler"]) and (s["family"] != "upscale" or (
+                s["upscaler"] == "seedvr2" and not s["seedvr2_input"])):
+            # ImageMagick / Upscayl enlarge the original art here; the graph's resize then changes nothing
+            self._stage("upscaling input", 0.03)
+            img = np.asarray(Image.open(source).convert("RGB"))
+            iw, ih = img.shape[1], img.shape[0]
+            tw, th = (iw * s["out_scale"], ih * s["out_scale"]) if s["family"] == "upscale" else work_size(s, iw, ih)
+            source = AI / "input_up" / f"{name}.png"
+            source.parent.mkdir(exist_ok=True)
+            Image.fromarray(upscalers.upscale(img, s["input_upscaler"], tw, th, cancelled)).save(source)
         inp = comfy.upload(source)
         refs = [comfy.upload(STYLES / r, "ff7studio_styles") for r in s["style_refs"] if (STYLES / r).exists()]
         wf = build_workflow(s, inp, w, h, f"ff7studio/{name}", refs, pad)
@@ -1009,7 +1058,7 @@ def api_version_use(name, vid):
     if not vs.render_path(name, vid):
         abort(404)
     s = project.effective(name, vs.meta(name, vid).get("family"))
-    need_states = (s["states_pass"] and project.state_runs(name, s["work_mp"])[0] > 0
+    need_states = (s["states_pass"] and project.state_runs(name, project.render_k(name, s))[0] > 0
                    and not (vs.states_dir(name, vid) / "states.json").exists())
     switched = False
     if vs.has_pages(name, vid):
@@ -1068,6 +1117,7 @@ def api_models():
         "controlnets": ("ControlNetLoader", "control_net_name"),
         "upscalers": ("UpscaleModelLoader", "model_name"),
         "loras": ("LoraLoaderModelOnly", "lora_name"),
+        "depth_models": ("LoadDA3Model", "model_name"),
     }
     out = {"online": True, "presets": FAMILY_PRESETS, "local": local,
            "nodes": {f: comfy.has_node(spec["node"]) for f, spec in FAMILIES.items() if spec.get("node")}}

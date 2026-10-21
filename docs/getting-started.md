@@ -71,7 +71,17 @@ first. The license is free for individuals and companies under $5M annual revenu
 | `qwen3vl_4b_bf16.safetensors` | `text_encoders` | (same as FLUX 3) |
 | `mage_flow_vae_bf16.safetensors` | `vae` | [Comfy-Org/Mage-Flow](https://huggingface.co/Comfy-Org/Mage-Flow/resolve/main/vae/mage_flow_vae_bf16.safetensors) |
 
-### FIBO 2 (needs a ComfyUI newer than 0.42.1)
+### MOSS-Image
+
+| File | Folder | Download |
+|---|---|---|
+| `moss_image_sft_int8_convrot.safetensors` | `diffusion_models` | [Comfy-Org/MOSS-Image](https://huggingface.co/Comfy-Org/MOSS-Image/resolve/main/diffusion_models/moss_image_sft_int8_convrot.safetensors) |
+| `qwen3.5_9b_w4a8_gptq.safetensors` | `text_encoders` | [Comfy-Org/MOSS-Image](https://huggingface.co/Comfy-Org/MOSS-Image/resolve/main/text_encoders/qwen3.5_9b_w4a8_gptq.safetensors) |
+| `flux2-vae.safetensors` | `vae` | (same as FLUX 3) |
+| `moss_image_color_depth_control.safetensors` (depth lock) | `loras` | [Comfy-Org/MOSS-Image](https://huggingface.co/Comfy-Org/MOSS-Image/resolve/main/loras/moss_image_color_depth_control.safetensors) |
+| `depth_anything_3_mono_large.safetensors` (depth lock) | `geometry_estimation` | [Comfy-Org/Depth-Anything-3](https://huggingface.co/Comfy-Org/Depth-Anything-3/resolve/main/geometry_estimation/depth_anything_3_mono_large.safetensors) |
+
+### FIBO 2 (needs a ComfyUI from late October 2026)
 
 Non-commercial license (CC BY-NC 4.0).
 

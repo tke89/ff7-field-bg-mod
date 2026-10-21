@@ -18,9 +18,10 @@ import threading
 import time
 from pathlib import Path
 
-from .comfy import DEFAULT_SETTINGS, FAMILY_PRESETS
+from .comfy import DEFAULT_SETTINGS, FAMILY_PRESETS, SEEDVR2
+from .upscalers import is_local
 
-FAMILIES = ("flux1", "krea2", "qwen21", "flux3k", "mageflow", "fibo2", "upscale")
+FAMILIES = ("flux1", "krea2", "qwen21", "flux3k", "mageflow", "fibo2", "moss", "upscale")
 
 # Settings that belong to a workflow (stored per profile); everything else is shared by the look.
 FAMILY_KEYS = {
@@ -28,7 +29,7 @@ FAMILY_KEYS = {
     "controlnet", "lora", "lora_strength", "steps", "cfg", "denoise", "structure", "structure_end",
     "canny_low", "canny_high", "guidance", "style_ref_strength", "detail_pass", "detail_denoise",
     "detail_steps", "detail_structure", "detail_style", "align", "edit_margin", "work_mp",
-    "state_denoise_boost", "state_denoise",
+    "state_denoise_boost", "state_denoise", "input_upscaler", "input_scale",
 }
 SHARED_KEYS = (set(DEFAULT_SETTINGS) - FAMILY_KEYS) | {"family"}
 
@@ -161,6 +162,28 @@ def split_flat(flat, family):
         else:
             layer["settings"][k] = v
     return layer
+
+
+def pin_input_upscaler(layer, below):
+    """Until 2026-10-21 the original art went through the output upscaler when that was an ESRGAN model,
+    through SeedVR2 with "seedvr2_input", else through input_upscaler; now always through input_upscaler.
+    Pin the old choice in a layer that relied on it (below: effective settings under the layer).
+    Returns whether the layer changed."""
+    st = layer.get("settings", {})
+    if "input_upscaler" in st or not ({"upscaler", "seedvr2_input"} & set(st)):
+        return False
+    s = {**below, **st}
+    up = s["upscaler"]
+    if up == SEEDVR2:
+        old = SEEDVR2 if s["seedvr2_input"] else s["input_upscaler"]
+    else:
+        old = s["input_upscaler"] if is_local(up) else up
+    if old == s["input_upscaler"]:
+        return False
+    st["input_upscaler"] = old
+    # the Upscale workflow reads input_upscaler as "the upscaler before SeedVR2": keep its old one
+    layer.setdefault("profiles", {}).setdefault("upscale", {}).setdefault("input_upscaler", s["input_upscaler"])
+    return True
 
 
 def slug(name):
