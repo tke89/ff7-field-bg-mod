@@ -139,7 +139,7 @@ its own tuning inside a look, so switching a look from Qwen to Flux and back los
 ### Advanced (collapsed)
 
 Render steps, prompt strength, render size (megapixels the model works at), border padding, detail- and states-pass tuning
-(**States repaint** for the edit models), **Original art** (the upscaler that enlarges the original for the AI,
+(**States repaint**, plus **Hidden parts extra repaint** for Flux.1, Krea 2 and MOSS), **Original art** (the upscaler that enlarges the original for the AI,
 and by how much: [Workflows](workflows.md#original-art)), the model files (checkpoint, or diffusion model + text encoders + VAE),
 the Flux ControlNet, an extra LoRA, SeedVR2's model, VAE and color correction. **Refresh models** re-reads the
 lists from ComfyUI after you add files.

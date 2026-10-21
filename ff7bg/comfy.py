@@ -61,9 +61,13 @@ DEFAULT_SETTINGS = {
     "detail_style": False,     # run the detail pass with the style-image model too
     # States pass: doors, lights and animation frames, repainted in place against the new scene.
     "states_pass": True,
-    "state_denoise_boost": 0.1,  # extra repaint over the field's, to blend pasted original art in
-    # Edit models: how much of each state's own (original) art the states pass repaints. 1 repaints from
-    # scratch, which gave every animation frame its own design; lower keeps each frame's shape.
+    # Repainting models (Flux.1, Krea 2, MOSS): a spot the main render doesn't show (a fan spinning in an
+    # empty window) is painted from original art pasted into the scene, at the field's repaint plus this.
+    "state_denoise_boost": 0.1,
+    # How strongly every other frame is repainted: it starts from the restyled scene plus what changes in
+    # the original, so it only needs to be light. Edit models: 1 repaints from scratch, which gave every
+    # animation frame its own design. Repainting models get 0.3 (FAMILY_PRESETS): blin1's flickering
+    # hologram became a different staircase in each frame at 0.7 (MOSS at 0.5 plus 0.2 extra).
     "state_denoise": 0.5,
     "style_refs": [],             # file names in studio/styles; none by default
     "style_ref_strength": 0.5,
@@ -104,10 +108,11 @@ DEFAULT_SETTINGS = {
 # What switching family in the Studio sets (the files are the ones the official ComfyUI templates use).
 FAMILY_PRESETS = {
     "flux1": {"family": "flux1", "model_source": "checkpoint", "checkpoint": "flux1-dev-fp8.safetensors",
-              "steps": 20, "detail_steps": 8},
+              "steps": 20, "detail_steps": 8, "state_denoise": 0.3},
     "krea2": {"family": "krea2", "model_source": "separate", "unet": "krea2_turbo_fp8_scaled.safetensors",
               "unet_dtype": "default", "clip1": "qwen3vl_4b_fp8_scaled.safetensors", "clip2": "",
-              "clip_type": "krea2", "vae": "qwen_image_vae.safetensors", "steps": 8, "detail_steps": 4},
+              "clip_type": "krea2", "vae": "qwen_image_vae.safetensors", "steps": 8, "detail_steps": 4,
+              "state_denoise": 0.3},
     # Qwen-Image 2.1 Turbo edit: fixed 8-step schedule, renders ~2K natively (so no detail pass),
     # and its slight reframing is undone by the auto-align step.
     "qwen21": {"family": "qwen21", "model_source": "separate",
@@ -140,7 +145,7 @@ FAMILY_PRESETS = {
              "unet": "moss_image_sft_int8_convrot.safetensors", "unet_dtype": "default",
              "clip1": "qwen3.5_9b_w4a8_gptq.safetensors", "clip2": "", "clip_type": "moss_image",
              "vae": "flux2-vae.safetensors", "steps": 25, "cfg": 2.5, "denoise": 0.5,
-             "depth_lock": 1.0, "detail_steps": 8},
+             "depth_lock": 1.0, "detail_steps": 8, "state_denoise": 0.3},
     # Upscale only: no diffusion model; the original art goes straight through the upscaler.
     "upscale": {"family": "upscale", "align": False, "detail_pass": False},
 }
@@ -706,7 +711,8 @@ def build_states_workflow(s, ctx_name, orig_name, mask_name, gen_w, gen_h, out_w
     the sheet's size (the new art plus what the state changes in the original, see states.run), or
     for the Upscale workflow the states' original art at 1x; mask: the pixels each state changes.
     The masked areas are re-rendered with the field's own settings, so every state ends up in the
-    same style as the scene around it."""
+    same style as the scene around it. denoise: the repaint strength (None: the edit models'
+    state_denoise; the repainting models' own repaint plus state_denoise_boost)."""
     if _family(s).get("upscale"):  # the states' original art through the same upscaler
         wf = {"orig": {"class_type": "LoadImage", "inputs": {"image": orig_name}}}
         result = _upscale_chain(wf, s, ["orig", 0], out_w, out_h)
@@ -734,7 +740,7 @@ def build_states_workflow(s, ctx_name, orig_name, mask_name, gen_w, gen_h, out_w
         (positive, negative), _ = _conditioning(wf, s, clip, vae, orig_gen, refs)
         styled = _control_chain(wf, s, _style_chain(wf, s, base, refs, gen_w, gen_h), orig_gen, ["enc", 0], vae)
         wf["sample"] = _sampler(s, styled, positive, negative, ["noise_mask", 0], s["steps"],
-                                min(0.95, s["denoise"] + s["state_denoise_boost"]))
+                                min(0.95, s["denoise"] + s["state_denoise_boost"]) if denoise is None else denoise)
     wf["dec"] = {"class_type": "VAEDecode", "inputs": {"samples": ["sample", 0], "vae": vae}}
     result = _resize(wf, "final", s, ["dec", 0], out_w, out_h)
     wf["save"] = {"class_type": "SaveImage", "inputs": {"images": result, "filename_prefix": prefix}}

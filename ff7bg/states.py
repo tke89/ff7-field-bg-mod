@@ -11,8 +11,8 @@ as few images as possible. When a cluster is on in the main render, an extra "al
 what's underneath it.
 
 Only the pixels a state actually changes (compared with the view the main render shows) are repainted
-and replaced; everywhere else a panel is the main render itself, so tile edges can't show seams. Edit
-models repaint those pixels partially (state_denoise), so each frame keeps its own shape.
+and replaced; everywhere else a panel is the main render itself, so tile edges can't show seams. They're
+repainted only partially (state_denoise), so each frame keeps its own shape and the frames one design.
 """
 import io
 import json
@@ -208,10 +208,11 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
     """Restyle every state; returns panels for ai.build_pages and saves them under work_dir.
 
     Round 1 paints a key frame for each spot the main render doesn't show (a fan that's always
-    spinning, a light switched on later). Round 2 derives every other state from its key (the main
-    render itself where it shows the spot): it starts from the key plus what changes in the original
-    (a needle moving, a door opening) and repaints only those pixels, lightly, so frames stay one
-    design. The Upscale workflow instead sends each state's original art through its upscaler (comfy
+    spinning, a light switched on later): strongly, as it starts from original art (0.85 for the edit
+    models, the field's repaint plus state_denoise_boost for the others). Round 2 derives every other
+    state from its key (the main render itself where it shows the spot): it starts from the key plus
+    what changes in the original (a needle moving, a door opening) and repaints only those pixels, at
+    state_denoise, so frames stay one design. The Upscale workflow instead sends each state's original art through its upscaler (comfy
     may be None when that runs outside ComfyUI)."""
     work_dir = Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -350,7 +351,7 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
 
     todo = [(c, s) for c, s in derived if upscale_only or changed_from_key(c, s).any()]
     painted2 = paint(todo, derived_start, changed_from_default if upscale_only else changed_from_key,
-                     None if not edit else settings["state_denoise"]) if todo else {}
+                     settings["state_denoise"]) if todo else {}
 
     panels = {"images": {}, "off": []}
     index = []

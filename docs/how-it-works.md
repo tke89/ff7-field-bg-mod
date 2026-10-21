@@ -81,10 +81,13 @@ match each other:
   can't show as a lighter or darker patch.
 - **Frames are derived from a key.** Where the main render already shows a spot, it is the key.
   - Each state starts from the key plus *what that state changes in the original* (color-matched), and is
-    repainted lightly: **States repaint**, 0.5 by default for the edit models. Frames keep the main render's
-    design, and only the moving part differs.
+    repainted lightly: **States repaint**, 0.3 for Flux.1, Krea 2 and MOSS and 0.5 for the edit models. Frames
+    keep the main render's design, and only the moving part differs. This doesn't follow the scene's Repaint
+    strength: MOSS at 0.5 plus 0.2 turned blin1's flickering hologram into a different staircase in every frame,
+    and its open lift doors into glowing panels.
   - When a state replaces most of a spot (at least 30%) that the main render shows differently, a key frame is
-    painted first, from the original art pasted into the scene at 0.85. The others are derived from it. Kalm's fan
+    painted first, from the original art pasted into the scene: at 0.85 for the edit models, and at the Repaint
+    strength plus **Hidden parts extra repaint** (0.1) for the others. The others are derived from it. Kalm's fan
     is one: it's always spinning in front of an empty window.
 - **"All off" panels.** When a state is on in the main render, an extra panel paints what's underneath it, for
   when the game switches it off. It's used only where the state actually covers the scene; around a door, the

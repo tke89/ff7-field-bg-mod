@@ -189,13 +189,16 @@ const SL = {
     what: "Holds outlines in place during the detail pass too.",
     up: "outlines stay exactly put", down: "0 is off",
     rec: "0 (it made no visible difference in testing)", recValue: 0 },
-  state_denoise: { label: "States repaint", min: 0.2, max: 1, step: 0.05,
-    what: "How much doors, lights and animation frames are repainted to match the new style.",
-    up: "they take on more of the new style, but animation frames can stop matching each other",
-    down: "frames stay consistent with each other and the scene, but keep more of the original art",
-    rec: "0.5", recValue: 0.5 },
-  state_denoise_boost: { label: "States extra repaint", min: 0, max: 0.3, step: 0.01,
-    what: "Doors, lights and animation frames start as original art pasted into the new scene. This repaints them a little more than the scene, so they blend in.",
+  state_denoise: { label: "States repaint", min: 0.1, max: 1, step: 0.05,
+    what: "How much doors, lights and animation frames are repainted to match the new style. Each one starts from the new scene with only what moves or changes painted in, so it only needs a light touch.",
+    up: "they take on more of the new style, but frames can turn into made-up objects and stop matching each other",
+    down: "frames match each other and the scene, but the moving bits keep more of the original art",
+    rec: "0.5", recValue: 0.5,
+    by: Object.fromEntries(["flux1", "krea2", "moss"].map((f) => [f, {
+      up: "they take on more of the new style, but frames can turn into made-up objects and stop matching each other (at 0.7, blin1's flickering hologram became a different staircase in every frame)",
+      rec: "0.3", recValue: 0.3 }])) },
+  state_denoise_boost: { label: "Hidden parts extra repaint", min: 0, max: 0.3, step: 0.01,
+    what: "Some animated parts never appear in the main picture, like a fan that's always spinning in front of an empty window. They start as original art pasted into the new scene and are repainted at your Repaint strength plus this much, so they blend in. Everything else uses States repaint.",
     up: "blends in better, but shapes can drift from the original",
     down: "keeps their shapes, but they may look pasted on",
     rec: "0.1", recValue: 0.1 },
@@ -1348,7 +1351,10 @@ function renderAdvanced(v) {
         "Uses the style images in the detail pass too. About 15% slower, and faint seams can show between tiles.", "off")));
     }
   }
-  if (v.states_pass) add(slider(EDIT.has(fam) ? "state_denoise" : "state_denoise_boost", v));
+  if (v.states_pass) {
+    add(slider("state_denoise", v));
+    if (!EDIT.has(fam)) add(slider("state_denoise_boost", v));
+  }
 
   sub("Original art");
   {
