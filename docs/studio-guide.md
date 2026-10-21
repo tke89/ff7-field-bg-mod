@@ -105,8 +105,8 @@ its own tuning inside a look, so switching a look from Qwen to Flux and back los
 - **Style images:** click to toggle, **+ Add** to upload. Off by default for the edit models, which copy content
   from them.
 - **Sliders:** only the ones the workflow uses. Flux.1 has repaint strength, structure lock, lock until, edge
-  sensitivity, prompt guidance and style influence; Krea 2 has repaint and style influence; MOSS has repaint and
-  its depth lock; the edit models have style influence.
+  sensitivity, prompt guidance and style influence; Krea 2 has repaint, depth lock and style influence; MOSS has
+  repaint and its depth lock; the edit models have style influence.
 - **Seed:** the same seed and settings give the same result. **New seed** for a different take.
 
 ### Output

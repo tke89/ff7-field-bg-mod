@@ -15,7 +15,7 @@ settings for every workflow. Model files and download links are in
 | **FIBO 2 Edit Turbo** | very well (99% of outlines on Kalm) | clean and neutral; loses night grading | about 13 s | a clean, realistic take |
 | **MOSS-Image** | well, with its depth lock | strong painterly restyle | about 7–15 s | bold restyles that keep the scene |
 | **Flux.1** | well (ControlNet structure lock) | depends heavily on settings | about 15–20 s | style images (USO), the detail pass |
-| **Krea 2 Turbo** | only at low repaint | good, stylised | about 9–19 s | experimenting; no structure lock |
+| **Krea 2 Turbo** | only at low repaint (a depth lock is wired in, untested) | good, stylised | about 9–19 s | experimenting |
 | **Upscale** | exactly (no restyle) | the original, sharper | about 2–4 s | a faithful HD version, or a baseline |
 
 The **Try all workflows** button previews a field with every installed workflow at once, which is the quickest
@@ -84,7 +84,7 @@ older ComfyUI the workflow button shows ⚠ and **Try all workflows** skips it.
 OpenMOSS's 5B MOSS-Image (released 16 October 2026) is a text-to-image model, so like Krea 2 it repaints the
 original partially (**Repaint strength**) instead of editing it. No style images.
 
-- **Depth lock** (the **Structure lock** slider; 0 turns it off). Depth Anything 3 measures the original's depth
+- **Depth lock** (0 turns it off). Depth Anything 3 measures the original's depth
   and MOSS's color/depth control adapter holds the scene to it, through ComfyUI's `MOSSImageControl` node. It
   needs two extra files ([Getting started](getting-started.md#moss-image)).
 - Kalm, outlines kept:
@@ -133,7 +133,7 @@ global-only, warping bent redesigned textures.
 ## Krea 2 Turbo
 
 8 steps. Style images go through Krea's style-reference LoRA (Style image influence is its strength; it was
-trained on 1–2 images). There's **no structure lock**, so the layout is held only by a low repaint strength.
+trained on 1–2 images). Without its depth lock, the layout is held only by a low repaint strength.
 
 | Repaint | Outlines kept (Kalm) |
 |---|---|
@@ -143,6 +143,14 @@ trained on 1–2 images). There's **no structure lock**, so the layout is held o
 
 Midgar's station dropped to 71% already at 0.35, so stay around 0.2–0.3. A render takes about 9 s without style
 images and about 19 s with two.
+
+**Depth lock** (off by default). Krea 2 has no ControlNet of its own; the community depth ControlNet-LoRA
+([Patil/Krea-2-depth-controlnet](https://huggingface.co/Patil/Krea-2-depth-controlnet), Krea 2 Community
+License) adds one, the same idea as MOSS's: Depth Anything 3 measures the original's depth and the render keeps
+it. 1 holds strictly, 0.6 leaves more freedom. ComfyUI doesn't run it natively: it needs the
+[comfyui-krea2-controlnet](https://github.com/facok/comfyui-krea2-controlnet) node pack, installed with ComfyUI
+Manager ([Getting started](getting-started.md#krea-2-turbo)). Without it the slider is dimmed, and a render with
+the lock on stops with a message. Not tested here yet.
 
 ## Upscale
 

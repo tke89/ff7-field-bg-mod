@@ -254,11 +254,13 @@ class Project:
             # measured: 9 s at 8 steps without style images, 19 s with two (reference latents)
             per_step = 0.64 + 0.6 * min(len(s["style_refs"]), 3)
             first, tile, sheet = 4 + per_step * size * s["steps"], 1.0 + 0.6 * s["detail_steps"], 4 + 1.2 * per_step * s["steps"]
+            if s["depth_lock"] > 0:  # the depth map, and twice the input channels; a guess until measured
+                first, sheet = first + 1.5 + 0.1 * per_step * size * s["steps"], sheet + 1.5
         elif fam == "moss":
             # measured on Kalm at 1.23 MP: about 7 s with 25 steps at CFG 2.5 (the sampler always runs
             # every step, whatever the repaint strength), plus about 1 s for the depth lock
             per = 0.085 * mp * s["steps"] * (2 if s["cfg"] > 1 else 1)
-            first = 1.5 + per + (1 if s["structure"] > 0 else 0)
+            first = 1.5 + per + (1 if s["depth_lock"] > 0 else 0)
             tile, sheet = 1.0 + 0.18 * s["detail_steps"] * (2 if s["cfg"] > 1 else 1), 3 + 0.8 * per * sheet_share
         elif edit:
             evals = s["steps"] * (2 if s["cfg"] > 1 else 1)  # CFG above 1 runs the model twice per step
@@ -553,6 +555,7 @@ class Worker(threading.Thread):
         comfy = Comfy(self.p.comfy_url)
         if not comfy.online():
             raise ComfyError(f"ComfyUI isn't reachable at {self.p.comfy_url}; start ComfyUI and try again")
+        check_lock_node(comfy, s)
         self._stage("uploading", 0.02)
         if s.get("family") in EDIT_FAMILIES:
             # edit models reframe slightly: give them a blurred margin, mostly cropped off inside the workflow
@@ -650,6 +653,7 @@ class Worker(threading.Thread):
                 comfy = Comfy(self.p.comfy_url)
                 if not comfy.online():
                     raise ComfyError(f"ComfyUI isn't reachable at {self.p.comfy_url}; start ComfyUI and try again")
+                check_lock_node(comfy, s)
                 refs = [comfy.upload(STYLES / r, "ff7studio_styles") for r in s["style_refs"] if (STYLES / r).exists()]
             panels = states.run(
                 comfy, bg, main["rect"], main, s, refs, sdir,
@@ -669,6 +673,14 @@ class Worker(threading.Thread):
         })
         if self.p.current(name) == vid:  # rebuilt the one the game uses
             self.p.make_current(name, vid)
+
+
+def check_lock_node(comfy, s):
+    """The depth lock of some workflows needs a node pack ComfyUI may not have."""
+    node = FAMILIES.get(s.get("family"), {}).get("lock_node")
+    if node and s["depth_lock"] > 0 and not comfy.has_node(node):
+        raise ComfyError("the depth lock needs the comfyui-krea2-controlnet node pack: install it with ComfyUI "
+                         "Manager and restart ComfyUI, or set Depth lock to 0")
 
 
 # ---------------------------------------------------------------- rendering helpers
@@ -1120,7 +1132,8 @@ def api_models():
         "depth_models": ("LoadDA3Model", "model_name"),
     }
     out = {"online": True, "presets": FAMILY_PRESETS, "local": local,
-           "nodes": {f: comfy.has_node(spec["node"]) for f, spec in FAMILIES.items() if spec.get("node")}}
+           "nodes": {f: comfy.has_node(spec["node"]) for f, spec in FAMILIES.items() if spec.get("node")},
+           "lock_nodes": {f: comfy.has_node(spec["lock_node"]) for f, spec in FAMILIES.items() if spec.get("lock_node")}}
     for key, (node, field) in lists.items():
         try:
             out[key] = comfy.models(node, field)

@@ -42,7 +42,7 @@ function toast(msg, ms = 4500) {
 const LAYER_NAMES = { 0: "L0 floor & walls", 1: "L1 objects", 2: "L2 back", 3: "L3 front" };
 const FAMILIES = {
   flux1: { short: "Flux.1", hint: "Flux.1 dev: a structure lock (ControlNet) holds the edges in place; USO style images; ~20 steps." },
-  krea2: { short: "Krea 2", hint: "Krea 2 Turbo: 8 steps; style images through the style-reference LoRA; no structure lock." },
+  krea2: { short: "Krea 2", hint: "Krea 2 Turbo: 8 steps; style images through the style-reference LoRA; an optional depth lock (community Krea2 Control nodes)." },
   qwen21: { short: "Qwen 2.1", hint: "Qwen-Image 2.1: an edit model that keeps the layout well; style images as references; renders ~2K." },
   flux3k: { short: "FLUX 3", hint: "FLUX 3 Image Klein (Black Forest Labs, Oct 2026): an edit model that renders up to 4K natively; style images as references." },
   mageflow: { short: "Mage-Flow", hint: "Mage-Flow Edit (Microsoft, 4B): a small, very fast edit model; style images as references." },
@@ -69,10 +69,14 @@ const pct = (v) => `${Math.round(v * 100)}%`;
 // Sliders; helpBy overrides the help text for one workflow.
 const SL = {
   denoise: { label: "Repaint strength", min: 0.1, max: 0.95, step: 0.01, help: "How much the AI may repaint. Low keeps the original, high restyles more.",
-    helpBy: { krea2: "No structure lock on Krea 2: about 0.2-0.3 keeps the layout.",
+    helpBy: { krea2: "Without the depth lock, about 0.2-0.3 keeps the layout.",
               moss: "With the depth lock, 0.5 restyles strongly and kept 90% of Kalm's outlines; much above 0.6, walk-behind spots stop lining up. Without the lock, stay around 0.3-0.35." } },
-  structure: { label: "Structure lock", min: 0, max: 1.5, step: 0.05, help: "How strongly edges are held to the original layout.",
-    helpBy: { moss: "Depth lock: Depth Anything 3 measures the original's depth and MOSS's control adapter holds the scene to it. 1 is its trained strength; 0 turns it off. Much higher looks sketchy." } },
+  structure: { label: "Structure lock", min: 0, max: 1.5, step: 0.05, help: "How strongly edges are held to the original layout." },
+  depth_lock: { label: "Depth lock", min: 0, max: 1.5, step: 0.05,
+    help: "Depth Anything 3 measures the original's depth and a control adapter holds the render to it. 1 is the trained strength; 0 turns it off.",
+    helpBy: { moss: "Depth Anything 3 measures the original's depth and MOSS's control adapter holds the scene to it. 1 is its trained strength; 0 turns it off. Much higher looks sketchy.",
+              krea2: "Depth Anything 3 measures the original's depth and the community Krea 2 depth ControlNet-LoRA holds the scene to it. 0.6 leaves more freedom, 1 holds strictly; 0 turns it off." } },
+  depth_lock_end: { label: "Depth lock until", min: 0.3, max: 1, step: 0.05, help: "Share of the render steps the depth lock applies to.", fmt: pct },
   structure_end: { label: "Lock until", min: 0.3, max: 1, step: 0.05, help: "Share of the render steps the structure lock applies to.", fmt: pct },
   input_scale: { label: "Scale", min: 0, max: 8, step: 1, fmt: (v) => v ? `${v}×` : "Auto",
     help: "How much the original art is enlarged for the AI, which renders at that size. Auto: the largest whole multiple within Render size." },
@@ -100,12 +104,12 @@ const SL = {
 };
 const LOOK_SLIDERS = {
   flux1: ["denoise", "structure", "structure_end", "canny_low", "guidance", "style_ref_strength"],
-  krea2: ["denoise", "style_ref_strength"],
+  krea2: ["denoise", "depth_lock", "style_ref_strength"],
   qwen21: ["style_ref_strength"],
   flux3k: ["style_ref_strength"],
   mageflow: ["style_ref_strength"],
   fibo2: ["style_ref_strength"],
-  moss: ["denoise", "structure", "structure_end"],
+  moss: ["denoise", "depth_lock", "depth_lock_end"],
   upscale: [],
 };
 const KEY_LABELS = {
@@ -806,9 +810,12 @@ function renderStyle() {
 
   const box = $("#lookSliders");
   box.innerHTML = "";
+  const lockNode = ((S.models && S.models.lock_nodes) || {})[fam];
   for (const k of LOOK_SLIDERS[fam]) {
-    box.appendChild(slider(k, v, { dim: k === "style_ref_strength" && !v.style_refs.length,
-      help: k === "style_ref_strength" && !v.style_refs.length ? "No style images selected." : "" }));
+    const noRefs = k === "style_ref_strength" && !v.style_refs.length, noNode = k === "depth_lock" && lockNode === false;
+    box.appendChild(slider(k, v, { dim: noRefs || noNode,
+      help: noRefs ? "No style images selected."
+        : noNode ? "Needs the comfyui-krea2-controlnet node pack: install it with ComfyUI Manager and restart ComfyUI. Until then, keep this at 0." : "" }));
   }
 
   const seed = $("#seedRow");
@@ -1049,6 +1056,10 @@ function renderAdvanced(v) {
       if (base && !looksKrea2(base)) warns.push(`"${base}" doesn't look like a Krea 2 model.`);
       if (v.style_refs.length > 2) warns.push(`Krea 2's style-reference LoRA was trained on 1-2 images; ${v.style_refs.length} are selected (only the first 3 are used).`);
       if (v.style_refs.length && !(m.loras || []).includes("krea2_style_reference.safetensors")) warns.push("Style images need loras/krea2_style_reference.safetensors.");
+      if (v.depth_lock > 0 && !(m.loras || []).includes("krea2_depth_control_lora.safetensors"))
+        warns.push("The depth lock needs loras/krea2_depth_control_lora.safetensors (depth-control-lora.safetensors from Patil/Krea-2-depth-controlnet, renamed); or set Depth lock to 0.");
+      if (v.depth_lock > 0 && !(m.depth_models || []).includes("depth_anything_3_mono_large.safetensors"))
+        warns.push("The depth lock needs geometry_estimation/depth_anything_3_mono_large.safetensors (Comfy-Org/Depth-Anything-3); or set Depth lock to 0.");
     } else if (fam === "qwen21") {
       if (base && !looksQwen21(base)) warns.push(`"${base}" doesn't look like a Qwen-Image 2.1 model.`);
     } else if (fam === "flux3k") {
@@ -1060,10 +1071,10 @@ function renderAdvanced(v) {
       if (base && !/fibo/i.test(base)) warns.push(`"${base}" doesn't look like a FIBO 2.0 model.`);
     } else if (fam === "moss") {
       if (base && !/moss/i.test(base)) warns.push(`"${base}" doesn't look like a MOSS-Image model.`);
-      if (v.structure > 0 && !(m.loras || []).includes("moss_image_color_depth_control.safetensors"))
-        warns.push("The depth lock needs loras/moss_image_color_depth_control.safetensors (Comfy-Org/MOSS-Image); or set Structure lock to 0.");
-      if (v.structure > 0 && !(m.depth_models || []).includes("depth_anything_3_mono_large.safetensors"))
-        warns.push("The depth lock needs geometry_estimation/depth_anything_3_mono_large.safetensors (Comfy-Org/Depth-Anything-3); or set Structure lock to 0.");
+      if (v.depth_lock > 0 && !(m.loras || []).includes("moss_image_color_depth_control.safetensors"))
+        warns.push("The depth lock needs loras/moss_image_color_depth_control.safetensors (Comfy-Org/MOSS-Image); or set Depth lock to 0.");
+      if (v.depth_lock > 0 && !(m.depth_models || []).includes("depth_anything_3_mono_large.safetensors"))
+        warns.push("The depth lock needs geometry_estimation/depth_anything_3_mono_large.safetensors (Comfy-Org/Depth-Anything-3); or set Depth lock to 0.");
     } else if (base && !looksFlux1(base)) {
       warns.push(`"${base}" doesn't look like a Flux.1 model; the Flux.1 workflow uses prompt guidance, the Flux ControlNet and USO style images.`);
     }

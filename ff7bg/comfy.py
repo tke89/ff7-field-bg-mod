@@ -30,6 +30,10 @@ DEFAULT_SETTINGS = {
     "denoise": 0.2,           # how much the AI may repaint (0 = keep original, 1 = ignore it)
     "structure": 1.2,         # ControlNet strength: how hard edges are locked to the original
     "structure_end": 0.75,    # stop locking edges after this fraction of the steps
+    # Depth lock (MOSS-Image, Krea 2): Depth Anything 3 measures the original's depth and a control adapter
+    # holds the render to it. Its strength; 0 = off. "Until" is MOSS only.
+    "depth_lock": 0.0,
+    "depth_lock_end": 1.0,
     "canny_low": 0.2,
     "canny_high": 0.6,
     "guidance": 5.0,
@@ -128,7 +132,7 @@ FAMILY_PRESETS = {
              "unet": "moss_image_sft_int8_convrot.safetensors", "unet_dtype": "default",
              "clip1": "qwen3.5_9b_w4a8_gptq.safetensors", "clip2": "", "clip_type": "moss_image",
              "vae": "flux2-vae.safetensors", "steps": 25, "cfg": 2.5, "denoise": 0.5,
-             "structure": 1.0, "structure_end": 1.0, "detail_steps": 8},
+             "depth_lock": 1.0, "detail_steps": 8},
     # Upscale only: no diffusion model; the original art goes straight through the upscaler.
     "upscale": {"family": "upscale", "align": False, "detail_pass": False},
 }
@@ -207,10 +211,11 @@ def _loaders(wf, s):
 FAMILIES = {
     # Flux.1: FluxGuidance prompt strength, Flux ControlNet structure lock, USO style images.
     "flux1": {"scheduler": "beta", "controlnet": True},
-    # Krea 2 Turbo (Qwen3-VL text encoder, Qwen-Image VAE): no native structure lock, so the
-    # layout is held by a low repaint strength; style images go through the official
-    # style-reference LoRA as reference latents (ComfyUI's image_krea2_..._style_reference template).
-    "krea2": {"scheduler": "simple", "controlnet": False},
+    # Krea 2 Turbo (Qwen3-VL text encoder, Qwen-Image VAE): style images go through the official
+    # style-reference LoRA as reference latents (ComfyUI's image_krea2_..._style_reference template). No
+    # native structure lock; the depth lock uses the community depth ControlNet-LoRA
+    # (Patil/Krea-2-depth-controlnet) through the comfyui-krea2-controlnet node pack ("lock_node").
+    "krea2": {"scheduler": "simple", "controlnet": False, "lock_node": "Krea2ControlLoRALoader"},
     # Qwen-Image 2.1 Turbo, used as an image *edit* model (ComfyUI's image_qwen_image_2_1_turbo_image_edit
     # template): the original is <image1>, style images are extra references named in the
     # instruction. Edits regenerate everything, so repaint strength and the detail pass don't apply;
@@ -236,6 +241,7 @@ FAMILIES = {
     "upscale": {"scheduler": "simple", "controlnet": False, "upscale": True},
 }
 MOSS_CONTROL_LORA = "moss_image_color_depth_control.safetensors"
+KREA2_DEPTH_LORA = "krea2_depth_control_lora.safetensors"  # Patil/Krea-2-depth-controlnet, renamed
 DEPTH_MODEL = "depth_anything_3_mono_large.safetensors"
 DEPTH_RES = 1008  # Depth Anything 3's working size (longest side, multiple of 14); the map is resized back
 KREA2_STYLE_LORA = "krea2_style_reference.safetensors"
@@ -364,19 +370,11 @@ def _conditioning(wf, s, clip, vae, control_image, refs):
     if fam["name"] == "moss":
         wf["neg"] = {"class_type": "CLIPTextEncode", "inputs": {"clip": clip, "text": ""}}
         plain = (["pos", 0], ["neg", 0])
-        if s["structure"] <= 0:
+        if s["depth_lock"] <= 0:
             return plain, plain
-        # near is white, as the adapter was trained (Depth Anything V2); resized back to the render size
-        wf["da3m"] = {"class_type": "LoadDA3Model", "inputs": {"model_name": DEPTH_MODEL, "weight_dtype": "default"}}
-        wf["da3"] = {"class_type": "DA3Inference", "inputs": {
-            "da3_model": ["da3m", 0], "image": control_image, "resolution": DEPTH_RES,
-            "resize_method": "upper_bound_resize", "mode": "mono"}}
-        wf["depth"] = {"class_type": "DA3Render", "inputs": {
-            "da3_geometry": ["da3", 0], "output": "depth", "output.normalization": "v2_style",
-            "output.apply_sky_clip": False}}
         wf["cn"] = {"class_type": "MOSSImageControl", "inputs": {
-            "positive": ["pos", 0], "negative": ["neg", 0], "vae": vae, "strength": s["structure"],
-            "start_percent": 0.0, "end_percent": s["structure_end"], "depth_map": ["depth", 0]}}
+            "positive": ["pos", 0], "negative": ["neg", 0], "vae": vae, "strength": s["depth_lock"],
+            "start_percent": 0.0, "end_percent": s["depth_lock_end"], "depth_map": _depth_map(wf, control_image)}}
         return (["cn", 0], ["cn", 1]), plain
 
     wf["guid"] = {"class_type": "FluxGuidance", "inputs": {"conditioning": ["pos", 0], "guidance": s["guidance"]}}
@@ -391,6 +389,20 @@ def _conditioning(wf, s, clip, vae, control_image, refs):
         "positive": ["guid", 0], "negative": ["neg", 0], "control_net": ["cnl", 0], "image": ["edges", 0],
         "strength": s["structure"], "start_percent": 0.0, "end_percent": s["structure_end"], "vae": vae}}
     return (["cn", 0], ["cn", 1]), plain
+
+
+def _depth_map(wf, image):
+    """Depth Anything 3's depth of image, near white (as both depth adapters were trained, on Depth
+    Anything V2), at the image's size. Made once per workflow."""
+    if "depth" not in wf:
+        wf["da3m"] = {"class_type": "LoadDA3Model", "inputs": {"model_name": DEPTH_MODEL, "weight_dtype": "default"}}
+        wf["da3"] = {"class_type": "DA3Inference", "inputs": {
+            "da3_model": ["da3m", 0], "image": image, "resolution": DEPTH_RES,
+            "resize_method": "upper_bound_resize", "mode": "mono"}}
+        wf["depth"] = {"class_type": "DA3Render", "inputs": {
+            "da3_geometry": ["da3", 0], "output": "depth", "output.normalization": "v2_style",
+            "output.apply_sky_clip": False}}
+    return ["depth", 0]
 
 
 SEEDVR2 = "seedvr2"  # special "upscaler" value: the SeedVR2 diffusion upscaler instead of an ESRGAN-style model
@@ -453,15 +465,27 @@ def _upscale_chain(wf, s, image, w, h):
     return _resize(wf, "final", s, image, w, h)
 
 
-def _model_chain(wf, s, model, refs, w, h):
-    """The model for the main sampler: patched for style images, or with MOSS's control adapter."""
-    if _family(s)["name"] == "moss":
-        if s["structure"] <= 0:
-            return model
+def _control_chain(wf, s, model, image, latent, vae):
+    """The model for the main sampler with the depth lock's adapter: MOSS's control LoRA (its maps go in
+    through the conditioning), or Krea 2's depth ControlNet-LoRA with the encoded depth map attached.
+    image: what the depth is measured on; latent: the latent being sampled (for its size)."""
+    fam = _family(s)["name"]
+    if s["depth_lock"] <= 0 or fam not in ("moss", "krea2"):
+        return model
+    if fam == "moss":
         wf["ctl_lora"] = {"class_type": "LoraLoaderModelOnly", "inputs": {
             "model": model, "lora_name": MOSS_CONTROL_LORA, "strength_model": 1.0}}
         return ["ctl_lora", 0]
-    return _style_chain(wf, s, model, refs, w, h)
+    # comfyui-krea2-controlnet, settings from its README for this LoRA with a Depth Anything map
+    wf["ctl_enc"] = {"class_type": "Krea2ControlImageEncode", "inputs": {
+        "control_image": _depth_map(wf, image), "vae": vae, "resize": "match_latent_size",
+        "upscale_method": "lanczos", "crop": "disabled", "channel_mode": "grayscale",
+        "normalize": "per_image_minmax", "invert": False, "batch_mode": "independent_images", "latent": latent}}
+    wf["ctl_lora"] = {"class_type": "Krea2ControlLoRALoader", "inputs": {
+        "model": model, "lora_name": KREA2_DEPTH_LORA, "strength": s["depth_lock"]}}
+    wf["ctl_apply"] = {"class_type": "Krea2ControlApply", "inputs": {
+        "model": ["ctl_lora", 0], "control_latent": ["ctl_enc", 0]}}
+    return ["ctl_apply", 0]
 
 
 def _style_chain(wf, s, model, refs, w, h):
@@ -553,8 +577,9 @@ def build_workflow(s, input_name, canvas_w, canvas_h, prefix, style_ref_names=()
     work = _resize(wf, "work", s, ["src", 0], ww, wh)
     wf["enc"] = {"class_type": "VAEEncode", "inputs": {"pixels": work, "vae": vae}}
     (positive, negative), plain = _conditioning(wf, s, clip, vae, work, refs)
-    styled = _model_chain(wf, s, base, refs, ww, wh)
-    wf["sample"] = _sampler(s, styled, positive, negative, ["enc", 0], s["steps"], s["denoise"])
+    styled = _style_chain(wf, s, base, refs, ww, wh)
+    model = _control_chain(wf, s, styled, work, ["enc", 0], vae)
+    wf["sample"] = _sampler(s, model, positive, negative, ["enc", 0], s["steps"], s["denoise"])
     wf["dec"] = {"class_type": "VAEDecode", "inputs": {"samples": ["sample", 0], "vae": vae}}
     result = _resize(wf, "final", s, ["dec", 0], ow, oh, outside=not s["detail_pass"])
     if s["detail_pass"]:
@@ -616,7 +641,7 @@ def build_states_workflow(s, ctx_name, orig_name, mask_name, gen_w, gen_h, out_w
                      denoise=s["state_denoise"] if denoise is None else denoise)
     else:
         (positive, negative), _ = _conditioning(wf, s, clip, vae, orig_gen, refs)
-        styled = _model_chain(wf, s, base, refs, gen_w, gen_h)
+        styled = _control_chain(wf, s, _style_chain(wf, s, base, refs, gen_w, gen_h), orig_gen, ["enc", 0], vae)
         wf["sample"] = _sampler(s, styled, positive, negative, ["noise_mask", 0], s["steps"],
                                 min(0.95, s["denoise"] + s["state_denoise_boost"]))
     wf["dec"] = {"class_type": "VAEDecode", "inputs": {"samples": ["sample", 0], "vae": vae}}

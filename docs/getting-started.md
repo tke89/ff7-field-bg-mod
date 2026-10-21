@@ -100,6 +100,11 @@ Non-commercial license (CC BY-NC 4.0).
 | `qwen3vl_4b_fp8_scaled.safetensors` | `text_encoders` | [Comfy-Org/Krea-2](https://huggingface.co/Comfy-Org/Krea-2/resolve/main/text_encoders/qwen3vl_4b_fp8_scaled.safetensors) |
 | `qwen_image_vae.safetensors` | `vae` | [Comfy-Org/Qwen-Image_ComfyUI](https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/vae/qwen_image_vae.safetensors) |
 | `krea2_style_reference.safetensors` (for style images) | `loras` | [Comfy-Org/Krea-2](https://huggingface.co/Comfy-Org/Krea-2/resolve/main/loras/krea2_style_reference.safetensors) |
+| `krea2_depth_control_lora.safetensors` (depth lock) | `loras` | [Patil/Krea-2-depth-controlnet](https://huggingface.co/Patil/Krea-2-depth-controlnet/resolve/main/depth-control-lora.safetensors) (rename `depth-control-lora.safetensors`) |
+| `depth_anything_3_mono_large.safetensors` (depth lock) | `geometry_estimation` | (same as MOSS-Image) |
+
+The depth lock also needs the **comfyui-krea2-controlnet** node pack: in ComfyUI, open the Manager, search for
+"krea2 controlnet" (or install from https://github.com/facok/comfyui-krea2-controlnet), then restart ComfyUI.
 
 ### Flux.1
 
