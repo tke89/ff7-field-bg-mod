@@ -4,6 +4,7 @@
   export <map...> [--scale N]           unswizzle into work/<map>/ (preview + editable sheets)
   build  <map...> [--flat img.png]      swizzle edited art into dist/mods/Textures/field/<map>/
   verify [map...]                       round-trip check (export -> build without edits == original)
+  palettes [map...]                     fields whose scripts change background colours -> ai/palette_effects.csv
 
   ai-prep  [map...] [--aspect 1:1,3:2]  every map's default view -> ai/input/<map>.png
   ai-build [map...]                     ai/output/<map>.png -> aligned FFNx pages + ai/review/<map>.jpg
@@ -157,6 +158,35 @@ def cmd_verify(lgp, args):
     sys.exit(1 if failures else 0)
 
 
+def cmd_palettes(lgp, args):
+    import csv
+
+    from ff7bg import palettes
+    from ff7bg.sheets import canvas_rect
+
+    names = args.maps or field_names(lgp)
+    rows = []
+    for name in names:
+        raw = decompress(lgp.read(name))
+        bg = parse_background(name.lower(), raw)
+        rows += palettes.report(bg.name, raw, bg, canvas_rect(bg))
+    order = {"always": 0, "entry": 1, "event": 2}
+    rows.sort(key=lambda r: (order[r["kind"]], -r["area"], r["field"]))
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cols = ["field", "palette", "kind", "looped", "random", "area", "tiles", "blended", "layers", "pages",
+            "groups", "scripts", "opcodes"]
+    with out.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, cols)
+        w.writeheader()
+        for r in rows:
+            w.writerow({k: " ".join(map(str, r[k])) if isinstance(r[k], list) else r[k] for k in cols})
+    for kind in order:
+        fields = sorted({r["field"] for r in rows if r["kind"] == kind})
+        print(f"{kind}: {len(fields)} fields")
+    print(f"{len({r['field'] for r in rows})} fields in all; details in {out}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--lgp", default=str(DEFAULT_LGP), help="path to flevel.lgp")
@@ -198,9 +228,13 @@ def main():
     p = sub.add_parser("verify")
     p.add_argument("maps", nargs="*")
 
+    p = sub.add_parser("palettes", help="fields whose scripts change background colours (palette effects)")
+    p.add_argument("maps", nargs="*", help="default: all maps")
+    p.add_argument("--out", default=str(HERE / "ai" / "palette_effects.csv"))
+
     args = ap.parse_args()
     commands = {"list": cmd_list, "export": cmd_export, "build": cmd_build, "verify": cmd_verify,
-                "ai-prep": cmd_ai_prep, "ai-build": cmd_ai_build}
+                "ai-prep": cmd_ai_prep, "ai-build": cmd_ai_build, "palettes": cmd_palettes}
     with LgpArchive(args.lgp) as lgp:
         commands[args.cmd](lgp, args)
 

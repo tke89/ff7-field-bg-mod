@@ -135,3 +135,24 @@ look that never changed it.
 
 It talks to ComfyUI over its HTTP and websocket API (`ff7bg/comfy.py`): upload images, queue a workflow, follow
 progress, fetch the result. The page (`studio/`) is plain JavaScript and polls the server once a second.
+
+## Palette effects
+
+Some animations change colours, not tiles. A script copies a palette out of VRAM (`STPAL`), changes the copy
+(`MPPAL`/`MPPAL2` multiply, `ADPAL` adds, `RTPAL` rotates, `CPPAL` copies) and loads it back (`LDPAL`), and every
+tile drawn with that palette changes. Aerith's waterfall (eals_1) is two bright bands moving through palette 8, one
+step a frame, repeating every 144 frames. A remastered page is a finished full-colour image, so the waterfall
+stands still.
+
+`ff7bgmod.py palettes` finds them ([Command line](command-line.md#palette-effects)). On 21 October 2026 that was
+216 fields:
+- 212 with an ambient animation;
+- 22 with a fade or sequence when you enter;
+- 13 with changes during events.
+
+Nearly all are glows (blended tiles), which the main render currently bakes in as they look in the field file.
+
+FFNx can swap pages per palette state: with `enable_animated_textures`, it fingerprints each page as the game
+converts it with the current palette (XXH3-64), and loads `<map>_<page>_<palette>_<hash>.png` when it exists.
+Making those files means replaying the scripts' palette commands to list every state, then fingerprinting each one
+exactly as FFNx does. Work in progress.

@@ -83,3 +83,23 @@ Studio's versions were made with.
 
 Rebuilds fields from their own exported art and checks the result matches the game's pixels exactly. It's a
 check on the format code, not on your art.
+
+## Palette effects
+
+```bat
+.venv\Scripts\python ff7bgmod.py palettes          :: no names = every map
+```
+
+Lists the fields whose scripts change background colours while they run, in `ai\palette_effects.csv`. Some
+animations change a palette rather than swapping tiles: Aerith's waterfall (eals_1), pulsing lights, drifting
+mist. A remastered page is a finished full-colour image, so these stand still in game for now
+([How it works](how-it-works.md#palette-effects)). One row per palette a script loads into VRAM that background
+tiles use:
+
+| Column | |
+|---|---|
+| `kind` | `always`: runs from field entry, every frame or in a loop (an ambient animation). `entry`: runs once from field entry (a fade or a one-off sequence). `event`: only from talking, touching or cutscenes |
+| `area` | the share of the screen the palette's tiles cover |
+| `blended` / `tiles` | how many of those tiles are glows (blended) |
+| `random` | the script picks values at random (a flickering light) |
+| `scripts`, `opcodes` | which entity's script does it (`name#script`), with which palette commands |
