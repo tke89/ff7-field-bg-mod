@@ -41,14 +41,14 @@ function toast(msg, ms = 4500) {
 
 const LAYER_NAMES = { 0: "L0 floor & walls", 1: "L1 objects", 2: "L2 back", 3: "L3 front" };
 const FAMILIES = {
-  flux1: { short: "Flux.1", hint: "Flux.1 dev: a structure lock (ControlNet) holds the edges in place; USO style images; ~20 steps." },
-  krea2: { short: "Krea 2", hint: "Krea 2 Turbo: 8 steps; style images through the style-reference LoRA; an optional depth lock (community Krea2 Control nodes)." },
-  qwen21: { short: "Qwen 2.1", hint: "Qwen-Image 2.1: an edit model that keeps the layout well; style images as references; renders ~2K." },
-  flux3k: { short: "FLUX 3", hint: "FLUX 3 Image Klein (Black Forest Labs, Oct 2026): an edit model that renders up to 4K natively; style images as references." },
-  mageflow: { short: "Mage-Flow", hint: "Mage-Flow Edit (Microsoft, 4B): a small, very fast edit model; style images as references." },
-  fibo2: { short: "FIBO 2", hint: "Bria FIBO 2.0 Edit (Oct 2026): an 8B edit model, the top open-weights editor at release; 4 steps in Turbo. Non-commercial license (CC BY-NC 4.0)." },
-  moss: { short: "MOSS", hint: "MOSS-Image SFT (OpenMOSS, Oct 2026): a 5B image model that repaints the original. A depth lock (Depth Anything 3 + MOSS's control adapter) keeps the scene in place at strong repaints. No style images." },
-  upscale: { short: "Upscale", hint: "No AI restyle: the original art enlarged by the upscaler under Output." },
+  flux1: { short: "Flux.1", hint: "Flux.1: repaints the original while an edge lock keeps every outline in place. Works with style images. About 20 s per field, with lots of settings to tune." },
+  krea2: { short: "Krea 2", hint: "Krea 2: fast and stylish, and works with style images. Keep the repaint low (about 0.2–0.3), or it starts changing the layout." },
+  qwen21: { short: "Qwen 2.1", hint: "Qwen 2.1: redraws the whole scene in the new style while keeping its layout. The nicest results in testing; about 10 s per field with Turbo." },
+  flux3k: { short: "FLUX 3", hint: "FLUX 3: redraws the scene while keeping the layout the most exactly. Cleaner, and closer to the original colours. Slow: about a minute per field with Base." },
+  mageflow: { short: "Mage-Flow", hint: "Mage-Flow: a small, very fast model (a few seconds per field) for quick drafts and big batches. Keeps the original colours." },
+  fibo2: { short: "FIBO 2", hint: "FIBO 2: a clean, realistic redraw that keeps the layout very well, but can lose the original's mood (Keep original colours brings it back). Non-commercial use only." },
+  moss: { short: "MOSS", hint: "MOSS: a bold, painterly repaint, with a depth lock that keeps the scene in place. Doesn't use style images. Turbo is about twice as fast as SFT." },
+  upscale: { short: "Upscale", hint: "Upscale: no AI restyling. The original art is enlarged with the upscaler under Output, for a faithful HD version." },
 };
 const usesRepaint = (f) => f === "flux1" || f === "krea2" || f === "moss";
 const EDIT = new Set(["qwen21", "flux3k", "mageflow", "fibo2"]);  // edit models: no repaint strength or detail pass
@@ -68,48 +68,155 @@ const VARIANTS = {
 const famShort = (f) => (FAMILIES[f] || {}).short || "";
 const pct = (v) => `${Math.round(v * 100)}%`;
 
-// Sliders; helpBy overrides the help text for one workflow.
+// Sliders. Each explains itself in the same three parts: what it does, what higher and lower change, and
+// what to use (rec; recValue adds a "use it" link). by.<workflow> overrides any of those for one workflow.
 const SL = {
-  denoise: { label: "Repaint strength", min: 0.1, max: 0.95, step: 0.01, help: "How much the AI may repaint. Low keeps the original, high restyles more.",
-    helpBy: { krea2: "Without the depth lock, about 0.2-0.3 keeps the layout.",
-              moss: "With the depth lock, 0.5 restyles strongly and kept 90% of Kalm's outlines; much above 0.6, walk-behind spots stop lining up. Without the lock, stay around 0.3-0.35." } },
-  structure: { label: "Structure lock", min: 0, max: 1.5, step: 0.05, help: "How strongly edges are held to the original layout." },
+  denoise: { label: "Repaint strength", min: 0.1, max: 0.95, step: 0.01,
+    what: "How much the AI is allowed to change the picture.",
+    up: "more restyling and new detail, but buildings and objects can change shape or move",
+    down: "stays closer to the original picture",
+    rec: "0.2–0.3", recValue: 0.2,
+    by: { moss: { rec: "0.5 with the depth lock on; about 0.3 with it off", recValue: 0.5 },
+          krea2: { rec: "0.2–0.3 (Krea 2 changes the layout quickly above that)" } } },
+  structure: { label: "Edge lock", min: 0, max: 1.5, step: 0.05,
+    what: "Holds the outlines of the original in place while Flux repaints, so walls, doors and walkable areas don't move.",
+    up: "outlines stay exactly put, with less freedom to reshape things",
+    down: "Flux may redraw shapes, and characters can end up walking through scenery",
+    rec: "1.2", recValue: 1.2 },
+  structure_end: { label: "Edge lock duration", min: 0.3, max: 1, step: 0.05, fmt: pct,
+    what: "How long the edge lock stays on during the render. Letting go near the end lets the finest details be drawn freely, so they don't look traced.",
+    up: "outlines held to the very end",
+    down: "more freedom for the final details",
+    rec: "75%", recValue: 0.75 },
+  canny_low: { label: "Edge detail", min: 0.05, max: 0.5, step: 0.01,
+    what: "Which outlines the edge lock holds on to.",
+    up: "only the strongest outlines are held; small details are free to change",
+    down: "fine lines and textures are held too, which can look traced",
+    rec: "0.2", recValue: 0.2 },
+  guidance: { label: "Prompt strength", min: 1.5, max: 5, step: 0.1,
+    what: "How closely Flux follows your prompt.",
+    up: "follows the prompt more literally; colours can turn harsh",
+    down: "looser and more natural, closer to the original",
+    rec: "5", recValue: 5 },
   depth_lock: { label: "Depth lock", min: 0, max: 1.5, step: 0.05,
-    help: "Depth Anything 3 measures the original's depth and a control adapter holds the render to it. 1 is the trained strength; 0 turns it off.",
-    helpBy: { moss: "Depth Anything 3 measures the original's depth and MOSS's control adapter holds the scene to it. 1 is its trained strength; 0 turns it off. Much higher looks sketchy.",
-              krea2: "Depth Anything 3 measures the original's depth and the community Krea 2 depth ControlNet-LoRA holds the scene to it. 0.6 leaves more freedom, 1 holds strictly; 0 turns it off.",
-              flux1: "A second lock on the same ControlNet, with Depth Anything 3's depth map, on top of the edge lock. Helps at stronger repaints: at 0.45 it kept Kalm's tower, which became something else without it. 0 = off.",
-              qwen21: "Qwen-Image 2.1's Fun ControlNet with Depth Anything 3's depth map. On Kalm, Qwen's shift went from 6.6 px to 0.2 and objects stayed put, but it restyled less. 0 = off." } },
+    what: "Keeps the 3D shape of the scene (what's near, what's far) the same as the original, so buildings and objects stay put even when the picture is repainted strongly.",
+    up: "holds the scene more strictly",
+    down: "more freedom to change shapes; 0 turns it off",
+    rec: "1", recValue: 1,
+    by: { moss: { up: "holds the scene more strictly; well above 1 the picture starts to look scratchy" },
+          krea2: { rec: "0 until the Krea2 Control nodes are installed, then about 0.6–1", recValue: undefined },
+          flux1: { what: "A second lock on top of the edge lock: keeps the 3D shape of the scene (what's near, what's far) the same as the original. It matters when you repaint strongly.",
+                   rec: "0 at the usual low repaint; about 0.6 if you raise Repaint strength above 0.35", recValue: undefined },
+          qwen21: { what: "Keeps the 3D shape of the scene the same as the original. Qwen then stops shifting or swapping objects, but it also restyles less.",
+                    rec: "0 normally; 0.5–1 for fields where Qwen moves or changes things", recValue: 0 } } },
+  depth_lock_end: { label: "Depth lock duration", min: 0.3, max: 1, step: 0.05, fmt: pct,
+    what: "How long the depth lock stays on during the render.",
+    up: "the scene is held to the very end",
+    down: "the final details are drawn freely",
+    rec: "100%", recValue: 1 },
   keep_colors: { label: "Keep original colours", min: 0, max: 1, step: 0.05, fmt: pct,
-    help: "Pulls the new art's colours back toward the original's palette, keeping its new detail. Applied when a version is built, so Rebuild tries another value without rendering again." },
-  tries: { label: "Renders per field (Final)", min: 1, max: 4, step: 1, fmt: (v) => v > 1 ? `best of ${v}` : "1",
-    help: "Renders with that many seeds and keeps the one that keeps the most original outlines; the others are deleted. Takes that many times as long." },
-  depth_lock_end: { label: "Depth lock until", min: 0.3, max: 1, step: 0.05, help: "Share of the render steps the depth lock applies to.", fmt: pct },
-  structure_end: { label: "Lock until", min: 0.3, max: 1, step: 0.05, help: "Share of the render steps the structure lock applies to.", fmt: pct },
-  input_scale: { label: "Scale", min: 0, max: 8, step: 1, fmt: (v) => v ? `${v}×` : "Auto",
-    help: "How much the original art is enlarged for the AI, which renders at that size. Auto: the largest whole multiple within Render size." },
-  canny_low: { label: "Edge sensitivity", min: 0.05, max: 0.5, step: 0.01, help: "Lower picks up more fine edges for the structure lock." },
-  guidance: { label: "Prompt guidance", min: 1.5, max: 5, step: 0.1, help: "How literally Flux follows the prompt." },
-  style_ref_strength: { label: "Style image influence", min: 0, max: 1.2, step: 0.05, help: "Weight of the selected style images.",
-    helpBy: { qwen21: "Off (0) by default: Qwen copies content from style images (it repainted ancnt1 as Kalm). Raise it only to experiment.",
-              flux3k: "Off (0) by default: in testing FLUX 3 mostly ignored style images anyway.",
-              mageflow: "Off (0) by default: Mage-Flow pastes textures from style images over the scene.",
-              fibo2: "Off (0) by default, like the other edit models. FIBO 2 takes up to 4 images; with style images it no longer crops the field to the exact result size.",
-              krea2: "Strength of the style-reference LoRA; it was trained on 1-2 images." } },
-  out_scale: { label: "Output scale", min: 2, max: 10, step: 1, help: "Final texture resolution vs. the original. 6× suits 1440p, 8× is close to 4K.", fmt: (v) => `${v}×` },
-  detail_denoise: { label: "Detail strength", min: 0.1, max: 0.5, step: 0.01, help: "How much the detail pass repaints at full resolution. Above ~0.45 tiles may disagree." },
-  cfg: { label: "CFG", min: 1, max: 8, step: 0.5, help: "How strongly the instruction is enforced. Turbo and distilled versions want 1; Mage-Flow Full uses 5.",
-    helpBy: { moss: "How strongly MOSS follows the prompt. Its template uses 2.5; 1 runs twice as fast but follows the prompt less." } },
-  steps: { label: "Render steps", min: 4, max: 40, step: 1, help: "More steps, more detail, slower. Turbo models want about 8." },
-  work_mp: { label: "Render size", min: 0.8, max: 4, step: 0.1, help: "Megapixels the model renders at before upscaling. More gives finer detail and takes longer.", fmt: (v) => `${v} MP` },
-  edit_margin: { label: "Edit margin", min: 0, max: 0.15, step: 0.01, help: "Blurred border around the scene so the edit model's slight zoom doesn't crop it.", fmt: pct },
-  detail_steps: { label: "Detail steps", min: 2, max: 20, step: 1, help: "Steps per detail tile." },
-  detail_structure: { label: "Detail structure lock", min: 0, max: 1, step: 0.05, help: "Edge lock per detail tile (0 = off)." },
+    what: "Brings the colours back toward the original's, keeping the new detail. Useful when a model changed the mood, for example turning a night scene into day.",
+    up: "colours closer to the original",
+    down: "the model's own colours; 0 is off",
+    rec: "0 if you like the new colours; 50–70% to bring back the original mood. Rebuild a version to try a value without rendering again" },
+  tries: { label: "Renders per field", min: 1, max: 4, step: 1, fmt: (v) => v > 1 ? `best of ${v}` : "1",
+    what: "Final renders only: paints each field several times, each from a different random start, and keeps the one that matches the original layout best. The others are deleted.",
+    up: "a better chance of a clean result, but it takes that many times as long",
+    down: "1 is a single render",
+    rec: "1 while trying things out; 2 for big batches if you have the time" },
+  input_scale: { label: "Enlarge by", min: 0, max: 8, step: 1, fmt: (v) => v ? `${v}×` : "Auto",
+    what: "How much the original art is enlarged before the AI paints over it. The AI paints at that size.",
+    up: "more detail but much slower (on Kalm, 3× took about 2.5 times as long as 2×); above about 4×, models start repeating details",
+    down: "faster, softer",
+    rec: "Auto (follows Render size)", recValue: 0 },
+  style_ref_strength: { label: "Style image strength", min: 0, max: 1.2, step: 0.05,
+    what: "How much your selected style images shape the look.",
+    up: "the look follows the style images more closely",
+    down: "follows the prompt and the original more; 0 ignores them",
+    rec: "0.5", recValue: 0.5,
+    by: Object.fromEntries(["qwen21", "flux3k", "mageflow", "fibo2"].map((f) => [f, {
+      what: "How much your selected style images shape the look. This model tends to copy things out of them, not just their style (Qwen once painted a different town into a field), so it's off by default.",
+      rec: "0", recValue: 0 }])) },
+  out_scale: { label: "Output scale", min: 2, max: 10, step: 1, fmt: (v) => `${v}×`,
+    what: "How big the final game textures are, compared to the original art.",
+    up: "sharper on big screens, but bigger files and slower",
+    down: "smaller and faster",
+    rec: "4× for a 1080p screen, 6× for 1440p, 8× for 4K" },
+  detail_denoise: { label: "Detail strength", min: 0.1, max: 0.5, step: 0.01,
+    what: "How much the detail pass repaints while it adds fine texture at full size.",
+    up: "more new texture; above about 0.45 neighbouring tiles disagree and seams can show",
+    down: "subtler",
+    rec: "0.15–0.4" },
+  cfg: { label: "Prompt strength", min: 1, max: 8, step: 0.5,
+    what: "How closely the model follows your prompt. Anything above 1 makes each render take about twice as long.",
+    up: "follows the prompt more strongly; too high looks overcooked",
+    down: "1 is the fastest, and what Turbo versions are made for",
+    rec: "the Turbo/Full switch above sets it: 1 for Turbo, more for Full", recValue: undefined,
+    by: { moss: { rec: "2.5 for SFT, 1 for Turbo (the switch above sets it)" },
+          qwen21: { rec: "1", recValue: 1 }, flux3k: { rec: "1", recValue: 1 } } },
+  steps: { label: "Render steps", min: 4, max: 40, step: 1,
+    what: "How many times the AI goes over the picture.",
+    up: "a little more detail, takes longer",
+    down: "faster; too few looks unfinished",
+    rec: "the Turbo/Full switch above sets it",
+    by: { flux1: { rec: "20", recValue: 20 }, krea2: { rec: "8", recValue: 8 },
+          moss: { rec: "25 for SFT, 8 for Turbo (the switch above sets it)" } } },
+  work_mp: { label: "Render size", min: 0.8, max: 4, step: 0.1, fmt: (v) => `${v} MP`,
+    what: "How big a picture the AI paints (in megapixels) before it's enlarged to the final size.",
+    up: "finer detail, slower; far above the recommended size, models start repeating details",
+    down: "faster, softer",
+    rec: "1.4", recValue: 1.4,
+    by: { qwen21: { rec: "3", recValue: 3 }, flux3k: { rec: "4", recValue: 4 },
+          mageflow: { rec: "2", recValue: 2 }, fibo2: { rec: "2", recValue: 2 } } },
+  edit_margin: { label: "Border padding", min: 0, max: 0.15, step: 0.01, fmt: pct,
+    what: "Edit models zoom in a little. This adds a blurred border around the scene, so the zoom eats into the border instead of the scene.",
+    up: "safer, a little slower",
+    down: "the scene's edges may get cut off (they're then patched from the original art)",
+    rec: "8%", recValue: 0.08 },
+  detail_steps: { label: "Detail steps", min: 2, max: 20, step: 1,
+    what: "How many times the detail pass goes over each tile.",
+    up: "slightly richer, slower", down: "faster",
+    rec: "8", recValue: 8, by: { krea2: { rec: "4", recValue: 4 } } },
+  detail_structure: { label: "Detail edge lock", min: 0, max: 1, step: 0.05,
+    what: "Holds outlines in place during the detail pass too.",
+    up: "outlines stay exactly put", down: "0 is off",
+    rec: "0 (it made no visible difference in testing)", recValue: 0 },
   state_denoise: { label: "States repaint", min: 0.2, max: 1, step: 0.05,
-    help: "How strongly doors, lights and animation frames are repainted where they change. Lower keeps frames consistent with the scene and each other; 1 repaints from scratch. Content the main render lacks (a fan spinning in an empty window) gets its own key frame, painted at 0.85." },
-  state_denoise_boost: { label: "States extra repaint", min: 0, max: 0.3, step: 0.01, help: "Extra repaint for doors, lights and frames, so original art pasted into the new scene blends in." },
-  lora_strength: { label: "LoRA strength", min: 0, max: 1.5, step: 0.05, help: "" },
+    what: "How much doors, lights and animation frames are repainted to match the new style.",
+    up: "they take on more of the new style, but animation frames can stop matching each other",
+    down: "frames stay consistent with each other and the scene, but keep more of the original art",
+    rec: "0.5", recValue: 0.5 },
+  state_denoise_boost: { label: "States extra repaint", min: 0, max: 0.3, step: 0.01,
+    what: "Doors, lights and animation frames start as original art pasted into the new scene. This repaints them a little more than the scene, so they blend in.",
+    up: "blends in better, but shapes can drift from the original",
+    down: "keeps their shapes, but they may look pasted on",
+    rec: "0.1", recValue: 0.1 },
+  lora_strength: { label: "Extra LoRA strength", min: 0, max: 1.5, step: 0.05,
+    what: "How strongly the extra LoRA (an add-on that pushes a particular style) is applied.",
+    up: "a stronger style", down: "a weaker one",
+    rec: "0.8", recValue: 0.8 },
 };
+
+// The help under a slider: what it does, higher vs lower, the recommended value
+function sliderHelp(key, v) {
+  const sd = { ...SL[key], ...((SL[key].by || {})[v.family] || {}) };
+  const fmt = sd.fmt || String;
+  let html = `<div>${sd.what}</div>`;
+  if (sd.up || sd.down) {
+    html += `<div class="help-range">${sd.up ? `<span><b>Higher:</b> ${sd.up}.</span>` : ""}` +
+      `${sd.down ? `<span><b>Lower:</b> ${sd.down}.</span>` : ""}</div>`;
+  }
+  if (sd.rec) {
+    const use = sd.recValue !== undefined && Math.abs(Number(v[key]) - sd.recValue) > 1e-9
+      ? ` <button class="linkish use-rec" data-v="${sd.recValue}" title="Set ${fmt(sd.recValue)}">use it</button>` : "";
+    html += `<div class="help-rec">Recommended: ${sd.rec}.${use}</div>`;
+  }
+  return html;
+}
+
+// Help for a checkbox or a list: what it does, then what to use
+const helpText = (what, rec) => `<div>${what}</div>` + (rec ? `<div class="help-rec">Recommended: ${rec}.</div>` : "");
+
 const LOOK_SLIDERS = {
   flux1: ["denoise", "structure", "structure_end", "depth_lock", "canny_low", "guidance", "style_ref_strength"],
   krea2: ["denoise", "depth_lock", "style_ref_strength"],
@@ -694,18 +801,19 @@ function slider(key, v, opts = {}) {
   w.className = `slider ${m} ${opts.dim ? "dim" : ""}`;
   if (m === "overridden") w.title = OVERRIDDEN_TIP;
   const fmt = sd.fmt || ((x) => String(x));
-  const help = opts.help || (sd.helpBy && sd.helpBy[v.family]) || sd.help;
   w.innerHTML = `<div class="top"><span>${sd.label}</span><b>${fmt(Number(v[key]))}</b></div>` +
     `<input type="range" min="${sd.min}" max="${sd.max}" step="${sd.step}" value="${v[key]}">` +
-    (help ? `<div class="help">${help}</div>` : "");
+    `<div class="help">${opts.help ? `<div class="help-note">${opts.help}</div>` : ""}${sliderHelp(key, v)}</div>`;
   const input = w.querySelector("input");
-  input.oninput = () => { w.querySelector("b").textContent = fmt(Number(input.value)); };
-  input.onchange = () => {
-    const val = Number(input.value);
+  const commit = (val) => {
     const patch = { [key]: val };
     if (key === "canny_low") patch.canny_high = Math.min(0.95, +(val * 3).toFixed(2));
     saveSetting(patch);
   };
+  input.oninput = () => { w.querySelector("b").textContent = fmt(Number(input.value)); };
+  input.onchange = () => commit(Number(input.value));
+  const rec = w.querySelector(".use-rec");
+  if (rec) rec.onclick = () => commit(Number(rec.dataset.v));
   return w;
 }
 
@@ -830,7 +938,7 @@ function renderStyle() {
 
   const seed = $("#seedRow");
   seed.className = `seed-row ${mark("seed")}`;
-  seed.innerHTML = `<span>Seed</span><input type="number" min="0" max="999999" value="${v.seed}"><button class="small ghost">New seed</button><span class="hint">same seed + settings = same result</span>`;
+  seed.innerHTML = `<span>Seed</span><input type="number" min="0" max="999999" value="${v.seed}"><button class="small ghost">New seed</button><span class="hint">The same seed and settings give the same picture; New seed gives a different take.</span>`;
   seed.querySelector("input").onchange = (e) => saveSetting({ seed: Number(e.target.value) });
   seed.querySelector("button").onclick = () => saveSetting({ seed: Math.floor(Math.random() * 99999) });
 
@@ -846,14 +954,15 @@ function renderScene(v) {
   const old = box.querySelector("textarea");
   if (old && document.activeElement === old) return;  // being edited
   box.innerHTML = "";
-  box.appendChild(check("describe_scene", "Describe the scene in the prompt", v,
-    "Adds a short description of the field (made once by Qwen3.5 looking at it) to the prompt. On Kalm it stopped MOSS painting the cobbles as water and Krea 2 adding people."));
+  box.appendChild(check("describe_scene", "Describe the scene in the prompt", v, helpText(
+    "Adds a short description of this field to the prompt (what's in it, what it's made of, the light), so the AI knows what it's painting: cobblestones stay cobblestones instead of turning into water. It's written once, automatically, and you can edit it below.",
+    "on, especially for MOSS, Krea 2 and Flux.1")));
   if (!v.describe_scene) return;
   const w = document.createElement("div");
   w.className = "scene";
   w.innerHTML = `<textarea rows="3" spellcheck="false" placeholder="Made on the next render, or press Describe now."></textarea>` +
     `<div class="row-btns tight"><button class="small ghost">${d.caption ? "Describe again" : "Describe now"}</button>` +
-    `<span class="hint">This field only. Correct it freely (Kalm's said dusk; it's night).</span></div>`;
+    `<span class="hint">Only for this field. Fix anything it got wrong: it's plain text added to your prompt.</span></div>`;
   const t = w.querySelector("textarea"), b = w.querySelector("button");
   t.value = d.caption || "";
   t.onchange = async () => {
@@ -907,18 +1016,17 @@ function upscalerChoices(cur, { seedvr2 = true } = {}) {
   const ups = online ? m.upscalers.slice() : [];
   if (seedvr2 && (svrReady || cur === "seedvr2")) ups.unshift("seedvr2");
   if (local) ups.push("magick", ...local.upscayl_models.map((x) => `upscayl:${x}`));
-  const labels = { seedvr2: "SeedVR2 (diffusion upscaler, finer detail)" };
-  for (const u of [...ups, cur]) if (isOutside(u)) labels[u] = upName(u);
+  const labels = { seedvr2: "SeedVR2 (most natural detail)" };
+  for (const u of [...ups, cur]) if (u) labels[u] = labels[u] || upName(u);
   return { ups, labels, local };
 }
 
 function outsideHint(u, local) {
   if (u === "magick") {
-    return local && local.magick ? "ImageMagick's Lanczos resize (-filter Lanczos), run outside ComfyUI."
-      : "ImageMagick isn't installed, so Pillow does it: the same Lanczos filter, identical to the plain Lanczos resize. " +
-        "For ImageMagick itself, install it and press Refresh models.";
+    return "Lanczos is a plain, soft enlargement that adds no detail of its own." + (local && local.magick ? ""
+      : " ImageMagick isn't installed, so a built-in copy of the same resize is used; the result is identical.");
   }
-  return `Upscayl's ${esc(upName(u).slice(8))} model, run outside ComfyUI. It enlarges 4×; other sizes get a Lanczos resize after it.`;
+  return `Upscayl's ${esc(upName(u).slice(8))} model is a sharpening upscaler. It enlarges 4×, and other sizes are resized after it.`;
 }
 
 // What the Upscale workflow runs, in words
@@ -926,7 +1034,7 @@ function upscalerLabel(v) {
   if (v.upscaler === "seedvr2") {
     return v.seedvr2_input || !v.input_upscaler ? "SeedVR2 from the original" : `${upName(v.input_upscaler)}, then SeedVR2`;
   }
-  return v.upscaler ? upName(v.upscaler) : "plain Lanczos resize";
+  return v.upscaler ? upName(v.upscaler) : "a plain resize";
 }
 
 function renderOutput(v) {
@@ -936,11 +1044,14 @@ function renderOutput(v) {
   box.appendChild(slider("out_scale", v));
   const online = m && m.online;
   const { ups, labels, local } = upscalerChoices(v.upscaler);
-  let hint = online ? "Enlarges the render to the output size." : "ComfyUI isn't reachable; only the saved choice is listed.";
-  if (isOutside(v.upscaler)) hint = outsideHint(v.upscaler, local);
-  if (isOutside(v.upscaler) && fam === "upscale") hint += " Doesn't need ComfyUI.";
-  if (fam !== "upscale") hint += " The original art the AI starts from has its own upscaler, in Advanced → Original art.";
-  box.appendChild(selectRow("upscaler", "Upscaler", ups, v, { none: "(none: plain Lanczos resize)", labels, hint }));
+  const about = (fam === "upscale" ? "Enlarges the original art to the final texture size. " : "Enlarges the AI's picture to the final texture size. ") +
+    (isOutside(v.upscaler) ? outsideHint(v.upscaler, local) + (fam === "upscale" ? " Works without ComfyUI." : "")
+      : "SeedVR2 adds the most natural detail; 4x-UltraSharp is crisp but can look grainy; (none) is soft and adds nothing.") +
+    (fam !== "upscale" ? " (The original art has its own upscaler, under Advanced → Original art.)" : "");
+  const hint = online || isOutside(v.upscaler)
+    ? helpText(about, fam === "upscale" ? "SeedVR2 for the most detail, 4x-UltraSharp for the most faithful" : "SeedVR2, or 4x-UltraSharp if you want speed")
+    : "ComfyUI isn't reachable, so only the saved choice is listed.";
+  box.appendChild(selectRow("upscaler", "Upscaler", ups, v, { none: "(none: plain, soft resize)", labels, hint }));
   if (local && !local.upscayl) {
     const n = document.createElement("div");
     n.className = "hint";
@@ -948,34 +1059,35 @@ function renderOutput(v) {
     box.appendChild(n);
   }
   if (v.upscaler === "seedvr2" && fam === "upscale") {
-    box.appendChild(check("seedvr2_input", "SeedVR2 works from the original pixels", v,
-      "On: more new detail, but it can invent texture (e.g. cobblestones). Off: the upscaler in Advanced enlarges first and SeedVR2 cleans that up, closer to the original."));
+    box.appendChild(check("seedvr2_input", "SeedVR2 works from the original pixels", v, helpText(
+      "On: SeedVR2 works straight from the original pixels. More new detail, but it can invent texture (Kalm's cracked plaza became cobblestones). Off: a regular upscaler goes first and SeedVR2 cleans it up, which stays closer to the original.",
+      "off, for faithful results")));
   }
   if (fam === "upscale") {
-    box.appendChild(check("states_pass", "States pass (Final only)", v, "Enlarges doors, lights and animation frames with the same upscaler, so they match the scene."));
+    box.appendChild(check("states_pass", "States pass (Final only)", v, helpText(
+      "Also enlarges doors, lights and animation frames the same way, so they match the scene.", "on")));
     return;
   }
   if (!EDIT.has(fam)) {
-    box.appendChild(check("detail_pass", "Detail pass", v, "Repaints at full output resolution in tiles: slower, much sharper." +
-      (isOutside(v.upscaler) ? ` With it on, the render is enlarged with a plain Lanczos resize inside ComfyUI instead of ${esc(upName(v.upscaler))}.` : "")));
+    box.appendChild(check("detail_pass", "Detail pass", v, helpText(
+      "After the main render, paints extra fine texture (stone grain, grime, lettering) at full size. Much slower: about a minute per field at 8×." +
+      (isOutside(v.upscaler) ? ` While it's on, ${esc(upName(v.upscaler))} isn't used: a plain enlargement goes first.` : ""),
+      "off at 4×; worth trying at 6× and above")));
     if (v.detail_pass) box.appendChild(slider("detail_denoise", v));
   }
-  box.appendChild(check("states_pass", "States pass (Final only)", v, "Restyles doors, lights and animation frames to match the new scene."));
+  box.appendChild(check("states_pass", "States pass (Final only)", v, helpText(
+    "Also repaints doors, lights and animation frames to match the new style. Without it they keep the original art, which can look out of place. Adds time.",
+    "on")));
   box.appendChild(slider("keep_colors", v));
   box.appendChild(slider("tries", v));
-  box.appendChild(check("retry", "Retry when under 80% of outlines (Final)", v,
-    "When the best render keeps under 80% of the original outlines, one more try with a new seed" +
-    (usesRepaint(fam) ? " and 0.1 less repaint." : ".")));
-  const alignHelp = {
-    qwen21: "Keep on for Qwen: its edits zoom and shift by a few pixels. One overall zoom/shift correction, so straight lines stay straight.",
-    flux1: "Usually not needed for Flux: the structure lock already holds the layout.",
-    krea2: "Undoes an overall zoom or shift (one correction for the whole image, so lines stay straight); local changes stay.",
-    flux3k: "Keep on for edit models: they can zoom or shift slightly. One overall correction, so straight lines stay straight.",
-    mageflow: "Keep on for edit models: they can zoom or shift slightly. One overall correction, so straight lines stay straight.",
-    moss: "Usually not needed: MOSS repaints in place. Undoes an overall zoom or shift if one creeps in.",
-    fibo2: "Keep on for edit models: they can zoom or shift slightly. One overall correction, so straight lines stay straight.",
-  }[fam];
-  box.appendChild(check("align", "Auto-align to the original layout", v, alignHelp));
+  box.appendChild(check("retry", "Retry if the layout changed (Final)", v, helpText(
+    "If the best render keeps less than 80% of the original outlines (a sign that things moved), it tries once more from a new random start" +
+    (usesRepaint(fam) ? ", with a little less repaint." : "."), "on for big batches")));
+  const alignRec = EDIT.has(fam) ? "on (this model zooms or shifts a little)"
+    : fam === "flux1" ? "off (the edge lock already holds the layout)" : "off; turn it on if a render looks shifted";
+  box.appendChild(check("align", "Auto-align to the original layout", v, helpText(
+    "Fixes a slight overall zoom or shift in the new picture, so it lines up with where characters can walk. It moves the whole picture at once and never bends it.",
+    alignRec)));
 }
 
 const looksFlux1 = (name) => /flux/i.test(name || "") && !/flux[._-]?2|flux2/i.test(name || "");
@@ -996,14 +1108,15 @@ function renderAdvanced(v) {
   if (fam === "upscale") {
     if (v.upscaler === "seedvr2" && online0(m)) {
       sub("SeedVR2 upscaler");
-      add(selectRow("seedvr2_unet", "SeedVR2 model", (m.unets || []).filter((u) => /seedvr2/i.test(u)), v, { hint: "3B int8 is the one ComfyUI's template uses." }));
+      add(selectRow("seedvr2_unet", "SeedVR2 model", (m.unets || []).filter((u) => /seedvr2/i.test(u)), v, { hint: helpText("3B is smoother and closest to the original; 7B gives crisper texture (brick, cobbles) and is a little slower.", "3B for faithful, 7B for crisp") }));
       add(selectRow("seedvr2_vae", "SeedVR2 VAE", (m.vaes || []).filter((u) => /seedvr2/i.test(u)), v));
       add(selectRow("seedvr2_color", "Color correction", ["lab", "wavelet", "adain", "none"], v,
-        { hint: "Matches colors back to the image before upscaling; lab is the most faithful." }));
+        { hint: helpText("Keeps SeedVR2's colours matched to the picture it enlarges.", "lab") }));
       if (!v.seedvr2_input) {
         const { ups, labels, local } = upscalerChoices(v.input_upscaler, { seedvr2: false });
-        add(selectRow("input_upscaler", "Upscaler before SeedVR2", ups, v, { none: "(none: plain Lanczos resize)", labels,
-          hint: isOutside(v.input_upscaler) ? outsideHint(v.input_upscaler, local) : "" }));
+        add(selectRow("input_upscaler", "Upscaler before SeedVR2", ups, v, { none: "(none: plain, soft resize)", labels,
+          hint: helpText("Enlarges the original first; SeedVR2 then cleans it up." +
+            (isOutside(v.input_upscaler) ? " " + outsideHint(v.input_upscaler, local) : ""), "4x-UltraSharp") }));
       }
     } else {
       const n = document.createElement("div");
@@ -1024,13 +1137,14 @@ function renderAdvanced(v) {
   const fixedSchedule = fam === "qwen21" && /turbo/i.test(v.unet || "");  // Qwen Turbo: fixed 8 steps
   if (!fixedSchedule) add(slider("steps", v));
   if ((EDIT.has(fam) || fam === "moss") && !fixedSchedule) add(slider("cfg", v));
-  add(slider("work_mp", v, v.input_scale ? { dim: true, help: "Not used: Original art → Scale sets the render size." } : {}));
+  add(slider("work_mp", v, v.input_scale ? { dim: true, help: "Not used right now: Original art → Enlarge by sets the size." } : {}));
   if (EDIT.has(fam)) add(slider("edit_margin", v));
   if (v.detail_pass && !EDIT.has(fam)) {
     add(slider("detail_steps", v));
     if (fam === "flux1") {
       add(slider("detail_structure", v));
-      add(check("detail_style", "Use the style images in the detail pass", v, "About 15% slower; can ghost where tiles overlap."));
+      add(check("detail_style", "Use the style images in the detail pass", v, helpText(
+        "Uses the style images in the detail pass too. About 15% slower, and faint seams can show between tiles.", "off")));
     }
   }
   if (v.states_pass) add(slider(EDIT.has(fam) ? "state_denoise" : "state_denoise_boost", v));
@@ -1038,10 +1152,11 @@ function renderAdvanced(v) {
   sub("Original art");
   {
     const { ups, labels, local } = upscalerChoices(v.input_upscaler);
-    const hint = isOutside(v.input_upscaler) ? outsideHint(v.input_upscaler, local) + " Runs before ComfyUI."
-      : v.input_upscaler === "seedvr2" ? "Adds detail to the original before the AI sees it; it can invent texture (Kalm's cracked plaza became cobblestones)."
-      : "Enlarges the original art before the AI sees it.";
-    add(selectRow("input_upscaler", "Upscaler", ups, v, { none: "(none: plain Lanczos resize)", labels, hint }));
+    const hint = helpText("Enlarges the original art before the AI paints over it. A sharper start gives the AI more to work with." +
+      (isOutside(v.input_upscaler) ? " " + outsideHint(v.input_upscaler, local)
+        : v.input_upscaler === "seedvr2" ? " SeedVR2 adds detail of its own, but can invent texture (Kalm's cracked plaza became cobblestones)." : ""),
+      "4x-UltraSharp");
+    add(selectRow("input_upscaler", "Upscaler", ups, v, { none: "(none: plain, soft resize)", labels, hint }));
     add(slider("input_scale", v));
     // what that comes to for this field
     const d = S.detail, edge = (n) => EDIT.has(fam) ? Math.round(n * v.edit_margin / 16) * 16 : 0;
@@ -1050,8 +1165,8 @@ function renderAdvanced(v) {
     const mp = pw * k * ph * k / 1e6;
     const n = document.createElement("div");
     n.className = mp > 4.5 ? "model-warn" : "hint";
-    n.textContent = `${d.name} renders at ${pw * k}×${ph * k} (${mp.toFixed(1)} MP, ${k}× the original${EDIT.has(fam) ? " with the edit margin" : ""}).` +
-      (mp > 4.5 ? " That's large: slower, and models start repeating details well above the size they were trained at." : "");
+    n.textContent = `${d.name} will be painted at ${pw * k}×${ph * k} (${k}× the original${EDIT.has(fam) ? ", plus the border padding" : ""}).` +
+      (mp > 4.5 ? " That's large: much slower, and models start repeating details at this size." : "");
     add(n);
   }
 
@@ -1072,26 +1187,25 @@ function renderAdvanced(v) {
     for (const b of src.querySelectorAll("button")) b.onclick = () => saveSetting({ model_source: b.dataset.src });
     add(src);
     if (!separate) {
-      add(selectRow("checkpoint", "Checkpoint", m.checkpoints, v, { hint: "Model, text encoders and VAE in one file (models/checkpoints)." }));
+      add(selectRow("checkpoint", "Checkpoint", m.checkpoints, v, { hint: "The AI model, as one all-in-one file. The workflow sets it; change it only if you downloaded another version." }));
     } else {
       const types = [...new Set([...(v.clip2 ? m.clip_types_dual : m.clip_types_single), ...m.clip_types_dual])];
-      add(selectRow("unet", "Diffusion model", m.unets, v, { hint: "models/diffusion_models (or unet)." }));
-      add(selectRow("unet_dtype", "Weight type", m.unet_dtypes, v));
+      add(selectRow("unet", "Diffusion model", m.unets, v, { hint: "The main AI model file. The workflow and the Turbo/Full switch set it; change it only if you downloaded another version." }));
+      add(selectRow("unet_dtype", "Weight type", m.unet_dtypes, v, { hint: "Leave on default." }));
       add(selectRow("clip1", "Text encoder 1", m.clips, v, {
-        hint: { krea2: "Krea 2 uses qwen3vl_4b.", qwen21: "Qwen-Image 2.1 uses qwen3vl_8b.", flux3k: "FLUX 3 Klein uses qwen3vl_4b.",
-                mageflow: "Mage-Flow uses qwen3vl_4b.", fibo2: "FIBO 2 uses qwen3vl_4b (bf16: the int8 one has a vision bug).",
-                moss: "MOSS-Image uses qwen3.5_9b (w4a8 or int8)." }[fam] || "Flux.1 uses clip_l + t5xxl." }));
+        hint: "The part of the model that reads your prompt. Leave it as the workflow set it (" +
+          ({ krea2: "qwen3vl_4b", qwen21: "qwen3vl_8b", flux3k: "qwen3vl_4b", mageflow: "qwen3vl_4b", fibo2: "qwen3vl_4b bf16",
+             moss: "qwen3.5_9b" }[fam] || "clip_l and t5xxl") + ")." }));
       add(selectRow("clip2", "Text encoder 2", m.clips, v, { none: "(none: single encoder)" }));
       add(selectRow("clip_type", "Encoder type", types, v, {
-        hint: { krea2: "\"krea2\" for Krea 2.", qwen21: "\"qwen_image\" for Qwen-Image 2.1.", flux3k: "\"flux3\" for FLUX 3 Klein.",
-                mageflow: "\"mage\" for Mage-Flow.", fibo2: "\"fibo2\" for FIBO 2.", moss: "\"moss_image\" for MOSS-Image." }[fam] || "\"flux\" for Flux.1 with two encoders." }));
-      add(selectRow("vae", "VAE", m.vaes, v));
+        hint: "Must match the model; the workflow sets it." }));
+      add(selectRow("vae", "VAE", m.vaes, v, { hint: "Turns the model's internal format into pictures. Leave it as the workflow set it." }));
     }
     if (fam === "flux1") {
-      add(selectRow("controlnet", "ControlNet (structure lock)", m.controlnets, v,
-        { none: "(none: no structure lock)", hint: "Keeps edges on the original layout. Must match the base model's family." }));
+      add(selectRow("controlnet", "ControlNet (edge lock)", m.controlnets, v,
+        { none: "(none: no edge lock)", hint: "The model behind the edge lock (and Flux's depth lock). Leave it as set; (none) turns the locks off." }));
     }
-    add(selectRow("lora", "Extra LoRA", m.loras, v, { none: "(none)", hint: "Optional style LoRA on top of the base model." }));
+    add(selectRow("lora", "Extra LoRA", m.loras, v, { none: "(none)", hint: "An optional add-on that pushes a particular style. (none) is the normal choice." }));
     if (v.lora) add(slider("lora_strength", v));
 
     const base = separate ? v.unet : v.checkpoint;
@@ -1138,10 +1252,10 @@ function renderAdvanced(v) {
 
     if (v.upscaler === "seedvr2" || v.input_upscaler === "seedvr2") {
       sub("SeedVR2 upscaler");
-      add(selectRow("seedvr2_unet", "SeedVR2 model", (m.unets || []).filter((u) => /seedvr2/i.test(u)), v, { hint: "3B int8 is the one ComfyUI's template uses." }));
+      add(selectRow("seedvr2_unet", "SeedVR2 model", (m.unets || []).filter((u) => /seedvr2/i.test(u)), v, { hint: helpText("3B is smoother and closest to the original; 7B gives crisper texture (brick, cobbles) and is a little slower.", "3B for faithful, 7B for crisp") }));
       add(selectRow("seedvr2_vae", "SeedVR2 VAE", (m.vaes || []).filter((u) => /seedvr2/i.test(u)), v));
       add(selectRow("seedvr2_color", "Color correction", ["lab", "wavelet", "adain", "none"], v,
-        { hint: "Matches colors back to the image before upscaling; lab is the most faithful." }));
+        { hint: helpText("Keeps SeedVR2's colours matched to the picture it enlarges.", "lab") }));
     }
   }
   const row = document.createElement("div");

@@ -23,7 +23,7 @@
   walk-behind areas with **Walk-behind** (O). Lower the repaint strength (Flux.1, Krea 2), try another seed, or use
   an edit model with auto-align.
 - **"edges filled".** The generator cropped part of the scene, and those edges were filled from the original art.
-  Increase **Edit margin** (edit models) or check auto-align is on.
+  Increase **Border padding** (edit models, Advanced) or check auto-align is on.
 - **The viewer shows "raw render, not built".** The version hasn't been cut into game textures yet. **Rebuild**
   it, or **Use this version**.
 - **Doors, lights or animations look wrong.** **Redo states** on the version repaints them with the current

@@ -37,7 +37,7 @@ skipped.
 - Renders at about 3 MP (Render size), close to its native 2K, then the upscaler takes it to the output scale.
   Repaint strength, steps (Turbo) and the detail pass don't apply.
 - Edits zoom in by 1–3% (slightly differently in x and y) and shift a few pixels; Full more than Turbo. So the
-  input gets an 8% blurred margin (Edit margin), which comes back with the result, and **auto-align** is on.
+  input gets an 8% blurred margin (Border padding), which comes back with the result, and **auto-align** is on.
   Measured on seven fields, the drift was 1–8 px (median, in original pixels). One overall transform explains
   almost all of it: after alignment 0.3–0.7 px remain, and no edge needs filling from the original.
 - Outlines kept after alignment: Nibelheim 97–99%, the station 99%, Kalm 88–95%.
@@ -131,12 +131,12 @@ These defaults were tuned by hand:
 
 | Setting | Value |
 |---|---|
-| Repaint / structure lock / lock until | 0.2 / 1.2 / 75% |
-| Guidance / edge sensitivity / steps | 5 / 0.2 / 20 |
-| Style image influence | 0.5 |
+| Repaint strength / edge lock / edge lock duration | 0.2 / 1.2 / 75% |
+| Prompt strength / edge detail / steps | 5 / 0.2 / 20 |
+| Style image strength | 0.5 |
 | Output scale | 4×, detail pass off |
 
-Auto-align stays off for Flux.1. The structure lock already holds the layout, and before alignment became
+Auto-align stays off for Flux.1. The edge lock already holds the layout, and before alignment became
 global-only, warping bent redesigned textures.
 
 **Depth lock** (off by default): the same Union Pro 2.0 ControlNet also takes depth, so a second control with
@@ -146,7 +146,7 @@ Depth Anything 3's depth map goes on top of the edge lock. At the default repain
 
 ## Krea 2 Turbo
 
-8 steps. Style images go through Krea's style-reference LoRA (Style image influence is its strength; it was
+8 steps. Style images go through Krea's style-reference LoRA (Style image strength is its strength; it was
 trained on 1–2 images). Without its depth lock, the layout is held only by a low repaint strength.
 
 | Repaint | Outlines kept (Kalm) |
@@ -190,7 +190,7 @@ Every workflow ends with an upscaler (Output → **Upscaler**) that takes the re
   - **3B** stays smooth and faithful. **7B** adds crisper, hatched texture (cobbles, brickwork) and is about 3 s
     slower at 8×.
 - **ESRGAN models** (4x-UltraSharp and others in `upscale_models`) are faster and sharper, but grainier.
-- **None** uses a plain Lanczos resize inside ComfyUI.
+- **None** uses a plain, soft resize (Lanczos) inside ComfyUI.
 - **Lanczos (ImageMagick)** and **Upscayl** run on your PC outside ComfyUI:
   - **Lanczos (ImageMagick)** is ImageMagick's `-filter Lanczos` resize to the output scale (2×, 4× or any
     other). Without ImageMagick installed, Pillow runs the same filter. That gives exactly the same image as
@@ -231,8 +231,8 @@ value without rendering again.
 ## Several tries per field
 
 **Renders per field** (Output, Final only) renders a field with that many seeds and keeps the one that keeps
-the most original outlines; the others are deleted, and the kept one lists all the scores. **Retry when under
-80% of outlines** adds one more try when even the best falls short, with a new seed and, for workflows with a
+the most original outlines; the others are deleted, and the kept one lists all the scores. **Retry if the
+layout changed** adds one more try when even the best falls short, with a new seed and, for workflows with a
 repaint strength, 0.1 less of it. Each try costs a full render; the states pass runs once, for the winner.
 
 ## Original art
@@ -242,7 +242,7 @@ art** sets how, per workflow:
 
 - **Upscaler**: any of the upscalers above. 4x-UltraSharp is the default; SeedVR2 adds detail to the original
   but can invent texture; Lanczos keeps it soft. ImageMagick and Upscayl run before ComfyUI.
-- **Scale**: how many times its size the original is enlarged, which is also the size the AI renders at.
+- **Enlarge by**: how many times its size the original is enlarged, which is also the size the AI renders at.
   **Auto** uses **Render size** (the largest whole multiple within that many megapixels: 2× for most fields at
   1.4 MP). The panel shows what that comes to for the field. Flux.1 on Kalm took 44 s at 3× instead of 18 s
   at 2×. Most models were trained around 1–2 MP (the edit models up to 4) and start repeating details well
@@ -259,7 +259,7 @@ converted on the first start, so their results don't change.
 Style images live in `studio/styles/` and are toggled per look in the Look card.
 
 - **Flux.1** (USO) and **Krea 2** (style LoRA) were built for style images and use them as style.
-- **The edit models take content from them**, so they start with style influence 0 (off).
+- **The edit models take content from them**, so they start with style image strength 0 (off).
   - With Kalm's remaster as a style image, Qwen 2.1 repainted the Ancient Capital (`ancnt1`) as Kalm, keeping 37%
     of its outlines. It still did so with the images scaled down to 0.35 MP and the instruction saying to borrow
     only their style.

@@ -106,9 +106,10 @@ its own tuning inside a look, so switching a look from Qwen to Flux and back los
   model, editable here, **Describe again** to remake it). See [Workflows](workflows.md#scene-descriptions).
 - **Style images:** click to toggle, **+ Add** to upload. Off by default for the edit models, which copy content
   from them.
-- **Sliders:** only the ones the workflow uses. Flux.1 has repaint strength, structure lock, lock until, edge
-  sensitivity, prompt guidance and style influence (and a depth lock); Krea 2 has repaint, depth lock and style
-  influence; MOSS has repaint and its depth lock; Qwen has a depth lock; the edit models have style influence.
+- **Sliders:** only the ones the workflow uses. Flux.1 has repaint strength, edge lock, edge lock duration, edge
+  detail, prompt strength, style image strength and a depth lock; Krea 2 has repaint, depth lock and style image
+  strength; MOSS has repaint and its depth lock; Qwen has a depth lock; the edit models have style image strength.
+  Under each slider: what it does, what higher and lower change, and the recommended value (**use it** sets it).
 - **Seed:** the same seed and settings give the same result. **New seed** for a different take.
 
 ### Output
@@ -126,14 +127,14 @@ its own tuning inside a look, so switching a look from Qwen to Flux and back los
   [How it works](how-it-works.md#doors-lights-and-animations).
 - **Keep original colours:** pulls the render's colours back toward the original palette, applied when the
   version is built ([Workflows](workflows.md#keeping-the-original-colours)).
-- **Renders per field** and **Retry when under 80% of outlines:** several seeds per Final, keeping the one that
+- **Renders per field** and **Retry if the layout changed:** several seeds per Final, keeping the one that
   keeps the layout best ([Workflows](workflows.md#several-tries-per-field)).
 - **Auto-align:** undoes the small zoom and shift edit models introduce (one correction for the whole image, so
   straight lines stay straight). On for the edit models, usually off for Flux.1.
 
 ### Advanced (collapsed)
 
-Render steps, CFG, render size (megapixels the model works at), edit margin, detail- and states-pass tuning
+Render steps, prompt strength, render size (megapixels the model works at), border padding, detail- and states-pass tuning
 (**States repaint** for the edit models), **Original art** (the upscaler that enlarges the original for the AI,
 and by how much: [Workflows](workflows.md#original-art)), the model files (checkpoint, or diffusion model + text encoders + VAE),
 the Flux ControlNet, an extra LoRA, SeedVR2's model, VAE and color correction. **Refresh models** re-reads the
