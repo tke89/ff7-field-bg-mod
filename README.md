@@ -16,6 +16,8 @@ It works with the 2026 Steam re-release (Steam app 3837340). The game's own file
   - Browse every field, composed exactly as the game draws it, and compare original and new with a split view.
   - Restyle with eight workflows: Flux.1, Krea 2, Qwen-Image 2.1, FLUX 3 Klein, Mage-Flow, FIBO 2, MOSS-Image, or
     upscale only. Choose how the original art is enlarged for the AI (upscaler and scale).
+  - Hold the layout with depth locks (Depth Anything 3), describe each scene in the prompt, keep the original
+    colours, and keep the best of several renders per field.
   - Upscale with SeedVR2, ESRGAN models, Lanczos (ImageMagick) or Upscayl's models.
   - Keep every render as a version, compare any two, and pick the one the game uses.
   - Save named **looks** (prompt, workflow, settings) and assign them to fields or areas by name (`md*` = Midgar).

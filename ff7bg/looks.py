@@ -29,7 +29,7 @@ FAMILY_KEYS = {
     "controlnet", "lora", "lora_strength", "steps", "cfg", "denoise", "structure", "structure_end",
     "canny_low", "canny_high", "guidance", "style_ref_strength", "detail_pass", "detail_denoise",
     "detail_steps", "detail_structure", "detail_style", "align", "edit_margin", "work_mp",
-    "state_denoise_boost", "state_denoise", "input_upscaler", "input_scale", "depth_lock", "depth_lock_end",
+    "state_denoise_boost", "state_denoise", "input_upscaler", "input_scale", "depth_lock", "depth_lock_end", "keep_colors",
 }
 SHARED_KEYS = (set(DEFAULT_SETTINGS) - FAMILY_KEYS) | {"family"}
 

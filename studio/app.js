@@ -60,6 +60,8 @@ const VARIANTS = {
             full: { label: "Base · 50 steps", unet: "flux3-image-klein-base-int8-convrot.safetensors", steps: 50, cfg: 1 } },
   fibo2: { turbo: { label: "Edit Turbo · 4 steps", unet: "fibo2_edit_turbo_int8_convrot.safetensors", steps: 4, cfg: 1 },
            full: { label: "Dev · 30 steps", unet: "fibo2_dev_int8_convrot.safetensors", steps: 30, cfg: 5 } },
+  moss: { turbo: { label: "Turbo · 8 steps", unet: "moss_image_sft_turbo_int8_convrot.safetensors", steps: 8, cfg: 1 },
+          full: { label: "SFT · 25 steps", unet: "moss_image_sft_int8_convrot.safetensors", steps: 25, cfg: 2.5 } },
   mageflow: { turbo: { label: "Turbo · 4 steps", unet: "mage_flow_edit_turbo_int8_convrot.safetensors", steps: 4, cfg: 1 },
               full: { label: "Full · 30 steps (redesigns)", unet: "mage_flow_edit_int8_convrot.safetensors", steps: 30, cfg: 5 } },
 };
@@ -75,7 +77,13 @@ const SL = {
   depth_lock: { label: "Depth lock", min: 0, max: 1.5, step: 0.05,
     help: "Depth Anything 3 measures the original's depth and a control adapter holds the render to it. 1 is the trained strength; 0 turns it off.",
     helpBy: { moss: "Depth Anything 3 measures the original's depth and MOSS's control adapter holds the scene to it. 1 is its trained strength; 0 turns it off. Much higher looks sketchy.",
-              krea2: "Depth Anything 3 measures the original's depth and the community Krea 2 depth ControlNet-LoRA holds the scene to it. 0.6 leaves more freedom, 1 holds strictly; 0 turns it off." } },
+              krea2: "Depth Anything 3 measures the original's depth and the community Krea 2 depth ControlNet-LoRA holds the scene to it. 0.6 leaves more freedom, 1 holds strictly; 0 turns it off.",
+              flux1: "A second lock on the same ControlNet, with Depth Anything 3's depth map, on top of the edge lock. Helps at stronger repaints: at 0.45 it kept Kalm's tower, which became something else without it. 0 = off.",
+              qwen21: "Qwen-Image 2.1's Fun ControlNet with Depth Anything 3's depth map. On Kalm, Qwen's shift went from 6.6 px to 0.2 and objects stayed put, but it restyled less. 0 = off." } },
+  keep_colors: { label: "Keep original colours", min: 0, max: 1, step: 0.05, fmt: pct,
+    help: "Pulls the new art's colours back toward the original's palette, keeping its new detail. Applied when a version is built, so Rebuild tries another value without rendering again." },
+  tries: { label: "Renders per field (Final)", min: 1, max: 4, step: 1, fmt: (v) => v > 1 ? `best of ${v}` : "1",
+    help: "Renders with that many seeds and keeps the one that keeps the most original outlines; the others are deleted. Takes that many times as long." },
   depth_lock_end: { label: "Depth lock until", min: 0.3, max: 1, step: 0.05, help: "Share of the render steps the depth lock applies to.", fmt: pct },
   structure_end: { label: "Lock until", min: 0.3, max: 1, step: 0.05, help: "Share of the render steps the structure lock applies to.", fmt: pct },
   input_scale: { label: "Scale", min: 0, max: 8, step: 1, fmt: (v) => v ? `${v}×` : "Auto",
@@ -103,9 +111,9 @@ const SL = {
   lora_strength: { label: "LoRA strength", min: 0, max: 1.5, step: 0.05, help: "" },
 };
 const LOOK_SLIDERS = {
-  flux1: ["denoise", "structure", "structure_end", "canny_low", "guidance", "style_ref_strength"],
+  flux1: ["denoise", "structure", "structure_end", "depth_lock", "canny_low", "guidance", "style_ref_strength"],
   krea2: ["denoise", "depth_lock", "style_ref_strength"],
-  qwen21: ["style_ref_strength"],
+  qwen21: ["depth_lock", "style_ref_strength"],
   flux3k: ["style_ref_strength"],
   mageflow: ["style_ref_strength"],
   fibo2: ["style_ref_strength"],
@@ -114,6 +122,7 @@ const LOOK_SLIDERS = {
 };
 const KEY_LABELS = {
   family: "workflow", prompt: "prompt", style_refs: "style images", seed: "seed", upscaler: "upscaler",
+  describe_scene: "scene description", retry: "retry",
   seedvr2_input: "SeedVR2 input", detail_pass: "detail pass", states_pass: "states pass", align: "auto-align",
   model_source: "model source", checkpoint: "checkpoint", unet: "diffusion model", clip1: "text encoder",
   clip2: "text encoder 2", clip_type: "encoder type", vae: "VAE", controlnet: "ControlNet", lora: "LoRA",
@@ -789,6 +798,7 @@ function renderStyle() {
   const ta = $("#prompt");
   if (document.activeElement !== ta) ta.value = v.prompt;
   $('label[for="prompt"]').className = `lbl ${mark("prompt")}`;
+  renderScene(v);
 
   $("#refsLbl").className = `lbl ${mark("style_refs")}`;
   $("#refsLbl").textContent = fam === "moss" ? "Style reference images (MOSS doesn't use them)" : "Style reference images";
@@ -828,6 +838,35 @@ function renderStyle() {
   renderAdvanced(v);
   renderEstimate();
   renderVersionHead();
+}
+
+// The field's description, added to the prompt when describe_scene is on
+function renderScene(v) {
+  const box = $("#sceneBox"), d = S.detail;
+  const old = box.querySelector("textarea");
+  if (old && document.activeElement === old) return;  // being edited
+  box.innerHTML = "";
+  box.appendChild(check("describe_scene", "Describe the scene in the prompt", v,
+    "Adds a short description of the field (made once by Qwen3.5 looking at it) to the prompt. On Kalm it stopped MOSS painting the cobbles as water and Krea 2 adding people."));
+  if (!v.describe_scene) return;
+  const w = document.createElement("div");
+  w.className = "scene";
+  w.innerHTML = `<textarea rows="3" spellcheck="false" placeholder="Made on the next render, or press Describe now."></textarea>` +
+    `<div class="row-btns tight"><button class="small ghost">${d.caption ? "Describe again" : "Describe now"}</button>` +
+    `<span class="hint">This field only. Correct it freely (Kalm's said dusk; it's night).</span></div>`;
+  const t = w.querySelector("textarea"), b = w.querySelector("button");
+  t.value = d.caption || "";
+  t.onchange = async () => {
+    try { applyDetail(await api(`/api/field/${d.name}/caption`, { body: { text: t.value } })); }
+    catch (e) { toast(`Couldn't save: ${e.message}`); }
+  };
+  b.onclick = async () => {
+    b.disabled = true;
+    b.textContent = "Describing…";
+    try { applyDetail(await api(`/api/field/${d.name}/caption`, { body: { regenerate: true } })); }
+    catch (e) { toast(`Couldn't describe: ${e.message}`); b.disabled = false; b.textContent = "Describe now"; }
+  };
+  box.appendChild(w);
 }
 
 // Turbo / full switch for the edit models
@@ -922,6 +961,11 @@ function renderOutput(v) {
     if (v.detail_pass) box.appendChild(slider("detail_denoise", v));
   }
   box.appendChild(check("states_pass", "States pass (Final only)", v, "Restyles doors, lights and animation frames to match the new scene."));
+  box.appendChild(slider("keep_colors", v));
+  box.appendChild(slider("tries", v));
+  box.appendChild(check("retry", "Retry when under 80% of outlines (Final)", v,
+    "When the best render keeps under 80% of the original outlines, one more try with a new seed" +
+    (usesRepaint(fam) ? " and 0.1 less repaint." : ".")));
   const alignHelp = {
     qwen21: "Keep on for Qwen: its edits zoom and shift by a few pixels. One overall zoom/shift correction, so straight lines stay straight.",
     flux1: "Usually not needed for Flux: the structure lock already holds the layout.",
@@ -1062,6 +1106,10 @@ function renderAdvanced(v) {
         warns.push("The depth lock needs geometry_estimation/depth_anything_3_mono_large.safetensors (Comfy-Org/Depth-Anything-3); or set Depth lock to 0.");
     } else if (fam === "qwen21") {
       if (base && !looksQwen21(base)) warns.push(`"${base}" doesn't look like a Qwen-Image 2.1 model.`);
+      if (v.depth_lock > 0 && !(m.model_patches || []).includes("qwen_image_2.1_fun_controlnet_union_int8_convrot.safetensors"))
+        warns.push("The depth lock needs model_patches/qwen_image_2.1_fun_controlnet_union_int8_convrot.safetensors (Comfy-Org/Qwen-Image-2.1); or set Depth lock to 0.");
+      if (v.depth_lock > 0 && !(m.depth_models || []).includes("depth_anything_3_mono_large.safetensors"))
+        warns.push("The depth lock needs geometry_estimation/depth_anything_3_mono_large.safetensors (Comfy-Org/Depth-Anything-3); or set Depth lock to 0.");
     } else if (fam === "flux3k") {
       if (base && !looksFlux3(base)) warns.push(`"${base}" doesn't look like a FLUX 3 Klein model.`);
       if (base && !(m.unets || []).includes(base)) warns.push("The FLUX 3 Klein files are gated: accept the license at huggingface.co/black-forest-labs/flux-3-image-klein-comfy, then put the model in models/diffusion_models.");
@@ -1078,6 +1126,8 @@ function renderAdvanced(v) {
     } else if (base && !looksFlux1(base)) {
       warns.push(`"${base}" doesn't look like a Flux.1 model; the Flux.1 workflow uses prompt guidance, the Flux ControlNet and USO style images.`);
     }
+    if (fam === "flux1" && v.depth_lock > 0 && !(m.depth_models || []).includes("depth_anything_3_mono_large.safetensors"))
+      warns.push("The depth lock needs geometry_estimation/depth_anything_3_mono_large.safetensors (Comfy-Org/Depth-Anything-3); or set Depth lock to 0.");
     if (separate && (!v.unet || !v.clip1 || !v.vae)) warns.push("Pick a diffusion model, at least one text encoder and a VAE.");
     if (warns.length) {
       const w = document.createElement("div");

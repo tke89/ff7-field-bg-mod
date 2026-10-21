@@ -8,13 +8,13 @@ settings for every workflow. Model files and download links are in
 
 | Workflow | Keeps the layout | Look | Speed (render, 4×, RTX 5090) | Use it for |
 |---|---|---|---|---|
-| **Qwen 2.1 Turbo** | very well, after alignment | rich, stylised, warm | about 8–12 s | the default; nicest overall in testing |
+| **Qwen 2.1 Turbo** | very well, after alignment; near-exactly with its depth lock | rich, stylised, warm | about 8–12 s | the default; nicest overall in testing |
 | **Qwen 2.1 Full** | very well, after alignment | Turbo plus more detail (brick, ground texture) | about 15–20 s | finals where detail matters |
 | **FLUX 3 Klein** | the best (0.1 px drift) | clean, closer to the original colours, less painterly | Distilled about 15–20 s (estimated), Base 50–85 s | fields where exact layout matters most |
 | **Mage-Flow Turbo** | very well | keeps the original colours; flattens some surfaces | about 2–5 s | fast drafts and big batches |
 | **FIBO 2 Edit Turbo** | very well (99% of outlines on Kalm) | clean and neutral; loses night grading | about 13 s | a clean, realistic take |
-| **MOSS-Image** | well, with its depth lock | strong painterly restyle | about 7–15 s | bold restyles that keep the scene |
-| **Flux.1** | well (ControlNet structure lock) | depends heavily on settings | about 15–20 s | style images (USO), the detail pass |
+| **MOSS-Image** | well, with its depth lock | strong painterly restyle | SFT about 7–15 s, Turbo about half | bold restyles that keep the scene |
+| **Flux.1** | well (ControlNet edge lock, plus an optional depth lock) | depends heavily on settings | about 15–20 s | style images (USO), the detail pass |
 | **Krea 2 Turbo** | only at low repaint (a depth lock is wired in, untested) | good, stylised | about 9–19 s | experimenting |
 | **Upscale** | exactly (no restyle) | the original, sharper | about 2–4 s | a faithful HD version, or a baseline |
 
@@ -41,6 +41,11 @@ skipped.
   Measured on seven fields, the drift was 1–8 px (median, in original pixels). One overall transform explains
   almost all of it: after alignment 0.3–0.7 px remain, and no edge needs filling from the original.
 - Outlines kept after alignment: Nibelheim 97–99%, the station 99%, Kalm 88–95%.
+- **Depth lock** (off by default): Qwen-Image 2.1's Fun ControlNet Union, built into ComfyUI, fed with
+  Depth Anything 3's depth map. On Kalm the drift went from 6.6 px to 0.2 px before alignment, and outlines
+  kept from 98.9% to 99.9%, with every object in place. In exchange it restyles less: the result stays closer
+  to the original's look. Use it on fields where Qwen moves or changes things. It needs the ControlNet file
+  ([Getting started](getting-started.md#qwen-image-21-turbo-and-full)).
 
 ## FLUX 3 Image Klein (Distilled, Base)
 
@@ -101,8 +106,12 @@ original partially (**Repaint strength**) instead of editing it. No style images
   and materials change. The default is 0.5 with the lock at its trained strength 1.
 - Strength 2 looked no better; 4 turns sketchy. The adapter's color-region half needs object segmentations,
   which FF7's backgrounds don't split into, so only depth is used.
-- Settings from ComfyUI's template: 25 steps, CFG 2.5, `er_sde`, `simple`. The sampler runs every step whatever
-  the repaint strength: about 7 s at 1.2 MP.
+- **SFT** (default), settings from ComfyUI's template: 25 steps, CFG 2.5, `er_sde`, `simple`. The sampler runs
+  every step whatever the repaint strength: about 7 s at 1.2 MP.
+- **Turbo**: an 8-step merge at CFG 1 (`moss_image_sft_turbo_int8_convrot`, a community file from
+  toxicdog/MOSS-Image-SFT-Turbo-INT8-ConvRot, Apache 2.0). It ran in about half SFT's time on Kalm, looked
+  much the same at repaint 0.2, and works with the depth lock. The official few-step adapters need a custom
+  node and the bf16 model, so they aren't used.
 - License: Apache 2.0 (the model, the adapter and Depth Anything 3 Mono Large).
 
 ## Flux.1
@@ -129,6 +138,11 @@ These defaults were tuned by hand:
 
 Auto-align stays off for Flux.1. The structure lock already holds the layout, and before alignment became
 global-only, warping bent redesigned textures.
+
+**Depth lock** (off by default): the same Union Pro 2.0 ControlNet also takes depth, so a second control with
+Depth Anything 3's depth map goes on top of the edge lock. At the default repaint of 0.2 it changes little. At
+0.45 it's what keeps the scene: without it Kalm's central tower turned into a dark, spiky creature; with it
+(0.6), the tower and its machinery stayed.
 
 ## Krea 2 Turbo
 
@@ -189,6 +203,37 @@ Every workflow ends with an upscaler (Output → **Upscaler**) that takes the re
   - In the other workflows, ComfyUI returns the render at its working size and the Studio enlarges it, the
     states too. With the detail pass on, the render is enlarged with a plain Lanczos resize inside ComfyUI
     before the pass, instead.
+
+## Scene descriptions
+
+With **Describe the scene in the prompt** (Look card), the prompt gets a short description of the field: what
+it shows, what things are made of, the ground and the light. Qwen3.5 9B (MOSS-Image's text encoder, through
+ComfyUI's TextGenerate) writes it once per field, in about 2 s, the first time a render needs it. It's saved
+with the field and can be edited; **Describe again** replaces it.
+
+The style prompt tells a model how to paint; the description tells it what it's painting. On Kalm:
+
+- MOSS at 0.5 painted the wavy cobbles as water; with the description they stayed cobbles.
+- Krea 2 at 0.3 added people and turned a sign into a big pink jug; with the description the scene stayed
+  empty, and the middle became the barrels and pipes it describes.
+
+The descriptions aren't perfect: Kalm's says "dusk or dawn" for a night scene. Correct them where it matters.
+Edit models see the image anyway and need it least.
+
+## Keeping the original colours
+
+**Keep original colours** (Output) pulls a render's colours back toward the original's palette. A colour
+transform is fitted from the render to the original, so the new detail and shading stay; the same transform
+goes on every state panel, so doors and frames keep matching. FIBO 2 turned Kalm into an evenly lit day
+scene; at 70% its blue night came back. It's applied when a version is built, so **Rebuild** tries another
+value without rendering again.
+
+## Several tries per field
+
+**Renders per field** (Output, Final only) renders a field with that many seeds and keeps the one that keeps
+the most original outlines; the others are deleted, and the kept one lists all the scores. **Retry when under
+80% of outlines** adds one more try when even the best falls short, with a new seed and, for workflows with a
+repaint strength, 0.1 less of it. Each try costs a full render; the states pass runs once, for the winner.
 
 ## Original art
 

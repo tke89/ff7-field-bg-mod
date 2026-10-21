@@ -25,8 +25,8 @@ from PIL import Image
 
 from ff7bg import ai, looks, states, upscalers
 from ff7bg.comfy import (
-    DEFAULT_SETTINGS, FAMILIES, FAMILY_PRESETS, Comfy, ComfyError, build_workflow, edit_keep, edit_padding,
-    tile_count, work_size,
+    DEFAULT_SETTINGS, FAMILIES, FAMILY_PRESETS, Comfy, ComfyError, build_caption_workflow, build_workflow,
+    clean_caption, edit_keep, edit_padding, tile_count, work_size,
 )
 from ff7bg.field import parse_background
 from ff7bg.lgp import LgpArchive
@@ -49,6 +49,8 @@ LOOKS_FILE = STUDIO / "looks.json"
 LEGACY_SETTINGS = STUDIO / "settings.json"
 EDIT_FAMILIES = {name for name, f in FAMILIES.items() if f.get("edit")}
 KEEP_IN_GAME = 0.6  # a new version below this share of original outlines doesn't go in game by itself
+FLAG_KEPT = 0.8     # below this share of outlines a field is flagged (and "retry" tries again)
+REPAINT_FAMILIES = {"flux1", "krea2", "moss"}  # the ones with a repaint strength to lower on a retry
 AVG_STATE_RUNS = 488 / 670  # states-pass sheets per field, game-wide (batch estimates)
 # version settings shown in the version strip
 SUMMARY_KEYS = ("denoise", "structure", "seed", "style_refs", "style_ref_strength", "detail_pass",
@@ -207,8 +209,20 @@ class Project:
     def job_settings(self, name, kind, family=None):
         s = self.effective(name, family)
         if kind == "preview":
-            s.update(out_scale=min(4, s["out_scale"]), detail_pass=False)
+            s.update(out_scale=min(4, s["out_scale"]), detail_pass=False, tries=1, retry=False)
         return s
+
+    def describe(self, name, comfy):
+        """Make (or remake) the field's description; returns it."""
+        text = clean_caption(comfy.run_text(build_caption_workflow(comfy.upload(AI / "input" / f"{name}.png"))))
+        self.update_meta(name, caption=text)
+        return text
+
+    def scene(self, name, s, comfy):
+        """The field's description for the prompt ("" unless describe_scene), made the first time."""
+        if not s.get("describe_scene") or s.get("family") == "upscale":
+            return ""
+        return self.meta(name).get("caption") or self.describe(name, comfy)
 
     def render_k(self, name, s):
         """How many times its size the AI renders this field at."""
@@ -290,7 +304,8 @@ class Project:
             sheet += 0.5 * up  # states sheets are about half a field
             if not (s["detail_pass"] and not no_detail):  # the detail pass has a Lanczos resize in the graph
                 first += up
-        out = {"render": first, "tiles": 0, "detail": 0, "sheets": 0, "states": 0, "scale": s["out_scale"]}
+        out = {"render": first * max(1, s["tries"]), "tiles": 0, "detail": 0, "sheets": 0, "states": 0,
+               "scale": s["out_scale"]}
         if not preview:
             if s["detail_pass"] and not no_detail:
                 out["tiles"] = tile_count(w * s["out_scale"], h * s["out_scale"])
@@ -388,7 +403,7 @@ class Project:
             "auto": {"id": auto_id, "how": auto_how},
             "effective": eff, "look_values": look_values, "look_keys": look_keys, "override_keys": ov_keys,
             "estimate": {"final": self.estimate(name, eff), "preview": self.estimate(name, prev, True)},
-            "state_runs": runs, "state_panels": panels,
+            "state_runs": runs, "state_panels": panels, "caption": meta.get("caption", ""),
         }
 
     def looks_view(self):
@@ -524,8 +539,12 @@ class Worker(threading.Thread):
         with_states = not preview and s["states_pass"]
         est = self.p.estimate(name, s, preview)
         split = (est["render"] + est["detail"]) / est["total"] if with_states and est["states"] else 0.97
-        self.band = (0.0, split)
-        vid = self.generate(name, s, job)
+        tries = max(1, s["tries"])
+        if tries == 1 and not s["retry"]:
+            self.band = (0.0, split)
+            vid = self.generate(name, s, job)
+        else:
+            vid, s = self.best_of(name, s, job, tries, split)
         self.band = (split, 0.97)
         self.build(name, vid, s, run_states=with_states)
         self.band = (0.0, 1.0)
@@ -538,6 +557,36 @@ class Worker(threading.Thread):
                                  "(the AI changed the scene); it's in the version strip if you want it anyway")
             self.p.make_current(name, vid)
         return vid
+
+    def best_of(self, name, s, job, tries, split):
+        """Render with `tries` seeds (and once more at a lower repaint when retry is on and all keep under
+        FLAG_KEPT of the original outlines); keep the version that keeps the most, delete the others."""
+        cands = []
+        for i in range(tries + (1 if s["retry"] else 0)):
+            if i == tries:  # the retry
+                if max(c[0] for c in cands) >= FLAG_KEPT:
+                    break
+                si = dict(s, seed=s["seed"] + i)
+                if s["family"] in REPAINT_FAMILIES:
+                    si["denoise"] = round(max(0.1, s["denoise"] - 0.1), 2)
+            else:
+                si = dict(s, seed=s["seed"] + i)
+            self.band = (split * i / (tries + 1), split * (i + 1) / (tries + 1))
+            vid = self.generate(name, si, job)
+            cands.append((self.outlines_kept(name, vid, si), vid, si))
+        kept, vid, best = max(cands, key=lambda c: c[0])
+        for _, v, _ in cands:
+            if v != vid:
+                self.p.versions.delete(name, v)
+        self.p.versions.update_meta(name, vid, tries=[
+            {"seed": c[2]["seed"], "denoise": c[2]["denoise"], "kept": round(c[0], 3)} for c in cands])
+        return vid, best
+
+    def outlines_kept(self, name, vid, s):
+        vmeta = self.p.versions.meta(name, vid)
+        main = ai.prepare_main(self.p.background(name), self.p.versions.render_path(name, vid), self.p.jobs[name],
+                               vmeta.get("rendered_defaults", {}), do_align=s["align"], frame=vmeta.get("frame"))
+        return ai.edges_kept(main["orig"], main["ai_1x"])
 
     def generate(self, name, s, job):
         """Run the main render; returns the new version's id."""
@@ -556,6 +605,9 @@ class Worker(threading.Thread):
         if not comfy.online():
             raise ComfyError(f"ComfyUI isn't reachable at {self.p.comfy_url}; start ComfyUI and try again")
         check_lock_node(comfy, s)
+        scene = self.p.scene(name, s, comfy)
+        if scene:
+            s = dict(s, scene=scene)
         self._stage("uploading", 0.02)
         if s.get("family") in EDIT_FAMILIES:
             # edit models reframe slightly: give them a blurred margin, mostly cropped off inside the workflow
@@ -622,6 +674,7 @@ class Worker(threading.Thread):
             "settings": {k: s[k] for k in DEFAULT_SETTINGS},
             "rendered_defaults": fjob.get("defaults", {}),  # states on in the image sent to the generator
             "frame": list(edit_keep(pad)),  # margin returned around the canvas
+            "scene": s.get("scene", ""),  # the field description added to the prompt
             "render_seconds": round(time.time() - started, 1),
         })
         self.p.thumb(name, vid)
@@ -641,6 +694,8 @@ class Worker(threading.Thread):
             s.update(vmeta.get("settings") or {})
             if run_states:  # redoing the states: with today's states settings
                 s.update(current_states)
+        if vmeta.get("scene"):
+            s = dict(s, scene=vmeta["scene"])
         bg = self.p.background(name)
         fjob = self.p.jobs[name]
         self._stage("preparing", 0.02)
@@ -661,6 +716,9 @@ class Worker(threading.Thread):
                 cancelled=lambda: self.cancel_flag)
         else:
             panels = states.load(sdir, main["scale"])
+        # a finishing step, so a Rebuild applies today's value
+        keep = self.p.effective(name, s.get("family"))["keep_colors"]
+        ai.keep_colors(main, panels, keep)
         self._stage("building game textures", 0.97)
         shutil.rmtree(vs.pages_root(name, vid), ignore_errors=True)
         r = ai.build_pages(bg, main, fjob, vs.pages_root(name, vid), vs.review_dir(name, vid), panels)
@@ -669,7 +727,7 @@ class Worker(threading.Thread):
             "scale": r["scale"], "pages": r["pages"], "edges_kept": round(r["edges_kept"], 3),
             "aligned": r["aligned"], "drift_before": round(b.median, 2), "drift_after": round(a.median, 2),
             "missing": round(r["missing"], 4), "flag": ", ".join(ai.flags_for(r)), "built_at": time.time(),
-            "state_panels": r["state_panels"],
+            "state_panels": r["state_panels"], "keep_colors": keep,
         })
         if self.p.current(name) == vid:  # rebuilt the one the game uses
             self.p.make_current(name, vid)
@@ -825,6 +883,24 @@ def api_field_settings(name):
         fam = values.get("family") if values.get("family") in FAMILIES else looks.layer_family([look, ov])
         looks.patch_layer(ov, values, fam, looks.resolve([look], fam), looks.layer_family([look]))
         project.update_meta(name, override=None if looks.is_empty(ov) else ov)
+    return jsonify(field_detail(name))
+
+
+@app.post("/api/field/<name>/caption")
+def api_field_caption(name):
+    """The field's description for the prompt: {"text": ...} replaces it, {"regenerate": true} makes it again."""
+    _field_or_404(name)
+    body = request.get_json(force=True)
+    if body.get("regenerate"):
+        comfy = Comfy(project.comfy_url)
+        if not comfy.online():
+            return jsonify(message="ComfyUI isn't reachable"), 503
+        try:
+            project.describe(name, comfy)
+        except ComfyError as e:
+            return jsonify(message=str(e)), 502
+    elif "text" in body:
+        project.update_meta(name, caption=" ".join(str(body["text"]).split()) or None)
     return jsonify(field_detail(name))
 
 
@@ -1130,6 +1206,7 @@ def api_models():
         "upscalers": ("UpscaleModelLoader", "model_name"),
         "loras": ("LoraLoaderModelOnly", "lora_name"),
         "depth_models": ("LoadDA3Model", "model_name"),
+        "model_patches": ("ModelPatchLoader", "name"),
     }
     out = {"online": True, "presets": FAMILY_PRESETS, "local": local,
            "nodes": {f: comfy.has_node(spec["node"]) for f, spec in FAMILIES.items() if spec.get("node")},

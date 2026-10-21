@@ -40,6 +40,8 @@ and keeps the layout well.
 | `qwen_image_2.1_int8_convrot.safetensors` (Full, optional) | `diffusion_models` | [Comfy-Org/Qwen-Image-2.1](https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/diffusion_models/qwen_image_2.1_int8_convrot.safetensors) |
 | `qwen3vl_8b_int8_convrot.safetensors` | `text_encoders` | [Comfy-Org/Qwen-Image-2.1](https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/text_encoders/qwen3vl_8b_int8_convrot.safetensors) |
 | `qwen_image_2.1_vae_bf16.safetensors` | `vae` | [Comfy-Org/Qwen-Image-2.1](https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/vae/qwen_image_2.1_vae_bf16.safetensors) |
+| `qwen_image_2.1_fun_controlnet_union_int8_convrot.safetensors` (depth lock) | `model_patches` | [Comfy-Org/Qwen-Image-2.1](https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/model_patches/qwen_image_2.1_fun_controlnet_union_int8_convrot.safetensors) |
+| `depth_anything_3_mono_large.safetensors` (depth lock) | `geometry_estimation` | (same as MOSS-Image) |
 
 ### SeedVR2 (upscaler, used by every workflow)
 
@@ -76,10 +78,14 @@ first. The license is free for individuals and companies under $5M annual revenu
 | File | Folder | Download |
 |---|---|---|
 | `moss_image_sft_int8_convrot.safetensors` | `diffusion_models` | [Comfy-Org/MOSS-Image](https://huggingface.co/Comfy-Org/MOSS-Image/resolve/main/diffusion_models/moss_image_sft_int8_convrot.safetensors) |
+| `moss_image_sft_turbo_int8_convrot.safetensors` (Turbo, optional) | `diffusion_models` | [toxicdog/MOSS-Image-SFT-Turbo-INT8-ConvRot](https://huggingface.co/toxicdog/MOSS-Image-SFT-Turbo-INT8-ConvRot/resolve/main/diffusion_models/moss_image_sft_turbo_int8_convrot.safetensors) |
 | `qwen3.5_9b_w4a8_gptq.safetensors` | `text_encoders` | [Comfy-Org/MOSS-Image](https://huggingface.co/Comfy-Org/MOSS-Image/resolve/main/text_encoders/qwen3.5_9b_w4a8_gptq.safetensors) |
 | `flux2-vae.safetensors` | `vae` | (same as FLUX 3) |
 | `moss_image_color_depth_control.safetensors` (depth lock) | `loras` | [Comfy-Org/MOSS-Image](https://huggingface.co/Comfy-Org/MOSS-Image/resolve/main/loras/moss_image_color_depth_control.safetensors) |
 | `depth_anything_3_mono_large.safetensors` (depth lock) | `geometry_estimation` | [Comfy-Org/Depth-Anything-3](https://huggingface.co/Comfy-Org/Depth-Anything-3/resolve/main/geometry_estimation/depth_anything_3_mono_large.safetensors) |
+
+`qwen3.5_9b_w4a8_gptq.safetensors` also writes the scene descriptions (Look card → Describe the scene), for
+every workflow.
 
 ### FIBO 2 (needs a ComfyUI from late October 2026)
 

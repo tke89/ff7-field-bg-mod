@@ -133,6 +133,26 @@ def fit_color(src_px, dst_px):
     return M  # (4, 3)
 
 
+def keep_colors(main, panels, k):
+    """Pull the new art's colours toward the original palette by k (0-1). A colour transform is fitted from
+    the render to the original, so the new detail and shading stay; it's the same for the render and every
+    state panel, so they keep matching. The original -> new transform is then refitted, for the original
+    art that goes next to the new (glows, layers 2-3)."""
+    if k <= 0:
+        return
+    N = fit_color(main["ai_1x"], main["orig"])
+
+    def pull(img):
+        rgb = img.astype(np.float32)
+        return np.clip(rgb * (1 - k) + (rgb @ N[:3] + N[3]) * k, 0, 255).astype(np.uint8)
+
+    main["ai_hi"], main["ai_1x"] = pull(main["ai_hi"]), pull(main["ai_1x"])
+    if panels:
+        panels["images"] = {key: [(r, pull(img)) for r, img in lst] for key, lst in panels["images"].items()}
+        panels["off"] = [(r, fp, pull(img)) for r, fp, img in panels["off"]]
+    main["M"] = fit_color(main["orig"], main["ai_1x"])
+
+
 def apply_color(px, M):
     rgb = px[..., :3].astype(np.float32)
     out = np.clip(rgb @ M[:3] + M[3], 0, 255).astype(np.uint8)

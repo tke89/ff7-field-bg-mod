@@ -98,15 +98,17 @@ its own tuning inside a look, so switching a look from Qwen to Flux and back los
 ### Look card
 
 - **Workflow:** Flux.1, Krea 2, Qwen 2.1, FLUX 3, Mage-Flow, FIBO 2, MOSS or Upscale. The edit models (Qwen, FLUX 3, Mage-Flow, FIBO 2)
-  have a fast/full switch underneath (Turbo · 8 steps / Full · 25 steps and so on). ⚠ marks a version whose model
+  and MOSS have a fast/full switch underneath (Turbo · 8 steps / Full · 25 steps and so on). ⚠ marks a version whose model
   file isn't installed. See [Workflows](workflows.md) for which to use.
 - **Prompt:** describe the rendering, not the content. Naming materials ("timber, tiles") turned Midgar's
   train station into a medieval alley in testing.
+- **Describe the scene in the prompt:** adds the field's own description (made once by a vision-language
+  model, editable here, **Describe again** to remake it). See [Workflows](workflows.md#scene-descriptions).
 - **Style images:** click to toggle, **+ Add** to upload. Off by default for the edit models, which copy content
   from them.
 - **Sliders:** only the ones the workflow uses. Flux.1 has repaint strength, structure lock, lock until, edge
-  sensitivity, prompt guidance and style influence; Krea 2 has repaint, depth lock and style influence; MOSS has
-  repaint and its depth lock; the edit models have style influence.
+  sensitivity, prompt guidance and style influence (and a depth lock); Krea 2 has repaint, depth lock and style
+  influence; MOSS has repaint and its depth lock; Qwen has a depth lock; the edit models have style influence.
 - **Seed:** the same seed and settings give the same result. **New seed** for a different take.
 
 ### Output
@@ -122,6 +124,10 @@ its own tuning inside a look, so switching a look from Qwen to Flux and back los
 - **Detail pass** (Flux.1, Krea 2): repaints the full-size image in tiles for real texture at high scales. Slower.
 - **States pass:** repaints doors, lights and animation frames (Final only). See
   [How it works](how-it-works.md#doors-lights-and-animations).
+- **Keep original colours:** pulls the render's colours back toward the original palette, applied when the
+  version is built ([Workflows](workflows.md#keeping-the-original-colours)).
+- **Renders per field** and **Retry when under 80% of outlines:** several seeds per Final, keeping the one that
+  keeps the layout best ([Workflows](workflows.md#several-tries-per-field)).
 - **Auto-align:** undoes the small zoom and shift edit models introduce (one correction for the whole image, so
   straight lines stay straight). On for the edit models, usually off for Flux.1.
 

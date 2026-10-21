@@ -40,6 +40,11 @@ DEFAULT_SETTINGS = {
     "steps": 20,
     "cfg": 1.0,               # sampler CFG for edit models that use one (Mage-Flow full: 5)
     "seed": 2107,
+    "tries": 1,               # Final renders per field; the one keeping most original outlines is kept
+    "retry": False,           # one more try (lower repaint, new seed) when the best keeps under 80%
+    # Add a description of the field (made once by a vision-language model, editable) to the prompt.
+    "describe_scene": False,
+    "keep_colors": 0.0,       # pull the new art's colours back toward the original palette (0-1)
     "out_scale": 4,
     "work_mp": 1.4,           # megapixels Flux renders at before the final upscale
     # Detail pass: upscale the render to the output size, then re-run Flux over 1024px tiles at low
@@ -149,6 +154,9 @@ EDIT_VARIANTS = {
                "full": {"unet": "flux3-image-klein-base-int8-convrot.safetensors", "steps": 50, "cfg": 1.0}},
     "mageflow": {"turbo": {"unet": "mage_flow_edit_turbo_int8_convrot.safetensors", "steps": 4, "cfg": 1.0},
                  "full": {"unet": "mage_flow_edit_int8_convrot.safetensors", "steps": 30, "cfg": 5.0}},
+    # MOSS-Image: an 8-step merge (toxicdog/MOSS-Image-SFT-Turbo-INT8-ConvRot, euler, CFG 1) and SFT itself
+    "moss": {"turbo": {"unet": "moss_image_sft_turbo_int8_convrot.safetensors", "steps": 8, "cfg": 1.0},
+             "full": {"unet": "moss_image_sft_int8_convrot.safetensors", "steps": 25, "cfg": 2.5}},
     "fibo2": {"turbo": {"unet": "fibo2_edit_turbo_int8_convrot.safetensors", "steps": 4, "cfg": 1.0},
               "full": {"unet": "fibo2_dev_int8_convrot.safetensors", "steps": 30, "cfg": 5.0}},
 }
@@ -242,6 +250,14 @@ FAMILIES = {
 }
 MOSS_CONTROL_LORA = "moss_image_color_depth_control.safetensors"
 KREA2_DEPTH_LORA = "krea2_depth_control_lora.safetensors"  # Patil/Krea-2-depth-controlnet, renamed
+QWEN21_CONTROLNET = "qwen_image_2.1_fun_controlnet_union_int8_convrot.safetensors"  # model_patches
+# Scene descriptions: ComfyUI's TextGenerate with Qwen3.5 9B (MOSS-Image's text encoder) looking at the field
+CAPTION_CLIP = ("qwen3.5_9b_w4a8_gptq.safetensors", "moss_image")
+CAPTION_ASK = (
+    "This is a pre-rendered background from the 1997 video game Final Fantasy VII. Describe what it shows for "
+    "an image generator, in one or two plain sentences (at most 60 words): the place, the main structures and "
+    "objects and what they are made of, the ground, and the light and time of day. Describe only what is "
+    "visible. No style or art words, no camera words, no game or character names, no people.")
 DEPTH_MODEL = "depth_anything_3_mono_large.safetensors"
 DEPTH_RES = 1008  # Depth Anything 3's working size (longest side, multiple of 14); the map is resized back
 KREA2_STYLE_LORA = "krea2_style_reference.safetensors"
@@ -250,7 +266,7 @@ QWEN21_TURBO_SIGMAS = "1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.70
 
 def _edit_instruction(s, first, ref_tags):
     instr = (f"Restyle {first} while keeping the exact same composition, camera angle, layout and every "
-             "object in the same place: " + s["prompt"])
+             "object in the same place: " + _prompt(s))
     if ref_tags:
         names = ref_tags[0] if len(ref_tags) == 1 else ", ".join(ref_tags[:-1]) + " and " + ref_tags[-1]
         # plain "match the style, not the content" wasn't enough: Qwen-Image 2.1 pasted a style image's town in
@@ -341,6 +357,35 @@ def _family(s):
     return FAMILIES.get(s.get("family"), FAMILIES["flux1"]) | {"name": s.get("family", "flux1")}
 
 
+def _prompt(s):
+    """The prompt, plus the field's description when describe_scene put one in s["scene"]."""
+    scene = (s.get("scene") or "").strip()
+    return f"{s['prompt'].strip()} The scene: {scene}" if scene else s["prompt"]
+
+
+def build_caption_workflow(input_name):
+    """Describe a field (TextGenerate); the text comes back through PreviewAny (Comfy.run_text)."""
+    clip, clip_type = CAPTION_CLIP
+    return {
+        "img": {"class_type": "LoadImage", "inputs": {"image": input_name}},
+        "small": {"class_type": "ImageScaleToTotalPixels", "inputs": {
+            "image": ["img", 0], "upscale_method": "lanczos", "megapixels": 0.6, "resolution_steps": 32}},
+        "clip": {"class_type": "CLIPLoader", "inputs": {"clip_name": clip, "type": clip_type}},
+        "gen": {"class_type": "TextGenerate", "inputs": {
+            "clip": ["clip", 0], "prompt": CAPTION_ASK, "max_length": 160, "sampling_mode": "off",
+            "image": ["small", 0], "thinking": False}},
+        "show": {"class_type": "PreviewAny", "inputs": {"source": ["gen", 0]}},
+    }
+
+
+def clean_caption(text):
+    """One tidy paragraph, without the sentence about there being no people."""
+    import re
+    sentences = re.split(r"(?<=[.!?])\s+", " ".join(text.split()))
+    keep = [x for x in sentences if not re.search(r"\b(people|person|characters?|no one|nobody)\b", x, re.I)]
+    return " ".join(keep or sentences)[:500]
+
+
 def _load_refs(wf, style_ref_names):
     refs = []
     for i, name in enumerate(style_ref_names):
@@ -352,13 +397,13 @@ def _load_refs(wf, style_ref_names):
 def _conditioning(wf, s, clip, vae, control_image, refs):
     """Returns ((positive, negative) for the main render, (positive, negative) prompt-only)."""
     fam = _family(s)
-    wf["pos"] = {"class_type": "CLIPTextEncode", "inputs": {"clip": clip, "text": s["prompt"]}}
+    wf["pos"] = {"class_type": "CLIPTextEncode", "inputs": {"clip": clip, "text": _prompt(s)}}
     if fam["name"] == "krea2":
         wf["neg"] = {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["pos", 0]}}
         plain = (["pos", 0], ["neg", 0])
         if not refs:
             return plain, plain
-        enc = {"clip": clip, "prompt": s["prompt"], "vae": vae}
+        enc = {"clip": clip, "prompt": _prompt(s), "vae": vae}
         for i, r in enumerate(refs[:3]):  # the style LoRA was trained on 1-2 references
             enc[f"image{i + 1}"] = r
         wf["refpos_enc"] = {"class_type": "TextEncodeQwenImageEditPlus", "inputs": enc}
@@ -388,7 +433,13 @@ def _conditioning(wf, s, clip, vae, control_image, refs):
     wf["cn"] = {"class_type": "ControlNetApplyAdvanced", "inputs": {
         "positive": ["guid", 0], "negative": ["neg", 0], "control_net": ["cnl", 0], "image": ["edges", 0],
         "strength": s["structure"], "start_percent": 0.0, "end_percent": s["structure_end"], "vae": vae}}
-    return (["cn", 0], ["cn", 1]), plain
+    if s["depth_lock"] <= 0:
+        return (["cn", 0], ["cn", 1]), plain
+    # the Union Pro 2.0 ControlNet also takes depth: a second control with the same model
+    wf["cn_depth"] = {"class_type": "ControlNetApplyAdvanced", "inputs": {
+        "positive": ["cn", 0], "negative": ["cn", 1], "control_net": ["cnl", 0], "image": _depth_map(wf, control_image),
+        "strength": s["depth_lock"], "start_percent": 0.0, "end_percent": s["depth_lock_end"], "vae": vae}}
+    return (["cn_depth", 0], ["cn_depth", 1]), plain
 
 
 def _depth_map(wf, image):
@@ -470,8 +521,14 @@ def _control_chain(wf, s, model, image, latent, vae):
     through the conditioning), or Krea 2's depth ControlNet-LoRA with the encoded depth map attached.
     image: what the depth is measured on; latent: the latent being sampled (for its size)."""
     fam = _family(s)["name"]
-    if s["depth_lock"] <= 0 or fam not in ("moss", "krea2"):
+    if s["depth_lock"] <= 0 or fam not in ("moss", "krea2", "qwen21"):
         return model
+    if fam == "qwen21":  # native: Load Model Patch + ZImageFunControlnet
+        wf["ctl_patch"] = {"class_type": "ModelPatchLoader", "inputs": {"name": QWEN21_CONTROLNET}}
+        wf["ctl_apply"] = {"class_type": "ZImageFunControlnet", "inputs": {
+            "model": model, "model_patch": ["ctl_patch", 0], "vae": vae, "strength": s["depth_lock"],
+            "image": _depth_map(wf, image), "start_percent": 0.0, "end_percent": s["depth_lock_end"]}}
+        return ["ctl_apply", 0]
     if fam == "moss":
         wf["ctl_lora"] = {"class_type": "LoraLoaderModelOnly", "inputs": {
             "model": model, "lora_name": MOSS_CONTROL_LORA, "strength_model": 1.0}}
@@ -517,7 +574,9 @@ def _sampler(s, model, positive, negative, latent, steps, denoise):
     fam = _family(s)
     return {"class_type": "KSampler", "inputs": {
         "model": model, "seed": s["seed"], "steps": steps, "cfg": s["cfg"] if fam.get("cfg") else 1.0,
-        "sampler_name": fam.get("sampler", "euler"), "scheduler": fam["scheduler"], "positive": positive,
+        # MOSS's Turbo merge wants euler; SFT the template's er_sde
+        "sampler_name": "euler" if "turbo" in s.get("unet", "") else fam.get("sampler", "euler"),
+        "scheduler": fam["scheduler"], "positive": positive,
         "negative": negative, "latent_image": latent, "denoise": denoise}}
 
 
@@ -547,7 +606,7 @@ def _build_edit_workflow(s, input_name, canvas_w, canvas_h, prefix, style_ref_na
     refs = _load_refs(wf, style_ref_names)
     work = _resize(wf, "work", s, ["src", 0], ww, wh)
     positive, negative, latent = _edit_conditioning(wf, s, clip, vae, work, refs, size=(ww, wh))
-    _edit_sample(wf, s, base, positive, negative, latent)
+    _edit_sample(wf, s, _control_chain(wf, s, base, work, latent, vae), positive, negative, latent)
     wf["dec"] = {"class_type": "VAEDecode", "inputs": {"samples": ["sample", 0], "vae": vae}}
     # the encoder rounds sizes to multiples of 32: back to the exact working size, then drop the margin
     wf["back"] = {"class_type": "ImageScale", "inputs": {
@@ -637,7 +696,7 @@ def build_states_workflow(s, ctx_name, orig_name, mask_name, gen_w, gen_h, out_w
     if _family(s).get("edit"):
         # partial repaint inside the mask (keeps each state's shape); the noise mask keeps the rest
         positive, negative, _ = _edit_conditioning(wf, s, clip, vae, ["inp", 0], refs, size=(gen_w, gen_h))
-        _edit_sample(wf, s, base, positive, negative, ["noise_mask", 0],
+        _edit_sample(wf, s, _control_chain(wf, s, base, ["inp", 0], ["enc", 0], vae), positive, negative, ["noise_mask", 0],
                      denoise=s["state_denoise"] if denoise is None else denoise)
     else:
         (positive, negative), _ = _conditioning(wf, s, clip, vae, orig_gen, refs)
@@ -688,6 +747,23 @@ class Comfy:
 
     def run(self, workflow, on_progress=None, cancelled=lambda: False):
         """Queue a workflow, stream progress, return the saved output image bytes."""
+        for out in self._execute(workflow, on_progress, cancelled)["outputs"].values():
+            for img in out.get("images", []):
+                if img.get("type") == "output":
+                    r = requests.get(f"{self.url}/view", params=img, timeout=120)
+                    r.raise_for_status()
+                    return r.content
+        raise ComfyError("workflow finished without an output image")
+
+    def run_text(self, workflow, cancelled=lambda: False):
+        """Queue a workflow, return the text its PreviewAny node shows."""
+        for out in self._execute(workflow, None, cancelled)["outputs"].values():
+            if out.get("text"):
+                return "".join(out["text"])
+        raise ComfyError("workflow finished without any text")
+
+    def _execute(self, workflow, on_progress, cancelled):
+        """Queue a workflow and wait for it; returns its history entry."""
         ws = websocket.WebSocket()
         ws.connect(f"{self.url.replace('http', 'ws', 1)}/ws?clientId={self.client_id}", timeout=10)
         try:
@@ -722,14 +798,7 @@ class Comfy:
                     break
         finally:
             ws.close()
-        hist = requests.get(f"{self.url}/history/{pid}", timeout=30).json()[pid]
-        for out in hist["outputs"].values():
-            for img in out.get("images", []):
-                if img.get("type") == "output":
-                    r = requests.get(f"{self.url}/view", params=img, timeout=120)
-                    r.raise_for_status()
-                    return r.content
-        raise ComfyError("workflow finished without an output image")
+        return requests.get(f"{self.url}/history/{pid}", timeout=30).json()[pid]
 
 
 def _describe_error(r):
