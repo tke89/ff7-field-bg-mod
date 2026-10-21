@@ -23,7 +23,7 @@ import numpy as np
 from flask import Flask, abort, jsonify, request, send_file, send_from_directory
 from PIL import Image
 
-from ff7bg import ai, looks, states
+from ff7bg import ai, looks, states, upscalers
 from ff7bg.comfy import (
     DEFAULT_SETTINGS, FAMILIES, FAMILY_PRESETS, Comfy, ComfyError, build_workflow, edit_keep, edit_padding,
     tile_count, working_size,
@@ -32,6 +32,7 @@ from ff7bg.field import parse_background
 from ff7bg.lgp import LgpArchive
 from ff7bg.lzs import decompress
 from ff7bg.sheets import PageCache, canvas_rect, page_tile_source, render_composite
+from ff7bg.upscalers import UpscalerError, is_local
 from ff7bg.versions import VersionStore
 
 HERE = Path(__file__).resolve().parent
@@ -204,7 +205,13 @@ class Project:
         fam = s.get("family")
         edit = fam in EDIT_FAMILIES
         no_detail = edit or fam == "upscale"
-        if fam == "upscale":
+        outside = is_local(s["upscaler"])  # ImageMagick / Upscayl, after ComfyUI
+        out_px = w * h * s["out_scale"] ** 2
+        if fam == "upscale" and outside:
+            # measured with Lanczos on elm: 3.1 s at 4x, 7.7 s at 8x, with 26 state panels
+            up = upscalers.seconds(s["upscaler"], w * h, out_px)
+            first, tile, sheet = 2 + up, 0, 0.5 * up  # states sheets are about half a field
+        elif fam == "upscale":
             # just the upscaler: an ESRGAN pass takes about a second; SeedVR2 is added below
             pre = s["upscaler"] == "seedvr2" and not s["seedvr2_input"] and s["input_upscaler"]
             first = 2 + (1 if s["upscaler"] and (s["upscaler"] != "seedvr2" or pre) else 0)
@@ -236,6 +243,12 @@ class Project:
             sheet = 4 + 0.8 * s["steps"]
         if s["upscaler"] == "seedvr2":  # measured: 3.4 s at 4x, 23 s at 8x
             first += 3.4 * (s["out_scale"] / 4) ** 2.75 + (2 if s["seedvr2_input"] else 0)
+        elif outside and fam != "upscale":
+            ww, wh = working_size(w, h, s["work_mp"])
+            up = upscalers.seconds(s["upscaler"], ww * wh, out_px)
+            sheet += 0.5 * up  # states sheets are about half a field
+            if not (s["detail_pass"] and not no_detail):  # the detail pass has a Lanczos resize in the graph
+                first += up
         out = {"render": first, "tiles": 0, "detail": 0, "sheets": 0, "states": 0, "scale": s["out_scale"]}
         if not preview:
             if s["detail_pass"] and not no_detail:
@@ -440,7 +453,7 @@ class Worker(threading.Thread):
                         self.p.make_current(name, vid)
                 else:
                     vid = self.render(job)
-            except (ComfyError, InterruptedError) as e:
+            except (ComfyError, UpscalerError, InterruptedError) as e:
                 ok, msg = False, str(e)
             except Exception as e:  # keep the queue alive; surface the error in the UI
                 ok, msg = False, f"{type(e).__name__}: {e}"
@@ -490,11 +503,18 @@ class Worker(threading.Thread):
         started = time.time()
         fjob = self.p.jobs[name]
         w, h = fjob["canvas"][2], fjob["canvas"][3]
+        source, pad = AI / "input" / f"{name}.png", (0, 0, 0, 0)
+        cancelled = lambda: self.cancel_flag
+        if s.get("family") == "upscale" and is_local(s["upscaler"]):
+            # ImageMagick / Upscayl on the original: no ComfyUI needed
+            self._stage("upscaling", 0.1)
+            img = np.asarray(Image.open(source).convert("RGB"))
+            data = _png(Image.fromarray(upscalers.upscale(img, s["upscaler"], w * s["out_scale"], h * s["out_scale"], cancelled)), 4)
+            return self._new_version(name, s, job, fjob, data, pad, started)
         comfy = Comfy(self.p.comfy_url)
         if not comfy.online():
             raise ComfyError(f"ComfyUI isn't reachable at {self.p.comfy_url}; start ComfyUI and try again")
         self._stage("uploading", 0.02)
-        source, pad = AI / "input" / f"{name}.png", (0, 0, 0, 0)
         if s.get("family") in EDIT_FAMILIES:
             # edit models reframe slightly: give them a blurred margin, mostly cropped off inside the workflow
             pad = edit_padding(w, h, s["edit_margin"])
@@ -531,7 +551,17 @@ class Worker(threading.Thread):
             elif node.endswith("_svr_ks") or node.endswith("_up"):
                 self._stage("upscaling", 0.5)
 
-        data = comfy.run(wf, progress, lambda: self.cancel_flag)
+        data = comfy.run(wf, progress, cancelled)
+        if is_local(s["upscaler"]):  # ImageMagick / Upscayl take the render to the output size
+            kl, kt, kr, kb = edit_keep(pad)
+            ow, oh = (w + kl + kr) * s["out_scale"], (h + kt + kb) * s["out_scale"]
+            img = np.asarray(Image.open(io.BytesIO(data)).convert("RGB"))
+            if img.shape[:2] != (oh, ow):
+                self._stage("upscaling result", 0.9)
+                data = _png(Image.fromarray(upscalers.finish(img, s, ow, oh, cancelled)), 4)
+        return self._new_version(name, s, job, fjob, data, pad, started)
+
+    def _new_version(self, name, s, job, fjob, data, pad, started):
         self._stage("saving", 0.99)
         look_id, _ = self.p.look_of(name)
         vid = self.p.versions.create(name, data, {
@@ -566,10 +596,12 @@ class Worker(threading.Thread):
                                frame=vmeta.get("frame"))
         sdir = vs.states_dir(name, vid)
         if run_states:
-            comfy = Comfy(self.p.comfy_url)
-            if not comfy.online():
-                raise ComfyError(f"ComfyUI isn't reachable at {self.p.comfy_url}; start ComfyUI and try again")
-            refs = [comfy.upload(STYLES / r, "ff7studio_styles") for r in s["style_refs"] if (STYLES / r).exists()]
+            comfy, refs = None, []  # the Upscale workflow with ImageMagick / Upscayl needs no ComfyUI
+            if not (s.get("family") == "upscale" and is_local(s["upscaler"])):
+                comfy = Comfy(self.p.comfy_url)
+                if not comfy.online():
+                    raise ComfyError(f"ComfyUI isn't reachable at {self.p.comfy_url}; start ComfyUI and try again")
+                refs = [comfy.upload(STYLES / r, "ff7studio_styles") for r in s["style_refs"] if (STYLES / r).exists()]
             panels = states.run(
                 comfy, bg, main["rect"], main, s, refs, sdir,
                 progress=lambda i, n, k: self._stage(f"restyling states, sheet {i + 1}/{n} ({k} panels)", 0.05 + 0.9 * i / n),
@@ -1022,8 +1054,9 @@ def api_version_import(name):
 def api_models():
     """Model files ComfyUI can load, per loader, for the Advanced panel."""
     comfy = Comfy(project.comfy_url)
+    local = upscalers.available()  # ImageMagick and Upscayl, outside ComfyUI
     if not comfy.online():
-        return jsonify(online=False)
+        return jsonify(online=False, local=local)
     lists = {
         "checkpoints": ("CheckpointLoaderSimple", "ckpt_name"),
         "unets": ("UNETLoader", "unet_name"),
@@ -1036,7 +1069,7 @@ def api_models():
         "upscalers": ("UpscaleModelLoader", "model_name"),
         "loras": ("LoraLoaderModelOnly", "lora_name"),
     }
-    out = {"online": True, "presets": FAMILY_PRESETS,
+    out = {"online": True, "presets": FAMILY_PRESETS, "local": local,
            "nodes": {f: comfy.has_node(spec["node"]) for f, spec in FAMILIES.items() if spec.get("node")}}
     for key, (node, field) in lists.items():
         try:

@@ -7,6 +7,11 @@
 - **A model doesn't show in the lists, or a workflow button shows ⚠.** Check the file is in the right ComfyUI
   model folder ([Getting started](getting-started.md#2-models)), then Advanced → **Refresh models**. **Try all
   workflows** skips workflows whose model file is missing and says so.
+- **Upscayl's models don't show in the Upscaler list.** The Studio looks for an installed Upscayl app, or for
+  `tools/upscayl/upscayl-bin.exe` with a `models` folder next to it
+  ([Getting started](getting-started.md#optional-imagemagick-and-upscayl)). Press Advanced → **Refresh models**.
+  If Upscayl fails, the job's message shows what `upscayl-bin` said; a Vulkan error usually means a graphics
+  driver update is needed.
 - **A job fails with "Value not in list".** A setting names a model file ComfyUI doesn't have. The message names
   the setting; pick another file in Advanced, or download that one.
 - **A job fails with a node error** (for example `TextEncodeQwenImage21` or `ReferenceMultiLatent` unknown).

@@ -24,6 +24,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from . import upscalers
 from .ai import apply_color
 from .comfy import FAMILIES, build_states_workflow, working_size
 from .sheets import PageCache, render_composite
@@ -210,7 +211,8 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
     spinning, a light switched on later). Round 2 derives every other state from its key (the main
     render itself where it shows the spot): it starts from the key plus what changes in the original
     (a needle moving, a door opening) and repaints only those pixels, lightly, so frames stay one
-    design. The Upscale workflow instead sends each state's original art through its upscaler."""
+    design. The Upscale workflow instead sends each state's original art through its upscaler (comfy
+    may be None when that runs outside ComfyUI)."""
     work_dir = Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
     for old in work_dir.glob("*.png"):
@@ -221,6 +223,7 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
     cache = PageCache(bg)
     clusters = plan(bg, rect, defaults)
     upscale_only = settings.get("family") == "upscale"
+    outside = upscalers.is_local(settings["upscaler"])  # ImageMagick / Upscayl, after ComfyUI
     edit = FAMILIES.get(settings.get("family"), {}).get("edit", False)
 
     views, matched = {}, {}
@@ -283,16 +286,20 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
                     start[y : y + h, x : x + w] = matched[(id(c), s)].astype(np.uint8)
                 else:
                     start[y * g : (y + h) * g, x * g : (x + w) * g] = start_fn(c, s, g)
-            tag = f"{bg.name}_{done[0]}"
-            names = []
-            for kind, arr in (("ctx", ctx), ("orig", start), ("mask", mask)):
-                p = work_dir / f"_{tag}_{kind}.png"
-                Image.fromarray(arr).save(p)
-                names.append(comfy.upload(p, "ff7studio_states"))
-                p.unlink()
-            wf = build_states_workflow(settings, *names, W * g, H * g, W * scale, H * scale,
-                                       f"ff7studio/states_{tag}", style_refs, denoise=denoise)
-            res = np.asarray(Image.open(io.BytesIO(comfy.run(wf, None, cancelled))).convert("RGB"))
+            if upscale_only and outside:
+                res = start  # nothing for ComfyUI to do: enlarged by finish() below
+            else:
+                tag = f"{bg.name}_{done[0]}"
+                names = []
+                for kind, arr in (("ctx", ctx), ("orig", start), ("mask", mask)):
+                    p = work_dir / f"_{tag}_{kind}.png"
+                    Image.fromarray(arr).save(p)
+                    names.append(comfy.upload(p, "ff7studio_states"))
+                    p.unlink()
+                wf = build_states_workflow(settings, *names, W * g, H * g, W * scale, H * scale,
+                                           f"ff7studio/states_{tag}", style_refs, denoise=denoise)
+                res = np.asarray(Image.open(io.BytesIO(comfy.run(wf, None, cancelled))).convert("RGB"))
+            res = upscalers.finish(res, settings, W * scale, H * scale, cancelled)
             for c, s, x, y in placed:
                 w, h = c.rect[2], c.rect[3]
                 out_imgs[(id(c), s)] = res[y * scale : (y + h) * scale, x * scale : (x + w) * scale]

@@ -101,7 +101,23 @@ Non-commercial license (CC BY-NC 4.0).
 | `uso-flux1-projector-v1.safetensors` (style images) | `model_patches` | [Comfy-Org/USO_1.0_Repackaged](https://huggingface.co/Comfy-Org/USO_1.0_Repackaged/resolve/main/split_files/model_patches/uso-flux1-projector-v1.safetensors) |
 | `sigclip_vision_patch14_384.safetensors` (style images) | `clip_vision` | [Comfy-Org/sigclip_vision_384](https://huggingface.co/Comfy-Org/sigclip_vision_384/resolve/main/sigclip_vision_patch14_384.safetensors) |
 
-The **Upscale** workflow needs only the SeedVR2 or UltraSharp files.
+The **Upscale** workflow needs only the SeedVR2 or UltraSharp files. It needs no model files at all, nor
+ComfyUI, with Lanczos or Upscayl (below).
+
+### Optional: ImageMagick and Upscayl
+
+Two upscalers that run outside ComfyUI ([Workflows](workflows.md#upscalers)). After installing, press Advanced →
+**Refresh models**.
+
+- **ImageMagick** (optional even for the Lanczos option, which has the same filter built in): install with
+  `winget install ImageMagick.ImageMagick`, or get it from [imagemagick.org](https://imagemagick.org).
+- **Upscayl**: install the app with `winget install Upscayl.Upscayl`, or get it from
+  [upscayl.org](https://upscayl.org). The Studio uses the `upscayl-bin` and models that come with it. Or, without
+  the app:
+  - extract `upscayl-bin` from [upscayl-ncnn's releases](https://github.com/upscayl/upscayl-ncnn/releases) into
+    `tools/upscayl/`;
+  - put model files (`.param` and `.bin` pairs, for example from
+    [Upscayl's models](https://github.com/upscayl/upscayl/tree/main/resources/models)) in `tools/upscayl/models/`.
 
 ## 3. First run
 

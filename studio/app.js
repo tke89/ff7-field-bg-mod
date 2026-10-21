@@ -769,7 +769,8 @@ function renderStyle() {
   $("#genControls").hidden = up;
   $("#upscaleNote").hidden = !up;
   if (up) {
-    $("#upscaleNote").innerHTML = `Upscaling with <b>${esc(upscalerLabel(v))}</b> to ${v.out_scale}× (change it under Output). ` +
+    $("#upscaleNote").innerHTML = `Upscaling with <b>${esc(upscalerLabel(v))}</b> to ${v.out_scale}× (change it under Output)` +
+      (isOutside(v.upscaler) ? ", on this PC without ComfyUI. " : ". ") +
       `Doors, lights and animation frames go through the same upscaler when the states pass is on. ` +
       `Prompt, style images and the model files don't apply.`;
   }
@@ -831,12 +832,25 @@ function renderVariants(v) {
   }
 }
 
+// Upscalers that run outside ComfyUI (ff7bg/upscalers.py): ImageMagick's Lanczos and Upscayl's models
+const isOutside = (u) => u === "magick" || (u || "").startsWith("upscayl:");
+const UPSCAYL_NAMES = {
+  "upscayl-standard-4x": "Standard", "upscayl-lite-4x": "Lite", "high-fidelity-4x": "High Fidelity",
+  "digital-art-4x": "Digital Art", "remacri-4x": "Remacri", "ultramix-balanced-4x": "UltraMix Balanced",
+  "ultrasharp-4x": "UltraSharp",
+};
+function upName(u) {
+  if (u === "magick") return "Lanczos (ImageMagick)";
+  if (u.startsWith("upscayl:")) return `Upscayl ${UPSCAYL_NAMES[u.slice(8)] || u.slice(8)}`;
+  return u.replace(/\.safetensors$|\.pth$/, "");
+}
+
 // What the Upscale workflow runs, in words
 function upscalerLabel(v) {
   if (v.upscaler === "seedvr2") {
-    return v.seedvr2_input || !v.input_upscaler ? "SeedVR2 from the original" : `${v.input_upscaler.replace(/\.safetensors$|\.pth$/, "")}, then SeedVR2`;
+    return v.seedvr2_input || !v.input_upscaler ? "SeedVR2 from the original" : `${upName(v.input_upscaler)}, then SeedVR2`;
   }
-  return v.upscaler ? v.upscaler.replace(/\.safetensors$|\.pth$/, "") : "plain Lanczos resize";
+  return v.upscaler ? upName(v.upscaler) : "plain Lanczos resize";
 }
 
 function renderOutput(v) {
@@ -846,13 +860,28 @@ function renderOutput(v) {
   box.appendChild(slider("out_scale", v));
   const online = m && m.online;
   const svrReady = online && (m.unets || []).some((u) => /seedvr2/i.test(u)) && (m.vaes || []).some((u) => /seedvr2/i.test(u));
+  const local = (m && m.local) || null;  // null: a Studio from before these existed
   const ups = online ? m.upscalers.slice() : [];
   if (svrReady || v.upscaler === "seedvr2") ups.unshift("seedvr2");
-  box.appendChild(selectRow("upscaler", "Upscaler", ups, v, {
-    none: "(none: plain Lanczos resize)",
-    labels: { seedvr2: "SeedVR2 (diffusion upscaler, finer detail)" },
-    hint: online ? "Enlarges the render to the output size." : "ComfyUI isn't reachable; only the saved choice is listed.",
-  }));
+  if (local) ups.push("magick", ...local.upscayl_models.map((x) => `upscayl:${x}`));
+  const labels = { seedvr2: "SeedVR2 (diffusion upscaler, finer detail)" };
+  for (const u of [...ups, v.upscaler]) if (isOutside(u)) labels[u] = upName(u);
+  let hint = online ? "Enlarges the render to the output size." : "ComfyUI isn't reachable; only the saved choice is listed.";
+  if (v.upscaler === "magick") {
+    hint = local && local.magick ? "ImageMagick's Lanczos resize (-filter Lanczos), run outside ComfyUI."
+      : "ImageMagick isn't installed, so Pillow does it: the same Lanczos filter, identical to the plain Lanczos resize. " +
+        "For ImageMagick itself, install it and press Refresh models.";
+  } else if (isOutside(v.upscaler)) {
+    hint = `Upscayl's ${esc(upName(v.upscaler).slice(8))} model, run outside ComfyUI. It enlarges 4×; other output scales get a Lanczos resize after it.`;
+  }
+  if (isOutside(v.upscaler) && fam === "upscale") hint += " Doesn't need ComfyUI.";
+  box.appendChild(selectRow("upscaler", "Upscaler", ups, v, { none: "(none: plain Lanczos resize)", labels, hint }));
+  if (local && !local.upscayl) {
+    const n = document.createElement("div");
+    n.className = "hint";
+    n.textContent = "Upscayl isn't installed. Install it (or put upscayl-bin in tools/upscayl) and press Refresh models to list its models here.";
+    box.appendChild(n);
+  }
   if (v.upscaler === "seedvr2") {
     box.appendChild(fam === "upscale"
       ? check("seedvr2_input", "SeedVR2 works from the original pixels", v,
@@ -865,7 +894,8 @@ function renderOutput(v) {
     return;
   }
   if (!EDIT.has(fam)) {
-    box.appendChild(check("detail_pass", "Detail pass", v, "Repaints at full output resolution in tiles: slower, much sharper."));
+    box.appendChild(check("detail_pass", "Detail pass", v, "Repaints at full output resolution in tiles: slower, much sharper." +
+      (isOutside(v.upscaler) ? ` With it on, the render is enlarged with a plain Lanczos resize inside ComfyUI instead of ${esc(upName(v.upscaler))}.` : "")));
     if (v.detail_pass) box.appendChild(slider("detail_denoise", v));
   }
   box.appendChild(check("states_pass", "States pass (Final only)", v, "Restyles doors, lights and animation frames to match the new scene."));
@@ -906,7 +936,8 @@ function renderAdvanced(v) {
     } else {
       const n = document.createElement("div");
       n.className = "hint";
-      n.textContent = online0(m) ? "Nothing else to set: the upscaler under Output is the whole workflow."
+      n.textContent = isOutside(v.upscaler) ? "Nothing else to set: the upscaler under Output is the whole workflow, and it runs without ComfyUI."
+        : online0(m) ? "Nothing else to set: the upscaler under Output is the whole workflow."
         : "ComfyUI isn't reachable, so the installed models can't be listed. Start it and press Refresh models.";
       add(n);
     }
@@ -1003,6 +1034,11 @@ function renderAdvanced(v) {
       add(selectRow("seedvr2_color", "Color correction", ["lab", "wavelet", "adain", "none"], v,
         { hint: "Matches colors back to the image before upscaling; lab is the most faithful." }));
       if (!v.seedvr2_input) add(selectRow("input_upscaler", "Upscaler for the original art", m.upscalers, v, { none: "(none: plain Lanczos resize)" }));
+    }
+    if (isOutside(v.upscaler)) {
+      sub("Original art");
+      add(selectRow("input_upscaler", "Upscaler for the original art", m.upscalers, v, { none: "(none: plain Lanczos resize)",
+        hint: `${esc(upName(v.upscaler))} runs outside ComfyUI, after it; this one enlarges the original art before the AI sees it.` }));
     }
   }
   const row = document.createElement("div");

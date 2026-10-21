@@ -114,9 +114,10 @@ its own tuning inside a look, so switching a look from Qwen to Flux and back los
 - **Output scale:** the texture resolution versus the original. The game shows 320×240 original pixels, so 4×
   is 1280×960, 6× suits 1440p and 8× is close to 4K. Textures take about 1 MB per megapixel (roughly 8 GB for
   the whole game at 8×).
-- **Upscaler:** SeedVR2 (a diffusion upscaler, finer detail) or an ESRGAN model like 4x-UltraSharp, used to
-  enlarge the render to the output size. With SeedVR2, "Also enlarge the original art with SeedVR2" uses it for
-  the input too.
+- **Upscaler:** enlarges the render to the output size. The options are SeedVR2 (a diffusion upscaler, finer
+  detail), an ESRGAN model like 4x-UltraSharp, Lanczos (ImageMagick), or one of Upscayl's models. With SeedVR2,
+  "Also enlarge the original art with SeedVR2" uses it for the input too. Lanczos and Upscayl run outside ComfyUI
+  ([Workflows](workflows.md#upscalers)). Upscayl's models appear here once Upscayl is installed.
 - **Detail pass** (Flux.1, Krea 2): repaints the full-size image in tiles for real texture at high scales. Slower.
 - **States pass:** repaints doors, lights and animation frames (Final only). See
   [How it works](how-it-works.md#doors-lights-and-animations).

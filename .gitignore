@@ -9,6 +9,9 @@ ai_cli/
 dist/
 work/
 
+# Outside tools you add yourself (tools/upscayl: upscayl-bin and its models)
+tools/
+
 # Your Studio settings and style images
 studio/looks.json
 studio/settings*.json

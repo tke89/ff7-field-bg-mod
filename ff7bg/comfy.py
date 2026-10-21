@@ -13,6 +13,8 @@ from pathlib import Path
 import requests
 import websocket
 
+from .upscalers import is_local
+
 # The user's tuned defaults (2026-10-20). Keep the prompt about the rendering, not the content:
 # naming materials like timber or tiles turned Midgar's train station into a medieval alley in
 # testing. Style images (studio/styles, none shipped) are the better way to steer the look.
@@ -66,13 +68,14 @@ DEFAULT_SETTINGS = {
     "lora": "",                     # optional extra style LoRA ("" = none)
     "lora_strength": 0.8,
     "controlnet": "FLUX.1-dev-ControlNet-Union-Pro-2.0.safetensors",  # "" = no structure lock
-    "upscaler": "4x-UltraSharp.safetensors",                          # "" = plain Lanczos resize, "seedvr2" = SeedVR2
+    # "" = plain Lanczos resize, "seedvr2" = SeedVR2; "magick" and "upscayl:<model>" run outside ComfyUI
+    "upscaler": "4x-UltraSharp.safetensors",
     # SeedVR2 (when "upscaler" is "seedvr2"): one-step diffusion upscaler for the rendered images
     "seedvr2_unet": "seedvr2_3b_int8_convrot.safetensors",
     "seedvr2_vae": "seedvr2_ema_vae_fp16.safetensors",
     "seedvr2_color": "lab",                       # lab / wavelet / adain / none
     "seedvr2_input": False,                       # also use it for the first enlargement of the original art
-    "input_upscaler": "4x-UltraSharp.safetensors",  # ...otherwise this one
+    "input_upscaler": "4x-UltraSharp.safetensors",  # ...otherwise this one (also with an outside upscaler)
     # The ControlNet already pins the layout; warping on top of it misreads redesigned textures
     # (e.g. a new floor-tile pattern) as drift and bends the image. Meant for outside images.
     "align": False,
@@ -369,14 +372,24 @@ def _seedvr2(wf, key, s, image, w, h):
     return [f"{key}_svr_post", 0]
 
 
-def _resize(wf, key, s, image, w, h):
+def _resize(wf, key, s, image, w, h, outside=True):
     """Enlarge with the chosen upscaler (if any), then resize exactly to w x h.
 
     SeedVR2 handles the enlargements of rendered images; the first enlargement of the original low-res
-    art ("work", "orig_gen") uses the ESRGAN-style input upscaler, unless seedvr2_input is set."""
+    art ("work", "orig_gen") uses the ESRGAN-style input upscaler, unless seedvr2_input is set.
+
+    Upscalers that run outside ComfyUI (ImageMagick, Upscayl) can't be in the graph: the input upscaler
+    stands in for the original art, and the render comes back at its own size for the Studio to enlarge
+    (upscalers.finish), or, when the graph needs it at full size (outside=False: the detail pass), it
+    gets a plain Lanczos resize."""
     upscaler = s["upscaler"]
-    if upscaler == SEEDVR2 and key in ("work", "orig_gen") and not s["seedvr2_input"]:
+    first = key in ("work", "orig_gen")
+    if first and (is_local(upscaler) or (upscaler == SEEDVR2 and not s["seedvr2_input"])):
         upscaler = s["input_upscaler"]
+    if is_local(upscaler):
+        if outside and not first:
+            return image
+        upscaler = ""
     if upscaler == SEEDVR2:
         image = _seedvr2(wf, key, s, image, w, h)
     elif upscaler:
@@ -488,7 +501,7 @@ def build_workflow(s, input_name, canvas_w, canvas_h, prefix, style_ref_names=()
     styled = _style_chain(wf, s, base, refs, ww, wh)
     wf["sample"] = _sampler(s, styled, positive, negative, ["enc", 0], s["steps"], s["denoise"])
     wf["dec"] = {"class_type": "VAEDecode", "inputs": {"samples": ["sample", 0], "vae": vae}}
-    result = _resize(wf, "final", s, ["dec", 0], ow, oh)
+    result = _resize(wf, "final", s, ["dec", 0], ow, oh, outside=not s["detail_pass"])
     if s["detail_pass"]:
         # Tiles are processed as a list: every node below runs once per tile.
         wf["tiles"] = {"class_type": "SplitImageToTileList", "inputs": {

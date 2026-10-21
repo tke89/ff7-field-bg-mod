@@ -127,6 +127,8 @@ final at 4× takes about 7–14 s including its states.
 | **4x-UltraSharp** | the most faithful, but grainy |
 | **UltraSharp, then SeedVR2** ("works from the original pixels" off) | clean and close to the original; smooths flat areas like the ground |
 | **SeedVR2 from the original** | the most detail, but invents texture: Kalm's cracked plaza became cobblestones |
+| **Lanczos (ImageMagick)** | a plain resize: soft, nothing added or invented; about 3 s at 4× with the states, no ComfyUI needed |
+| **Upscayl** models | not tested here yet; no ComfyUI needed |
 
 ## Upscalers
 
@@ -140,7 +142,20 @@ Every workflow ends with an upscaler (Output → **Upscaler**) that takes the re
   - The first enlargement of the original low-res art uses the ESRGAN input upscaler unless "Also enlarge the
     original art with SeedVR2" is on, because that changes what the AI sees.
 - **ESRGAN models** (4x-UltraSharp and others in `upscale_models`) are faster and sharper, but grainier.
-- **None** uses a plain Lanczos resize.
+- **None** uses a plain Lanczos resize inside ComfyUI.
+- **Lanczos (ImageMagick)** and **Upscayl** run on your PC outside ComfyUI:
+  - **Lanczos (ImageMagick)** is ImageMagick's `-filter Lanczos` resize to the output scale (2×, 4× or any
+    other). Without ImageMagick installed, Pillow runs the same filter. That gives exactly the same image as
+    **None**: on Kalm not one pixel differed. With ImageMagick installed, it's ImageMagick itself.
+  - **Upscayl** uses Upscayl's models through its `upscayl-bin` (Vulkan): Upscayl Standard and Lite, High
+    Fidelity, Digital Art, Remacri, UltraMix Balanced and UltraSharp. They enlarge 4×; other output scales get a
+    Lanczos resize after them. To set it up, see [Getting started](getting-started.md#optional-imagemagick-and-upscayl).
+    It isn't tested on real Upscayl yet; the wiring was tested with a stand-in tool.
+  - In the **Upscale** workflow they're the whole job, and ComfyUI doesn't need to run.
+  - In the other workflows, ComfyUI returns the render at its working size and the Studio enlarges it, the
+    states too. The AI's input (the original art) is enlarged by the input upscaler (Advanced → Original
+    art). With the detail pass on, the render is enlarged with a plain Lanczos resize inside ComfyUI before the
+    pass, instead.
 
 ## Style images
 
