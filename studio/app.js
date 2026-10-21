@@ -1540,6 +1540,7 @@ function draw() {
     empty.style.display = "flex";
     empty.textContent = S.ready ? "Pick a field on the left." : "Preparing field images…";
     $("#modeBadge").textContent = "";
+    $("#badgeL").hidden = $("#badgeR").hidden = true;
     return;
   }
   empty.style.display = "none";
@@ -1593,10 +1594,16 @@ function draw() {
     ctx.beginPath(); ctx.rect(0, 0, W * S.split, H); ctx.clip();
     paint(lv ? "left" : "orig");
     ctx.restore();
-    ctx.strokeStyle = "#fff"; ctx.lineWidth = 2 / S.zoom;
-    ctx.beginPath(); ctx.moveTo(W * S.split, 0); ctx.lineTo(W * S.split, H); ctx.stroke();
-    badge = `${lv ? label(lv, S.imgs.left) : "Original"}   |   ${S.imgs.new ? label(nv, S.imgs.new) : "no version yet"}`;
+    // outline each side in its colour from the version strip: the divider shows as a yellow | blue edge
+    const css = getComputedStyle(document.documentElement), lw = 2 / S.zoom, x = W * S.split;
+    ctx.lineWidth = lw;
+    if (x > lw) { ctx.strokeStyle = css.getPropertyValue("--warn").trim(); ctx.strokeRect(lw / 2, lw / 2, x - lw, H - lw); }
+    if (W - x > lw) { ctx.strokeStyle = css.getPropertyValue("--accent").trim(); ctx.strokeRect(x + lw / 2, lw / 2, W - x - lw, H - lw); }
+    $("#badgeL").innerHTML = `<b>Left</b> · ${esc(lv ? label(lv, S.imgs.left) : "Original")}`;
+    $("#badgeR").innerHTML = `<b>Right</b> · ${esc(S.imgs.new ? label(nv, S.imgs.new) : "no version yet")}`;
+    badge = "";
   }
+  $("#badgeL").hidden = $("#badgeR").hidden = S.mode !== "split";
   if (S.overlay && S.imgs.overlay) {
     ctx.imageSmoothingEnabled = false;
     ctx.globalAlpha = 0.9;
@@ -1604,6 +1611,7 @@ function draw() {
     ctx.globalAlpha = 1;
   }
   $("#modeBadge").textContent = badge;
+  $("#modeBadge").hidden = !badge;
 }
 
 function setMode(m) {
