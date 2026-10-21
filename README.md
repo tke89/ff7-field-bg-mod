@@ -68,7 +68,8 @@ textures to install), `studio/looks.json` (your looks), `work/` (command-line ex
 
 ## License and legal
 
-The code and documentation are under the [MIT License](LICENSE).
+The code and documentation are in the public domain ([the Unlicense](LICENSE)): use them for anything, no
+attribution needed.
 
 This repository contains no game data and no AI models. You need your own copy of FINAL FANTASY VII; everything
 the tools produce comes from your installation. FINAL FANTASY VII is a trademark of Square Enix; this is an
