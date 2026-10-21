@@ -1,0 +1,6 @@
+pillow
+numpy
+opencv-python-headless
+flask
+websocket-client
+requests

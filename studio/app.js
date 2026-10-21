@@ -1,0 +1,1626 @@
+"use strict";
+
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+async function api(url, opts = {}) {
+  const init = { method: opts.method || (opts.body !== undefined ? "POST" : "GET") };
+  if (opts.body !== undefined) {
+    init.headers = { "Content-Type": "application/json" };
+    init.body = JSON.stringify(opts.body);
+  }
+  const r = await fetch(url, init);
+  let data = null;
+  try { data = await r.json(); } catch (e) { data = null; }
+  if (!r.ok) throw new Error((data && data.message) || `${url}: ${r.status}`);
+  return data;
+}
+
+// Per-viewer conveniences (which tab, which edit target); the page works without them.
+function pref(key, fallback) {
+  try { return localStorage.getItem(`ff7studio.${key}`) ?? fallback; } catch (e) { return fallback; }
+}
+function setPref(key, value) {
+  try { localStorage.setItem(`ff7studio.${key}`, value); } catch (e) { /* storage blocked */ }
+}
+
+let toastTimer = null;
+function toast(msg, ms = 4500) {
+  let el = $("#toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "toast";
+    el.className = "toast";
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.hidden = true; }, ms);
+}
+
+const LAYER_NAMES = { 0: "L0 floor & walls", 1: "L1 objects", 2: "L2 back", 3: "L3 front" };
+const FAMILIES = {
+  flux1: { short: "Flux.1", hint: "Flux.1 dev: a structure lock (ControlNet) holds the edges in place; USO style images; ~20 steps." },
+  krea2: { short: "Krea 2", hint: "Krea 2 Turbo: 8 steps; style images through the style-reference LoRA; no structure lock." },
+  qwen21: { short: "Qwen 2.1", hint: "Qwen-Image 2.1: an edit model that keeps the layout well; style images as references; renders ~2K." },
+  flux3k: { short: "FLUX 3", hint: "FLUX 3 Image Klein (Black Forest Labs, Oct 2026): an edit model that renders up to 4K natively; style images as references." },
+  mageflow: { short: "Mage-Flow", hint: "Mage-Flow Edit (Microsoft, 4B): a small, very fast edit model; style images as references." },
+  upscale: { short: "Upscale", hint: "No AI restyle: the original art enlarged by the upscaler under Output." },
+};
+const usesRepaint = (f) => f === "flux1" || f === "krea2";
+const EDIT = new Set(["qwen21", "flux3k", "mageflow"]);  // edit models: no repaint strength or detail pass
+// Fast and full versions of the edit models; mirrors EDIT_VARIANTS in ff7bg/comfy.py
+const VARIANTS = {
+  qwen21: { turbo: { label: "Turbo · 8 steps", unet: "qwen_image_2.1_turbo_int8_convrot.safetensors", steps: 8, cfg: 1 },
+            full: { label: "Full · 25 steps", unet: "qwen_image_2.1_int8_convrot.safetensors", steps: 25, cfg: 1 } },
+  flux3k: { turbo: { label: "Distilled · 16 steps", unet: "flux3-image-klein-int8-convrot.safetensors", steps: 16, cfg: 1 },
+            full: { label: "Base · 50 steps", unet: "flux3-image-klein-base-int8-convrot.safetensors", steps: 50, cfg: 1 } },
+  mageflow: { turbo: { label: "Turbo · 4 steps", unet: "mage_flow_edit_turbo_int8_convrot.safetensors", steps: 4, cfg: 1 },
+              full: { label: "Full · 30 steps (redesigns)", unet: "mage_flow_edit_int8_convrot.safetensors", steps: 30, cfg: 5 } },
+};
+const famShort = (f) => (FAMILIES[f] || {}).short || "";
+const pct = (v) => `${Math.round(v * 100)}%`;
+
+// Sliders; helpBy overrides the help text for one workflow.
+const SL = {
+  denoise: { label: "Repaint strength", min: 0.1, max: 0.95, step: 0.01, help: "How much the AI may repaint. Low keeps the original, high restyles more.",
+    helpBy: { krea2: "No structure lock on Krea 2: about 0.2-0.3 keeps the layout." } },
+  structure: { label: "Structure lock", min: 0, max: 1.5, step: 0.05, help: "How strongly edges are held to the original layout." },
+  structure_end: { label: "Lock until", min: 0.3, max: 1, step: 0.05, help: "Share of the render steps the structure lock applies to.", fmt: pct },
+  canny_low: { label: "Edge sensitivity", min: 0.05, max: 0.5, step: 0.01, help: "Lower picks up more fine edges for the structure lock." },
+  guidance: { label: "Prompt guidance", min: 1.5, max: 5, step: 0.1, help: "How literally Flux follows the prompt." },
+  style_ref_strength: { label: "Style image influence", min: 0, max: 1.2, step: 0.05, help: "Weight of the selected style images.",
+    helpBy: { qwen21: "Off (0) by default: Qwen copies content from style images (it repainted ancnt1 as Kalm). Raise it only to experiment.",
+              flux3k: "Off (0) by default: in testing FLUX 3 mostly ignored style images anyway.",
+              mageflow: "Off (0) by default: Mage-Flow pastes textures from style images over the scene.",
+              krea2: "Strength of the style-reference LoRA; it was trained on 1-2 images." } },
+  out_scale: { label: "Output scale", min: 2, max: 10, step: 1, help: "Final texture resolution vs. the original. 6× suits 1440p, 8× is close to 4K.", fmt: (v) => `${v}×` },
+  detail_denoise: { label: "Detail strength", min: 0.1, max: 0.5, step: 0.01, help: "How much the detail pass repaints at full resolution. Above ~0.45 tiles may disagree." },
+  cfg: { label: "CFG", min: 1, max: 8, step: 0.5, help: "How strongly the instruction is enforced. Turbo and distilled versions want 1; Mage-Flow Full uses 5." },
+  steps: { label: "Render steps", min: 4, max: 40, step: 1, help: "More steps, more detail, slower. Turbo models want about 8." },
+  work_mp: { label: "Render size", min: 0.8, max: 4, step: 0.1, help: "Megapixels the model renders at before upscaling. More gives finer detail and takes longer.", fmt: (v) => `${v} MP` },
+  edit_margin: { label: "Edit margin", min: 0, max: 0.15, step: 0.01, help: "Blurred border around the scene so the edit model's slight zoom doesn't crop it.", fmt: pct },
+  detail_steps: { label: "Detail steps", min: 2, max: 20, step: 1, help: "Steps per detail tile." },
+  detail_structure: { label: "Detail structure lock", min: 0, max: 1, step: 0.05, help: "Edge lock per detail tile (0 = off)." },
+  state_denoise: { label: "States repaint", min: 0.2, max: 1, step: 0.05,
+    help: "How strongly doors, lights and animation frames are repainted where they change. Lower keeps frames consistent with the scene and each other; 1 repaints from scratch. Content the main render lacks (a fan spinning in an empty window) gets its own key frame, painted at 0.85." },
+  state_denoise_boost: { label: "States extra repaint", min: 0, max: 0.3, step: 0.01, help: "Extra repaint for doors, lights and frames, so original art pasted into the new scene blends in." },
+  lora_strength: { label: "LoRA strength", min: 0, max: 1.5, step: 0.05, help: "" },
+};
+const LOOK_SLIDERS = {
+  flux1: ["denoise", "structure", "structure_end", "canny_low", "guidance", "style_ref_strength"],
+  krea2: ["denoise", "style_ref_strength"],
+  qwen21: ["style_ref_strength"],
+  flux3k: ["style_ref_strength"],
+  mageflow: ["style_ref_strength"],
+  upscale: [],
+};
+const KEY_LABELS = {
+  family: "workflow", prompt: "prompt", style_refs: "style images", seed: "seed", upscaler: "upscaler",
+  seedvr2_input: "SeedVR2 input", detail_pass: "detail pass", states_pass: "states pass", align: "auto-align",
+  model_source: "model source", checkpoint: "checkpoint", unet: "diffusion model", clip1: "text encoder",
+  clip2: "text encoder 2", clip_type: "encoder type", vae: "VAE", controlnet: "ControlNet", lora: "LoRA",
+  canny_high: "edge sensitivity", unet_dtype: "weight type", detail_style: "detail style images",
+  seedvr2_unet: "SeedVR2 model", seedvr2_vae: "SeedVR2 VAE", seedvr2_color: "SeedVR2 color", input_upscaler: "input upscaler",
+};
+const keyLabel = (k) => (SL[k] && SL[k].label.toLowerCase()) || KEY_LABELS[k] || k;
+
+const fmtDuration = (sec) => sec < 90 ? `${Math.round(sec)} s` : sec < 5400 ? `${Math.round(sec / 60)} min` : `${(sec / 3600).toFixed(1)} h`;
+
+function fmtWhen(ts, long = false) {
+  if (!ts) return "";
+  const dt = new Date(ts * 1000);
+  const time = dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (!long && dt.toDateString() === new Date().toDateString()) return time;
+  return `${dt.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
+}
+
+const S = {
+  fields: [], byName: {}, current: null, detail: null,
+  mode: "new", userMode: "new", zoom: 1, panX: 0, panY: 0, split: 0.5,
+  layers: new Set([0, 1, 2, 3]), fx: true, params: new Set(),
+  overlay: false, pixel: true,
+  imgs: { orig: null, new: null, left: null, overlay: null },
+  animate: true, strips: [],   // strips: [{group, rect, frames, wait, orig, new, left}]
+  view: null, left: "orig",    // version shown as New / on the left of Split
+  sel: new Set(), anchor: null,  // fields picked in the list for a batch
+  target: pref("target", "look"), tab: pref("tab", "style"),
+  looks: null, styles: [], models: null, rules: [], rulesDirty: false,
+  queue: null, queueKey: "", running: null, lastFinished: null, ready: false,
+};
+
+// States the game shows on entry, as "param.state" keys
+function defaultParams(d) {
+  const on = new Set();
+  for (const [p, mask] of Object.entries(d.defaults || {})) {
+    for (const s of d.params[p] || []) if (mask & s) on.add(`${p}.${s}`);
+  }
+  return on;
+}
+
+/* ------------------------------------------------------------ versions */
+
+function modeLabel(v) {
+  if (v.mode === "imported") return /^earlier/.test(v.note || "") ? "earlier render" : "imported";
+  return v.try ? "try" : v.mode;
+}
+// "Krea 2 final", "Qwen 2.1 try", "earlier render" (workflow not recorded)
+const verKind = (v, html = false) => {
+  const fam = famShort(v.family);
+  return fam ? (html ? `<b>${fam}</b> ${esc(modeLabel(v))}` : `${fam} ${modeLabel(v)}`) : (html ? `<b>${esc(modeLabel(v))}</b>` : modeLabel(v));
+};
+const verName = (v) => `${verKind(v)} · ${fmtWhen(v.created, true)}${v.current ? " ★" : ""}`;
+const verStamp = (v) => (v ? `${v.id}-${(v.result && v.result.built_at) || 0}` : "");
+
+function viewedVersion() {
+  const d = S.detail;
+  if (!d || !d.versions.length) return null;
+  return d.versions.find((v) => v.id === S.view) || d.versions.find((v) => v.current) || d.versions[0];
+}
+
+function leftVersion() {
+  if (S.left === "orig" || !S.detail) return null;
+  return S.detail.versions.find((v) => v.id === S.left) || null;
+}
+
+function verTip(v) {
+  const s = v.settings || {}, lines = [verName(v)];
+  if (v.look) lines.push(`look: ${v.look}`);
+  const bits = [];
+  if (s.denoise !== undefined && usesRepaint(v.family)) bits.push(`repaint ${s.denoise}`);
+  if (s.seed !== undefined) bits.push(`seed ${s.seed}`);
+  if (s.style_refs) bits.push(`${s.style_refs.length} style image(s)`);
+  if (bits.length) lines.push(bits.join(" · "));
+  if (!v.built) lines.push("not cut into game textures yet");
+  lines.push("Click to view · Shift+click to compare on the left of Split");
+  return lines.join("\n");
+}
+
+function pickVersion(id, asLeft = false) {
+  if (asLeft) {
+    S.left = S.left === id ? "orig" : id;
+    S.mode = "split";
+  } else {
+    S.view = id;
+    if (S.mode === "orig") S.mode = "new";
+  }
+  S.userMode = S.mode;
+  renderVersions();
+  loadImages(false);
+}
+
+function renderSplitPick() {
+  const d = S.detail;
+  const show = S.mode === "split" && d && d.versions.length > 0;
+  $("#splitPick").hidden = !show;
+  $("#viewHint").hidden = !!show;
+  if (!show) return;
+  const opt = (v) => `<option value="${v.id}">${esc(verName(v))}</option>`;
+  $("#leftSel").innerHTML = `<option value="orig">Original</option>` + d.versions.map(opt).join("");
+  $("#leftSel").value = leftVersion() ? S.left : "orig";
+  $("#rightSel").innerHTML = d.versions.map(opt).join("");
+  $("#rightSel").value = viewedVersion().id;
+}
+
+function renderVersions() {
+  const d = S.detail, box = $("#verStrip");
+  renderSplitPick();
+  if (!d) { box.innerHTML = ""; renderVersionHead(); return; }
+  const nv = viewedVersion(), lv = leftVersion();
+  const html = [];
+  const q = S.queue || { queued: [] };
+  const run = q.current && q.current.name === d.name && q.current.kind !== "build" ? q.current : null;
+  if (run) {
+    html.push(`<div class="vcard running" title="Rendering now"><div class="vthumb"></div>` +
+      `<div class="vl"><b>${famShort(run.family)}</b> ${run.try ? "try" : run.kind}</div>` +
+      `<div class="vt" id="runStage">${esc(run.stage)}</div><div class="vbar"><i id="runBar" style="width:${Math.round(run.progress * 100)}%"></i></div></div>`);
+  }
+  for (const j of q.queued.filter((j) => j.name === d.name && j.kind !== "build")) {
+    html.push(`<div class="vcard running" title="Queued"><div class="vthumb" style="animation:none"></div>` +
+      `<div class="vl"><b>${famShort(j.family)}</b> ${j.try ? "try" : j.kind}</div><div class="vt">queued · ~${fmtDuration(j.est || 0)}</div></div>`);
+  }
+  for (const v of d.versions) {
+    const cls = ["vcard", nv && v.id === nv.id ? "viewing" : "", lv && v.id === lv.id ? "left" : "", v.built ? "" : "raw"].join(" ");
+    html.push(`<div class="${cls}" data-id="${v.id}" title="${esc(verTip(v))}">` +
+      `<img loading="lazy" alt="" src="/api/vthumb/${d.name}/${v.id}.jpg">` +
+      `<div class="vl">${verKind(v, true)}</div>` +
+      `<div class="vt">${fmtWhen(v.created)}${v.result ? ` · ${v.result.scale}×` : ""}</div>` +
+      (v.current ? `<span class="vbadge star" title="The version the game uses">★</span>` : "") +
+      (lv && v.id === lv.id ? `<span class="vbadge lft">L</span>` : "") +
+      (v.built ? "" : `<span class="vbadge rawb">raw</span>`) + `</div>`);
+  }
+  html.push(`<div class="vcard add"><label title="Add an image made elsewhere (from this field's input image) as a version">+ Import image` +
+    `<input type="file" id="importFile" accept="image/*" hidden></label>` +
+    `<a href="/api/input/${d.name}.png" title="The image the generators get, to make a version elsewhere">input image ↓</a></div>`);
+  box.innerHTML = html.join("");
+  for (const el of box.querySelectorAll(".vcard[data-id]")) {
+    el.onclick = (e) => pickVersion(el.dataset.id, e.shiftKey || e.altKey || e.ctrlKey);
+  }
+  $("#importFile").onchange = importImage;
+  const viewing = box.querySelector(".vcard.viewing");
+  if (viewing) box.scrollLeft = Math.max(0, Math.min(box.scrollLeft, viewing.offsetLeft - 10, viewing.offsetLeft + viewing.offsetWidth - box.clientWidth + 10)) || box.scrollLeft;
+  renderVersionHead();
+}
+
+function renderVersionHead() {
+  const d = S.detail, v = viewedVersion();
+  const btns = ["#btnUse", "#btnRebuild", "#btnRedoStates", "#btnReview", "#btnDeleteVer"];
+  if (!d || !v) {
+    $("#verTitle").innerHTML = d ? "No versions yet: <b>Preview</b> or <b>Generate final</b> makes one." : "";
+    $("#verInfo").innerHTML = "";
+    btns.forEach((b) => { $(b).hidden = true; });
+    $("#btnUseWorkflow").hidden = true;
+    return;
+  }
+  btns.forEach((b) => { $(b).hidden = false; });
+  $("#verTitle").innerHTML = `${S.mode === "orig" ? "Selected" : "Viewing"}: <b>${fmtWhen(v.created, true)}</b> · ${esc(verKind(v))}` +
+    (v.look ? ` · look "${esc(v.look)}"` : "") + (v.current ? ` · <span class="ok">★ in game</span>` : "");
+  const r = v.result, s = v.settings || {}, parts = [];
+  if (!v.built) parts.push(`<span class="warn">raw render, not cut into game textures yet (Use this version or Rebuild)</span>`);
+  if (r) {
+    parts.push(`${r.scale}× (${d.w * r.scale}×${d.h * r.scale})`);
+    if (r.edges_kept !== undefined) parts.push(`<span class="${r.edges_kept < 0.8 ? "warn" : ""}">original outlines kept ${Math.round(r.edges_kept * 100)}%</span>`);
+    if (r.aligned) parts.push(`auto-aligned (drift ${r.drift_before}px → ${r.drift_after}px)`);
+    if (r.missing > 0) parts.push(`${(r.missing * 100).toFixed(1)}% filled from original`);
+    if (d.state_panels) {
+      parts.push(r.state_panels ? `${r.state_panels} state panels ${v.family === "upscale" ? "upscaled" : "restyled"}`
+        : `<span class="warn">states not ${v.family === "upscale" ? "upscaled" : "restyled"} (original art, color-matched)</span>`);
+    }
+    if (r.flag) parts.push(`<span class="warn">check: ${esc(r.flag)}</span>`);
+  }
+  if (s.denoise !== undefined && usesRepaint(v.family)) parts.push(`repaint ${s.denoise}`);
+  if (v.family === "upscale" && s.upscaler !== undefined) parts.push(upscalerLabel(s));
+  if (s.seed !== undefined) parts.push(`seed ${s.seed}`);
+  if (s.style_refs) parts.push(s.style_refs.length ? `${s.style_refs.length} style image${s.style_refs.length === 1 ? "" : "s"}` : "no style images");
+  if (v.mode === "imported" && v.note && !/^earlier/.test(v.note)) parts.push(esc(v.note));
+  $("#verInfo").innerHTML = parts.join(" · ");
+  $("#btnUse").disabled = v.current;
+  $("#btnUse").textContent = v.current ? "★ In game" : "Use this version";
+  $("#btnReview").disabled = !v.review;
+  $("#btnRedoStates").hidden = !d.state_panels;
+  $("#btnRedoStates").disabled = !v.built;
+  $("#btnDeleteVer").disabled = v.current;
+  $("#btnDeleteVer").title = v.current ? "The version the game uses can't be deleted; use another one first" : "Delete this version";
+  const uw = $("#btnUseWorkflow");
+  uw.hidden = !v.family || v.family === values().family;
+  uw.textContent = `Use ${famShort(v.family)} for ${S.target === "look" ? `look "${d.look.name}"` : "this field"}`;
+  uw.title = "Switch the workflow the next renders use to this version's";
+}
+
+async function importImage(e) {
+  const file = e.target.files[0];
+  if (!file || !S.current) return;
+  const fd = new FormData();
+  fd.append("file", file);
+  const r = await fetch(`/api/versions/${S.current}/import`, { method: "POST", body: fd });
+  if (!r.ok) { toast("Import failed"); return; }
+  const data = await r.json();
+  S.view = data.id;
+  if (S.mode === "orig") S.mode = "new";
+  applyDetail(data.field, true);
+  toast("Imported. Cutting it into game textures in the queue; Use this version puts it in game.");
+}
+
+/* ------------------------------------------------------------ field list */
+
+async function loadFields() {
+  const fields = await api("/api/fields");
+  S.fields = fields;
+  S.byName = Object.fromEntries(fields.map((f) => [f.name, f]));
+  renderList();
+}
+
+function statusClass(f) {
+  if (S.running === f.name) return "running";
+  if (f.error) return "error";
+  if ((f.status === "built" || f.status === "preview") && f.flag) return "flag";
+  if (f.status === "built") return "built";
+  if (f.status === "preview") return "preview";
+  return f.status === "generated" ? "generated" : "";
+}
+
+function lookName(id) {
+  const l = S.looks && S.looks.looks.find((x) => x.id === id);
+  return l ? l.name : id;
+}
+
+function renderList() {
+  const ul = $("#fieldList");
+  const q = $("#search").value.trim().toLowerCase();
+  const filter = $("#filter").value;
+  const lookFilter = $("#lookFilter").value;
+  const existing = new Map([...ul.children].map((li) => [li.dataset.name, li]));
+  const defLook = S.looks ? S.looks.default : "default";
+  let shown = 0;
+  for (const f of S.fields) {
+    let li = existing.get(f.name);
+    if (!li) {
+      li = document.createElement("li");
+      li.dataset.name = f.name;
+      li.innerHTML = `<input type="checkbox" class="pick" title="Select for a batch (Ctrl+click toggles, Shift+click selects a range)">` +
+        `<img loading="lazy" alt=""><div><div class="name"></div><div class="sub"></div></div><span class="sdot"></span>`;
+      li.onclick = (e) => onListClick(e, f.name);
+      li.querySelector(".pick").onclick = (e) => {
+        e.stopPropagation();
+        if (e.shiftKey && S.anchor) pickRange(S.anchor, f.name);
+        else togglePick(f.name, e.target.checked);
+      };
+      ul.appendChild(li);
+    }
+    const thumbSrc = f.current ? `/api/thumb/${f.name}.jpg?v=new&t=${f.current}` : `/api/thumb/${f.name}.jpg`;
+    const img = li.querySelector("img");
+    if (img.dataset.src !== thumbSrc) { img.src = thumbSrc; img.dataset.src = thumbSrc; }
+    li.querySelector(".name").textContent = f.name;
+    const tags = (f.look !== defLook ? `<span class="tag" title="Look">${esc(lookName(f.look))}</span> ` : "") +
+      (f.custom ? `<span class="tag custom" title="This field changes some settings for itself">field changes</span>` : "");
+    const sub = `${f.w}×${f.h}` + (f.copies.length ? ` · +${f.copies.length} copies` : "") + (tags ? `<br>${tags}` : "");
+    const subEl = li.querySelector(".sub");
+    if (subEl.dataset.html !== sub) { subEl.innerHTML = sub; subEl.dataset.html = sub; }
+    li.querySelector(".sdot").className = `sdot ${statusClass(f)}`;
+    li.classList.toggle("active", f.name === S.current);
+    const picked = S.sel.has(f.name);
+    li.classList.toggle("picked", picked);
+    const box = li.querySelector(".pick");
+    if (box.checked !== picked) box.checked = picked;
+    const text = (f.name + " " + f.copies.join(" ")).toLowerCase();
+    const pass =
+      (!q || text.includes(q)) &&
+      (!lookFilter || f.look === lookFilter) &&
+      (filter === "all" ||
+        (filter === "none" && f.status === "none") ||
+        (filter === "built" && f.status === "built") ||
+        (filter === "preview" && f.status === "preview") ||
+        (filter === "flagged" && (f.flag || f.error)) ||
+        (filter === "override" && f.custom));
+    li.style.display = pass ? "" : "none";
+    if (pass) shown++;
+  }
+  const done = S.fields.filter((f) => f.status === "built").length;
+  const previews = S.fields.filter((f) => f.status === "preview").length;
+  $("#fieldCount").textContent = `${shown} shown · ${done}/${S.fields.length} final` + (previews ? ` · ${previews} previews` : "");
+}
+
+/* ------------------------------------------------------------ multi-select */
+
+function onListClick(e, name) {
+  if (e.ctrlKey || e.metaKey) togglePick(name, !S.sel.has(name));
+  else if (e.shiftKey) pickRange(S.anchor || S.current, name);
+  else selectField(name);
+}
+
+function togglePick(name, on) {
+  on ? S.sel.add(name) : S.sel.delete(name);
+  S.anchor = name;
+  selChanged();
+}
+
+// Every visible field between a and b (in list order), added to the selection
+function pickRange(a, b) {
+  const visible = [...$("#fieldList").children].filter((li) => li.style.display !== "none").map((li) => li.dataset.name);
+  let i = visible.indexOf(a), j = visible.indexOf(b);
+  if (i < 0) i = j;
+  if (j < 0) return;
+  for (const n of visible.slice(Math.min(i, j), Math.max(i, j) + 1)) S.sel.add(n);
+  S.anchor = b;
+  selChanged();
+}
+
+let selEstTimer = null;
+function selChanged() {
+  for (const n of S.sel) if (!S.byName[n]) S.sel.delete(n);
+  renderList();
+  const n = S.sel.size;
+  $("#selBar").hidden = !n;
+  if (!n) return;
+  $("#selCount").textContent = `${n} field${n === 1 ? "" : "s"} selected`;
+  $("#selEst").textContent = "";
+  clearTimeout(selEstTimer);
+  selEstTimer = setTimeout(async () => {
+    const names = [...S.sel];
+    try {
+      const e = await api("/api/estimate", { body: { names, mode: "final" } });
+      if (names.length === S.sel.size) $("#selEst").textContent = `· final about ${fmtDuration(e.seconds)}`;
+    } catch (err) { /* estimate is optional */ }
+  }, 250);
+}
+
+function clearPicks() {
+  S.sel.clear();
+  S.anchor = null;
+  selChanged();
+}
+
+async function queuePicked(mode) {
+  const names = [...S.sel];
+  if (!names.length) return;
+  const e = await api("/api/estimate", { body: { names, mode } });
+  const label = mode === "final" ? "final renders" : "previews";
+  if (names.length > 3 && !confirm(`Queue ${label} of ${names.length} fields, each with its own look?\n\n` +
+    `Estimated time: about ${fmtDuration(e.seconds)}. You can keep browsing while they run; Cancel queue stops them.`)) return;
+  const r = await api("/api/generate", { body: { names, mode } });
+  const skipped = names.length - r.added;
+  toast(`${r.added} ${label} queued` + (skipped ? ` (${skipped} already queued)` : ""));
+  clearPicks();
+}
+
+function renderLookFilter() {
+  const sel = $("#lookFilter");
+  const cur = sel.value;
+  sel.innerHTML = `<option value="">All looks</option>` +
+    S.looks.looks.map((l) => `<option value="${esc(l.id)}">Look: ${esc(l.name)} (${l.fields})</option>`).join("");
+  sel.value = S.looks.looks.some((l) => l.id === cur) ? cur : "";
+}
+
+/* ------------------------------------------------------------ field selection */
+
+async function selectField(name, keepView = false) {
+  S.current = name;
+  renderList();
+  let d;
+  try { d = await api(`/api/field/${name}`); } catch (e) { return; }  // server restarting
+  if (!d || S.current !== name) return;
+  const first = !keepView || !S.detail || S.detail.name !== name;
+  if (first) {
+    S.view = null;
+    S.left = "orig";
+    S.layers = new Set(d.layers);
+    S.params = defaultParams(d);  // open on what the game shows when you enter the field
+    S.fx = true;
+    S.mode = d.versions.length ? S.userMode : "orig";
+  }
+  S.detail = d;
+  renderLayers();
+  renderStyle();
+  renderStatus();
+  renderVersions();
+  await loadImages(first);
+}
+
+// Take a fresh field detail from the server (after a settings change, version action, ...).
+function applyDetail(nd, reload = false) {
+  const prev = S.detail;
+  if (!nd || nd.name !== S.current) return;
+  S.detail = nd;
+  const f = S.byName[nd.name];
+  if (f) {
+    for (const k of ["status", "flag", "error", "custom", "look", "look_how", "current", "family"]) f[k] = nd[k];
+  }
+  renderList();
+  renderStyle();
+  renderStatus();
+  renderVersions();
+  const key = (d) => d.versions.map(verStamp).join(",") + "|" + d.current;
+  if (reload || !prev || key(prev) !== key(nd)) loadImages(false);
+}
+
+// Groups currently played as animations (drawn from strips instead of the static render)
+function playingGroups() {
+  const d = S.detail;
+  return S.animate && d ? Object.keys(d.animations || {}).filter((p) => d.params[p]) : [];
+}
+
+function renderQuery(excludeGroups = []) {
+  const params = [...S.params].filter((k) => !excludeGroups.includes(k.split(".")[0]));
+  return new URLSearchParams({ layers: [...S.layers].join(","), fx: S.fx ? "1" : "0", params: params.join(",") }).toString();
+}
+
+function loadImg(src) {
+  return new Promise((res) => {
+    const im = new Image();
+    im.onload = () => res(im);
+    im.onerror = () => res(null);
+    im.src = src;
+  });
+}
+
+async function loadImages(fit) {
+  const d = S.detail;
+  if (!d) return;
+  const playing = playingGroups();
+  const q = renderQuery(playing);
+  const name = d.name;
+  const nv = viewedVersion(), lv = leftVersion();
+  const verSrc = (v) => `/api/render/${name}?v=new&ver=${v.id}&${q}&t=${verStamp(v)}`;
+  const strip = (p, v) => loadImg(`/api/strip/${name}?group=${p}&${q}` + (v ? `&v=new&ver=${v.id}&t=${verStamp(v)}` : "&v=orig"));
+  const [orig, neu, left, overlay, ...strips] = await Promise.all([
+    loadImg(`/api/render/${name}?v=orig&${q}`),
+    nv ? loadImg(verSrc(nv)) : null,
+    lv ? loadImg(verSrc(lv)) : null,
+    S.overlay ? (S.imgs.overlayFor === name && S.imgs.overlay ? S.imgs.overlay : loadImg(`/api/overlay/${name}.png`)) : null,
+    ...playing.flatMap((p) => [strip(p, null), nv && nv.built ? strip(p, nv) : null, lv && lv.built ? strip(p, lv) : null]),
+  ]);
+  if (S.current !== name) return;
+  S.imgs = { orig, new: neu, left, overlay, overlayFor: name };
+  // Each frame as its own bitmap: drawing a slice of the strip image with smoothing pulls in a
+  // sliver of the neighbouring frame along the edges, which showed as lines through the scene.
+  const split = (img, n) => img ? Promise.all([...Array(n).keys()].map((k) => {
+    const fw = img.naturalWidth / n;
+    return createImageBitmap(img, Math.round(k * fw), 0, Math.round(fw), img.naturalHeight);
+  })) : null;
+  const built = [];
+  for (const [i, p] of playing.entries()) {
+    const a = d.animations[p];
+    const frames = a.order.length > 1 ? a.order.length : 2;
+    if (!strips[3 * i]) continue;
+    const [o, n, l] = await Promise.all([split(strips[3 * i], frames), split(strips[3 * i + 1], frames), split(strips[3 * i + 2], frames)]);
+    built.push({ group: p, rect: d.group_rects[p], tiles: (d.group_tiles || {})[p], frames, wait: a.wait, orig: o, new: n, left: l });
+  }
+  if (S.current !== name) return;
+  S.strips = built;
+  if (fit) fitView();
+  draw();
+  if (S.strips.length) startAnimation();
+}
+
+// Timer-driven (not requestAnimationFrame, which some embedded/unfocused windows throttle to a
+// couple of frames a second); redraws only when some animation actually changes frame.
+let animating = false;
+function startAnimation() {
+  if (animating) return;
+  animating = true;
+  let last = "";
+  const tick = () => {
+    if (!S.animate || !S.strips.length) { animating = false; return; }
+    const now = performance.now();
+    const key = S.strips.map((st) => Math.floor(now / (st.wait * 1000 / 30)) % st.frames).join(",");
+    if (key !== last) { last = key; draw(); }
+    setTimeout(tick, 15);
+  };
+  tick();
+}
+
+/* ------------------------------------------------------------ layers tab */
+
+function chip(label, on, onclick, title = "") {
+  const c = document.createElement("span");
+  c.className = "chip" + (on ? " on" : "");
+  c.textContent = label;
+  c.title = title;
+  c.onclick = onclick;
+  return c;
+}
+
+let reloadTimer = null;
+function reloadSoon() {
+  clearTimeout(reloadTimer);
+  reloadTimer = setTimeout(() => loadImages(false), 120);
+}
+
+function renderLayers() {
+  const d = S.detail;
+  const box = $("#layerToggles");
+  box.innerHTML = "";
+  for (const l of d.layers) {
+    box.appendChild(chip(LAYER_NAMES[l], S.layers.has(l), () => {
+      S.layers.has(l) ? S.layers.delete(l) : S.layers.add(l);
+      renderLayers(); reloadSoon();
+    }));
+  }
+  if (d.has_fx) {
+    box.appendChild(chip("Glow effects", S.fx, () => { S.fx = !S.fx; renderLayers(); reloadSoon(); },
+      "Static translucent effects (light beams, glows)"));
+  }
+  const pg = $("#paramGroups");
+  pg.innerHTML = "";
+  const groups = Object.entries(d.params);
+  if (!groups.length) return;
+  const intro = document.createElement("div");
+  intro.className = "lbl";
+  intro.innerHTML = `Toggled by the game: doors, lights, animation frames. <span class="dflt-key">●</span> = on when you enter`;
+  pg.appendChild(intro);
+  const dmask = (p) => (d.defaults || {})[p] || 0;
+  for (const [p, states] of groups) {
+    const g = document.createElement("div");
+    g.className = "param-group";
+    const head = document.createElement("div");
+    head.className = "pg-head";
+    const anim = (d.animations || {})[p];
+    const kind = anim
+      ? `animated · ${anim.order.length > 1 ? anim.order.length + " frames" : "blinks"} @ ${(30 / anim.wait).toFixed(1)} fps`
+      : (dmask(p) ? "on at entry, switched by events" : "switched by events");
+    head.innerHTML = `<span>Group ${p} <span class="kind">${kind}</span></span>` +
+      `<span><a data-a="default">default</a> · <a data-a="all">all</a> · <a data-a="none">none</a></span>`;
+    const set = (fn) => () => { fn(); renderLayers(); reloadSoon(); };
+    head.querySelector('[data-a="default"]').onclick = set(() => states.forEach((s) =>
+      (dmask(p) & s) ? S.params.add(`${p}.${s}`) : S.params.delete(`${p}.${s}`)));
+    head.querySelector('[data-a="all"]').onclick = set(() => states.forEach((s) => S.params.add(`${p}.${s}`)));
+    head.querySelector('[data-a="none"]').onclick = set(() => states.forEach((s) => S.params.delete(`${p}.${s}`)));
+    g.appendChild(head);
+    const row = document.createElement("div");
+    row.className = "toggles";
+    if (anim && S.animate) {
+      const note = document.createElement("span");
+      note.className = "chip playing";
+      note.textContent = "▶ playing (turn off Animate to pick frames)";
+      row.appendChild(note);
+    } else {
+      for (const s of states) {
+        const key = `${p}.${s}`;
+        row.appendChild(chip(`state ${s}` + ((dmask(p) & s) ? " ●" : ""), S.params.has(key), set(() =>
+          S.params.has(key) ? S.params.delete(key) : S.params.add(key))));
+      }
+    }
+    g.appendChild(row);
+    pg.appendChild(g);
+  }
+}
+
+/* ------------------------------------------------------------ style tab */
+
+// What the controls show: the look's own settings, or this field's (look + its changes).
+const values = () => (S.target === "look" ? S.detail.look_values : S.detail.effective);
+
+function mark(key) {
+  const d = S.detail;
+  const own = new Set(S.target === "look" ? d.look_keys : d.override_keys);
+  const keys = key === "canny_low" ? ["canny_low", "canny_high"] : [key];
+  if (keys.some((k) => own.has(k))) return "changed";
+  if (S.target === "look" && keys.some((k) => d.override_keys.includes(k))) return "overridden";
+  return "";
+}
+
+const OVERRIDDEN_TIP = "This field changes this setting for itself; switch to This field only to see or edit its value";
+
+function slider(key, v, opts = {}) {
+  const sd = SL[key];
+  const m = mark(key);
+  const w = document.createElement("div");
+  w.className = `slider ${m} ${opts.dim ? "dim" : ""}`;
+  if (m === "overridden") w.title = OVERRIDDEN_TIP;
+  const fmt = sd.fmt || ((x) => String(x));
+  const help = opts.help || (sd.helpBy && sd.helpBy[v.family]) || sd.help;
+  w.innerHTML = `<div class="top"><span>${sd.label}</span><b>${fmt(Number(v[key]))}</b></div>` +
+    `<input type="range" min="${sd.min}" max="${sd.max}" step="${sd.step}" value="${v[key]}">` +
+    (help ? `<div class="help">${help}</div>` : "");
+  const input = w.querySelector("input");
+  input.oninput = () => { w.querySelector("b").textContent = fmt(Number(input.value)); };
+  input.onchange = () => {
+    const val = Number(input.value);
+    const patch = { [key]: val };
+    if (key === "canny_low") patch.canny_high = Math.min(0.95, +(val * 3).toFixed(2));
+    saveSetting(patch);
+  };
+  return w;
+}
+
+function check(key, label, v, help = "") {
+  const m = mark(key);
+  const el = document.createElement("label");
+  el.className = `check ctl ${m}`;
+  if (m === "overridden") el.title = OVERRIDDEN_TIP;
+  el.innerHTML = `<input type="checkbox" ${v[key] ? "checked" : ""}><span>${label}${help ? `<div class="ctl-help">${help}</div>` : ""}</span>`;
+  el.querySelector("input").onchange = (e) => saveSetting({ [key]: e.target.checked });
+  return el;
+}
+
+function selectRow(key, label, options, v, { hint = "", none = null, labels = {} } = {}) {
+  const cur = v[key] ?? "";
+  let opts = options.slice();
+  if (cur && !opts.includes(cur)) opts = [cur, ...opts];  // keep a saved choice visible even if the file is gone
+  const html = (none !== null ? `<option value="">${none}</option>` : "") +
+    opts.map((o) => `<option value="${esc(o)}" ${o === cur ? "selected" : ""}>${esc(labels[o] || o)}${options.includes(o) ? "" : "  (missing)"}</option>`).join("");
+  const m = mark(key);
+  const el = document.createElement("div");
+  el.className = `ctl ${m}`;
+  if (m === "overridden") el.title = OVERRIDDEN_TIP;
+  el.innerHTML = `<label class="lbl">${label}</label><select>${html}</select>${hint ? `<div class="ctl-help">${hint}</div>` : ""}`;
+  el.querySelector("select").onchange = (e) => saveSetting({ [key]: e.target.value });
+  return el;
+}
+
+function renderLookBar() {
+  const d = S.detail, L = S.looks;
+  const sel = $("#lookSel");
+  const how = d.auto.how === "default" ? "default look" : `rule ${d.auto.how.slice(8)}`;
+  sel.innerHTML = `<option value="">Automatic: ${esc(lookName(d.auto.id))} (${esc(how)})</option>` +
+    (L ? L.looks : []).map((l) => `<option value="${esc(l.id)}">${esc(l.name)}${l.id === L.default ? " (default)" : ""}</option>`).join("") +
+    `<option value="__manage">Manage looks…</option>`;
+  sel.value = d.look.explicit ? d.look.id : "";
+  const n = d.override_keys.length;
+  $("#targetLook").textContent = `Edit look "${d.look.name}"`;
+  $("#targetField").textContent = n ? `This field only (${n})` : "This field only";
+  for (const b of $("#targetSeg").children) b.classList.toggle("on", b.dataset.target === S.target);
+  const note = $("#scopeNote");
+  const count = L ? (L.looks.find((l) => l.id === d.look.id) || {}).fields : null;
+  if (S.target === "look") {
+    note.className = "scope-note";
+    note.innerHTML = `Changes apply to ${count != null ? `all <b>${count}</b> fields` : "every field"} using "${esc(d.look.name)}". • = changed from the built-in defaults.` +
+      (n ? `<br><span style="color:var(--field)">◆ ${esc(d.name)} changes ${n} setting${n > 1 ? "s" : ""} for itself: ${d.override_keys.map(keyLabel).join(", ")}.</span>` : "");
+  } else {
+    note.className = "scope-note field";
+    note.textContent = n
+      ? `Changes apply to ${d.name} only. • = ${n} setting${n > 1 ? "s" : ""} different from its look.`
+      : `Changes apply to ${d.name} only, on top of look "${d.look.name}".`;
+  }
+  $("#btnResetField").disabled = !n;
+}
+
+function renderStyle() {
+  const d = S.detail;
+  if (!d) return;
+  renderLookBar();
+  const v = values();
+  const fam = v.family;
+
+  const seg = $("#familySeg");
+  seg.innerHTML = Object.entries(FAMILIES).map(([k, f]) => `<button data-fam="${k}" class="${k === fam ? "on" : ""}">${f.short}</button>`).join("");
+  for (const b of seg.children) b.onclick = () => { if (b.dataset.fam !== fam) saveSetting({ family: b.dataset.fam }); };
+  if (S.target === "look" && d.override_keys.includes("family") && d.effective.family !== fam) {
+    const fb = seg.querySelector(`[data-fam="${d.effective.family}"]`);
+    if (fb) { fb.classList.add("overridden"); fb.title = `${d.name} uses ${famShort(d.effective.family)} (This field only)`; }
+  }
+  $("#familyHint").textContent = FAMILIES[fam].hint;
+  renderVariants(v);
+  const up = fam === "upscale";
+  $("#genControls").hidden = up;
+  $("#upscaleNote").hidden = !up;
+  if (up) {
+    $("#upscaleNote").innerHTML = `Upscaling with <b>${esc(upscalerLabel(v))}</b> to ${v.out_scale}× (change it under Output). ` +
+      `Doors, lights and animation frames go through the same upscaler when the states pass is on. ` +
+      `Prompt, style images and the model files don't apply.`;
+  }
+
+  const ta = $("#prompt");
+  if (document.activeElement !== ta) ta.value = v.prompt;
+  $('label[for="prompt"]').className = `lbl ${mark("prompt")}`;
+
+  $("#refsLbl").className = `lbl ${mark("style_refs")}`;
+  const refs = $("#styleRefs");
+  refs.innerHTML = "";
+  for (const f of S.styles) {
+    const el = document.createElement("div");
+    el.className = "ref" + (v.style_refs.includes(f) ? " on" : "");
+    el.title = "Click to use or stop using this style image";
+    el.innerHTML = `<img src="/styles/${encodeURIComponent(f)}" alt=""><span>${esc(f)}</span>`;
+    el.onclick = () => {
+      const cur = new Set(values().style_refs);
+      cur.has(f) ? cur.delete(f) : cur.add(f);
+      saveSetting({ style_refs: [...cur] });
+    };
+    refs.appendChild(el);
+  }
+
+  const box = $("#lookSliders");
+  box.innerHTML = "";
+  for (const k of LOOK_SLIDERS[fam]) {
+    box.appendChild(slider(k, v, { dim: k === "style_ref_strength" && !v.style_refs.length,
+      help: k === "style_ref_strength" && !v.style_refs.length ? "No style images selected." : "" }));
+  }
+
+  const seed = $("#seedRow");
+  seed.className = `seed-row ${mark("seed")}`;
+  seed.innerHTML = `<span>Seed</span><input type="number" min="0" max="999999" value="${v.seed}"><button class="small ghost">New seed</button><span class="hint">same seed + settings = same result</span>`;
+  seed.querySelector("input").onchange = (e) => saveSetting({ seed: Number(e.target.value) });
+  seed.querySelector("button").onclick = () => saveSetting({ seed: Math.floor(Math.random() * 99999) });
+
+  renderOutput(v);
+  renderAdvanced(v);
+  renderEstimate();
+  renderVersionHead();
+}
+
+// Turbo / full switch for the edit models
+function renderVariants(v) {
+  const seg = $("#variantSeg");
+  const vs = VARIANTS[v.family];
+  seg.hidden = !vs;
+  if (!vs) return;
+  const have = S.models && S.models.online ? new Set(S.models.unets || []) : null;
+  seg.innerHTML = Object.entries(vs).map(([k, x]) =>
+    `<button data-var="${k}" class="${x.unet === v.unet ? "on" : ""}" title="${esc(x.unet)}${have && !have.has(x.unet) ? " (not downloaded yet)" : ""}">` +
+    `${x.label}${have && !have.has(x.unet) ? " ⚠" : ""}</button>`).join("");
+  for (const b of seg.children) {
+    b.onclick = () => {
+      const x = vs[b.dataset.var];
+      if (x.unet !== v.unet) saveSetting({ unet: x.unet, steps: x.steps, cfg: x.cfg });
+    };
+  }
+}
+
+// What the Upscale workflow runs, in words
+function upscalerLabel(v) {
+  if (v.upscaler === "seedvr2") {
+    return v.seedvr2_input || !v.input_upscaler ? "SeedVR2 from the original" : `${v.input_upscaler.replace(/\.safetensors$|\.pth$/, "")}, then SeedVR2`;
+  }
+  return v.upscaler ? v.upscaler.replace(/\.safetensors$|\.pth$/, "") : "plain Lanczos resize";
+}
+
+function renderOutput(v) {
+  const box = $("#outputBox");
+  box.innerHTML = "";
+  const fam = v.family, m = S.models;
+  box.appendChild(slider("out_scale", v));
+  const online = m && m.online;
+  const svrReady = online && (m.unets || []).some((u) => /seedvr2/i.test(u)) && (m.vaes || []).some((u) => /seedvr2/i.test(u));
+  const ups = online ? m.upscalers.slice() : [];
+  if (svrReady || v.upscaler === "seedvr2") ups.unshift("seedvr2");
+  box.appendChild(selectRow("upscaler", "Upscaler", ups, v, {
+    none: "(none: plain Lanczos resize)",
+    labels: { seedvr2: "SeedVR2 (diffusion upscaler, finer detail)" },
+    hint: online ? "Enlarges the render to the output size." : "ComfyUI isn't reachable; only the saved choice is listed.",
+  }));
+  if (v.upscaler === "seedvr2") {
+    box.appendChild(fam === "upscale"
+      ? check("seedvr2_input", "SeedVR2 works from the original pixels", v,
+          "On: more new detail, but it can invent texture (e.g. cobblestones). Off: the input upscaler in Advanced enlarges first and SeedVR2 cleans that up, closer to the original.")
+      : check("seedvr2_input", "Also enlarge the original art with SeedVR2", v,
+          "Changes how the AI sees the input. Off: the input upscaler in Advanced."));
+  }
+  if (fam === "upscale") {
+    box.appendChild(check("states_pass", "States pass (Final only)", v, "Enlarges doors, lights and animation frames with the same upscaler, so they match the scene."));
+    return;
+  }
+  if (!EDIT.has(fam)) {
+    box.appendChild(check("detail_pass", "Detail pass", v, "Repaints at full output resolution in tiles: slower, much sharper."));
+    if (v.detail_pass) box.appendChild(slider("detail_denoise", v));
+  }
+  box.appendChild(check("states_pass", "States pass (Final only)", v, "Restyles doors, lights and animation frames to match the new scene."));
+  const alignHelp = {
+    qwen21: "Keep on for Qwen: its edits zoom and shift by a few pixels. One overall zoom/shift correction, so straight lines stay straight.",
+    flux1: "Usually not needed for Flux: the structure lock already holds the layout.",
+    krea2: "Undoes an overall zoom or shift (one correction for the whole image, so lines stay straight); local changes stay.",
+    flux3k: "Keep on for edit models: they can zoom or shift slightly. One overall correction, so straight lines stay straight.",
+    mageflow: "Keep on for edit models: they can zoom or shift slightly. One overall correction, so straight lines stay straight.",
+  }[fam];
+  box.appendChild(check("align", "Auto-align to the original layout", v, alignHelp));
+}
+
+const looksFlux1 = (name) => /flux/i.test(name || "") && !/flux[._-]?2|flux2/i.test(name || "");
+const looksKrea2 = (name) => /krea[._-]?2/i.test(name || "");
+const looksQwen21 = (name) => /qwen[._-]?image[._-]?2[._-]?1/i.test(name || "");
+const looksFlux3 = (name) => /flux[._-]?3/i.test(name || "");
+const looksMage = (name) => /mage[._-]?flow/i.test(name || "");
+
+const online0 = (m) => !!(m && m.online);
+
+function renderAdvanced(v) {
+  const box = $("#advBox");
+  box.innerHTML = "";
+  const m = S.models, fam = v.family;
+  const sub = (t) => { const h = document.createElement("div"); h.className = "subhead"; h.textContent = t; box.appendChild(h); };
+  const add = (el) => box.appendChild(el);
+
+  if (fam === "upscale") {
+    if (v.upscaler === "seedvr2" && online0(m)) {
+      sub("SeedVR2 upscaler");
+      add(selectRow("seedvr2_unet", "SeedVR2 model", (m.unets || []).filter((u) => /seedvr2/i.test(u)), v, { hint: "3B int8 is the one ComfyUI's template uses." }));
+      add(selectRow("seedvr2_vae", "SeedVR2 VAE", (m.vaes || []).filter((u) => /seedvr2/i.test(u)), v));
+      add(selectRow("seedvr2_color", "Color correction", ["lab", "wavelet", "adain", "none"], v,
+        { hint: "Matches colors back to the image before upscaling; lab is the most faithful." }));
+      if (!v.seedvr2_input) add(selectRow("input_upscaler", "Upscaler before SeedVR2", m.upscalers, v, { none: "(none: plain Lanczos resize)" }));
+    } else {
+      const n = document.createElement("div");
+      n.className = "hint";
+      n.textContent = online0(m) ? "Nothing else to set: the upscaler under Output is the whole workflow."
+        : "ComfyUI isn't reachable, so the installed models can't be listed. Start it and press Refresh models.";
+      add(n);
+    }
+    const row0 = document.createElement("div");
+    row0.className = "row-btns tight";
+    row0.innerHTML = `<button class="small ghost" title="Re-read the model lists from ComfyUI (after adding files)">Refresh models</button>`;
+    row0.querySelector("button").onclick = loadModels;
+    add(row0);
+    return;
+  }
+  sub("Rendering");
+  const fixedSchedule = fam === "qwen21" && /turbo/i.test(v.unet || "");  // Qwen Turbo: fixed 8 steps
+  if (!fixedSchedule) add(slider("steps", v));
+  if (EDIT.has(fam) && !fixedSchedule) add(slider("cfg", v));
+  add(slider("work_mp", v));
+  if (EDIT.has(fam)) add(slider("edit_margin", v));
+  if (v.detail_pass && !EDIT.has(fam)) {
+    add(slider("detail_steps", v));
+    if (fam === "flux1") {
+      add(slider("detail_structure", v));
+      add(check("detail_style", "Use the style images in the detail pass", v, "About 15% slower; can ghost where tiles overlap."));
+    }
+  }
+  if (v.states_pass) add(slider(EDIT.has(fam) ? "state_denoise" : "state_denoise_boost", v));
+
+  sub(`Model files: ${famShort(fam)}`);
+  const online = m && m.online;
+  if (!online) {
+    const n = document.createElement("div");
+    n.className = "hint";
+    n.textContent = "ComfyUI isn't reachable, so the installed models can't be listed. Start it and press Refresh models.";
+    add(n);
+  } else {
+    const separate = v.model_source === "separate";
+    const src = document.createElement("div");
+    src.className = `ctl ${mark("model_source")}`;
+    src.innerHTML = `<label class="lbl">Base model comes from</label><div class="seg small">` +
+      `<button data-src="checkpoint" class="${separate ? "" : "on"}">One checkpoint file</button>` +
+      `<button data-src="separate" class="${separate ? "on" : ""}">Separate files</button></div>`;
+    for (const b of src.querySelectorAll("button")) b.onclick = () => saveSetting({ model_source: b.dataset.src });
+    add(src);
+    if (!separate) {
+      add(selectRow("checkpoint", "Checkpoint", m.checkpoints, v, { hint: "Model, text encoders and VAE in one file (models/checkpoints)." }));
+    } else {
+      const types = [...new Set([...(v.clip2 ? m.clip_types_dual : m.clip_types_single), ...m.clip_types_dual])];
+      add(selectRow("unet", "Diffusion model", m.unets, v, { hint: "models/diffusion_models (or unet)." }));
+      add(selectRow("unet_dtype", "Weight type", m.unet_dtypes, v));
+      add(selectRow("clip1", "Text encoder 1", m.clips, v, {
+        hint: { krea2: "Krea 2 uses qwen3vl_4b.", qwen21: "Qwen-Image 2.1 uses qwen3vl_8b.", flux3k: "FLUX 3 Klein uses qwen3vl_4b.",
+                mageflow: "Mage-Flow uses qwen3vl_4b." }[fam] || "Flux.1 uses clip_l + t5xxl." }));
+      add(selectRow("clip2", "Text encoder 2", m.clips, v, { none: "(none: single encoder)" }));
+      add(selectRow("clip_type", "Encoder type", types, v, {
+        hint: { krea2: "\"krea2\" for Krea 2.", qwen21: "\"qwen_image\" for Qwen-Image 2.1.", flux3k: "\"flux3\" for FLUX 3 Klein.",
+                mageflow: "\"mage\" for Mage-Flow." }[fam] || "\"flux\" for Flux.1 with two encoders." }));
+      add(selectRow("vae", "VAE", m.vaes, v));
+    }
+    if (fam === "flux1") {
+      add(selectRow("controlnet", "ControlNet (structure lock)", m.controlnets, v,
+        { none: "(none: no structure lock)", hint: "Keeps edges on the original layout. Must match the base model's family." }));
+    }
+    add(selectRow("lora", "Extra LoRA", m.loras, v, { none: "(none)", hint: "Optional style LoRA on top of the base model." }));
+    if (v.lora) add(slider("lora_strength", v));
+
+    const base = separate ? v.unet : v.checkpoint;
+    const warns = [];
+    if (fam === "krea2") {
+      if (base && !looksKrea2(base)) warns.push(`"${base}" doesn't look like a Krea 2 model.`);
+      if (v.style_refs.length > 2) warns.push(`Krea 2's style-reference LoRA was trained on 1-2 images; ${v.style_refs.length} are selected (only the first 3 are used).`);
+      if (v.style_refs.length && !(m.loras || []).includes("krea2_style_reference.safetensors")) warns.push("Style images need loras/krea2_style_reference.safetensors.");
+    } else if (fam === "qwen21") {
+      if (base && !looksQwen21(base)) warns.push(`"${base}" doesn't look like a Qwen-Image 2.1 model.`);
+    } else if (fam === "flux3k") {
+      if (base && !looksFlux3(base)) warns.push(`"${base}" doesn't look like a FLUX 3 Klein model.`);
+      if (base && !(m.unets || []).includes(base)) warns.push("The FLUX 3 Klein files are gated: accept the license at huggingface.co/black-forest-labs/flux-3-image-klein-comfy, then put the model in models/diffusion_models.");
+    } else if (fam === "mageflow") {
+      if (base && !looksMage(base)) warns.push(`"${base}" doesn't look like a Mage-Flow Edit model.`);
+    } else if (base && !looksFlux1(base)) {
+      warns.push(`"${base}" doesn't look like a Flux.1 model; the Flux.1 workflow uses prompt guidance, the Flux ControlNet and USO style images.`);
+    }
+    if (separate && (!v.unet || !v.clip1 || !v.vae)) warns.push("Pick a diffusion model, at least one text encoder and a VAE.");
+    if (warns.length) {
+      const w = document.createElement("div");
+      w.className = "model-warn";
+      w.innerHTML = warns.map(esc).join("<br>");
+      add(w);
+    }
+
+    if (v.upscaler === "seedvr2") {
+      sub("SeedVR2 upscaler");
+      add(selectRow("seedvr2_unet", "SeedVR2 model", (m.unets || []).filter((u) => /seedvr2/i.test(u)), v, { hint: "3B int8 is the one ComfyUI's template uses." }));
+      add(selectRow("seedvr2_vae", "SeedVR2 VAE", (m.vaes || []).filter((u) => /seedvr2/i.test(u)), v));
+      add(selectRow("seedvr2_color", "Color correction", ["lab", "wavelet", "adain", "none"], v,
+        { hint: "Matches colors back to the image before upscaling; lab is the most faithful." }));
+      if (!v.seedvr2_input) add(selectRow("input_upscaler", "Upscaler for the original art", m.upscalers, v, { none: "(none: plain Lanczos resize)" }));
+    }
+  }
+  const row = document.createElement("div");
+  row.className = "row-btns tight";
+  row.innerHTML = `<button class="small ghost" title="Re-read the model lists from ComfyUI (after adding files)">Refresh models</button>`;
+  row.querySelector("button").onclick = loadModels;
+  add(row);
+}
+
+async function saveSetting(patch) {
+  const d = S.detail;
+  if (!d) return;
+  const name = d.name;
+  const url = S.target === "look"
+    ? `/api/looks/${encodeURIComponent(d.look.id)}/settings`
+    : `/api/field/${name}/settings`;
+  try {
+    const nd = await api(url, { body: { values: patch, field: name } });
+    applyDetail(nd);
+    if (S.target === "look" || "family" in patch) loadLooks();
+  } catch (e) {
+    toast(`Couldn't save: ${e.message}`);
+  }
+}
+
+function setTarget(t) {
+  S.target = t;
+  setPref("target", t);
+  renderStyle();
+}
+
+/* ------------------------------------------------------------ looks */
+
+async function loadLooks() {
+  try { S.looks = await api("/api/looks"); } catch (e) { return; }
+  renderLookFilter();
+  if (S.detail) { renderLookBar(); renderStatus(); }
+  if (!$("#looksModal").hidden) renderLooksModal();
+  renderList();
+}
+
+async function afterLooksChange() {
+  await loadLooks();
+  await loadFields();
+  if (S.current) applyDetail(await api(`/api/field/${S.current}`));
+}
+
+function openLooks() {
+  S.rules = ((S.looks && S.looks.assignments) || []).map((r) => ({ ...r }));
+  S.rulesDirty = false;
+  renderLooksModal();
+  $("#looksModal").hidden = false;
+  loadLooks();
+}
+
+function renderLooksModal() {
+  const L = S.looks;
+  if (!L) return;
+  const cur = S.detail && S.detail.look.id;
+  $("#looksTable").innerHTML = `<tr><th>Name</th><th>Workflow</th><th>Fields</th><th>Default</th><th></th></tr>` +
+    L.looks.map((l) => `<tr data-id="${esc(l.id)}" class="${l.id === cur ? "current" : ""}" title="${l.id === cur ? "The look the selected field uses" : ""}">` +
+      `<td><input type="text" value="${esc(l.name)}"></td><td>${famShort(l.family)}</td><td class="num">${l.fields}</td>` +
+      `<td><input type="radio" name="deflook" ${l.id === L.default ? "checked" : ""} title="Used by every field no rule or choice covers"></td>` +
+      `<td class="acts"><button class="small ghost" data-a="dup">Duplicate</button>` +
+      `<button class="small ghost danger" data-a="del" ${l.id === L.default ? 'disabled title="The default look can\'t be deleted"' : ""}>Delete</button></td></tr>`).join("");
+  for (const tr of $("#looksTable").querySelectorAll("tr[data-id]")) {
+    const id = tr.dataset.id;
+    const url = `/api/looks/${encodeURIComponent(id)}`;
+    tr.querySelector('input[type="text"]').onchange = async (e) => {
+      if (!e.target.value.trim()) return;
+      await api(url, { body: { name: e.target.value } });
+      afterLooksChange();
+    };
+    tr.querySelector('input[type="radio"]').onchange = async () => {
+      await api(url, { body: { default: true } });
+      afterLooksChange();
+    };
+    tr.querySelector('[data-a="dup"]').onclick = async () => {
+      const name = prompt("Name for the copy:", `${lookName(id)} copy`);
+      if (!name) return;
+      await api("/api/looks", { body: { name, from_look: id } });
+      afterLooksChange();
+    };
+    tr.querySelector('[data-a="del"]').onclick = async () => {
+      const l = L.looks.find((x) => x.id === id);
+      if (!confirm(`Delete look "${l.name}"?\n\nThe ${l.fields} field(s) using it go back to automatic (rules or the default look). Rules for it are removed. Versions made with it are kept.`)) return;
+      try { await api(url, { method: "DELETE" }); } catch (e) { toast(e.message); return; }
+      S.rules = S.rules.filter((r) => r.look !== id);
+      afterLooksChange();
+    };
+  }
+  renderRules();
+}
+
+function globRe(p) {
+  const body = p.toLowerCase().replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+  return new RegExp(`^${body}$`);
+}
+
+function ruleMatches(p) {
+  if (!p.trim()) return 0;
+  const re = globRe(p.trim());
+  return S.fields.filter((f) => [f.name, ...f.copies].some((n) => re.test(n))).length;
+}
+
+function rulesDirty() {
+  S.rulesDirty = true;
+  $("#rulesState").textContent = "Unsaved changes";
+  $("#btnSaveRules").disabled = false;
+}
+
+function renderRules() {
+  const L = S.looks;
+  const opts = (sel) => L.looks.map((l) => `<option value="${esc(l.id)}" ${l.id === sel ? "selected" : ""}>${esc(l.name)}</option>`).join("");
+  $("#rulesTable").innerHTML = `<tr><th>Field name pattern</th><th>Look</th><th>Matches</th><th></th></tr>` +
+    (S.rules.length ? S.rules.map((r, i) => `<tr data-i="${i}"><td><input type="text" value="${esc(r.pattern)}" placeholder="e.g. md*"></td>` +
+      `<td><select>${opts(r.look)}</select></td><td class="num">${ruleMatches(r.pattern)} fields</td>` +
+      `<td class="acts"><button class="small ghost" data-a="up" ${i ? "" : "disabled"} title="Check this rule earlier">↑</button>` +
+      `<button class="small ghost danger" data-a="rm">Remove</button></td></tr>`).join("")
+      : `<tr><td colspan="4" class="hint">No rules yet: every field uses the default look unless you pick one for it.</td></tr>`);
+  for (const tr of $("#rulesTable").querySelectorAll("tr[data-i]")) {
+    const i = Number(tr.dataset.i);
+    tr.querySelector("input").oninput = (e) => {
+      S.rules[i].pattern = e.target.value;
+      tr.querySelector(".num").textContent = `${ruleMatches(e.target.value)} fields`;
+      rulesDirty();
+    };
+    tr.querySelector("select").onchange = (e) => { S.rules[i].look = e.target.value; rulesDirty(); };
+    tr.querySelector('[data-a="up"]').onclick = () => {
+      [S.rules[i - 1], S.rules[i]] = [S.rules[i], S.rules[i - 1]];
+      renderRules(); rulesDirty();
+    };
+    tr.querySelector('[data-a="rm"]').onclick = () => { S.rules.splice(i, 1); renderRules(); rulesDirty(); };
+  }
+  $("#rulesState").textContent = S.rulesDirty ? "Unsaved changes" : "";
+  $("#btnSaveRules").disabled = !S.rulesDirty;
+}
+
+/* ------------------------------------------------------------ viewer */
+
+const canvas = $("#canvas");
+const ctx = canvas.getContext("2d");
+const vp = $("#viewport");
+
+function resizeCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(vp.clientWidth * dpr);
+  canvas.height = Math.round(vp.clientHeight * dpr);
+  draw();
+}
+
+function fitView() {
+  const d = S.detail;
+  if (!d) return;
+  setZoom(Math.min(vp.clientWidth / d.w, vp.clientHeight / d.h) * 0.96, true);
+}
+
+function setZoom(z, center = false, cx = vp.clientWidth / 2, cy = vp.clientHeight / 2) {
+  const d = S.detail;
+  if (!d) return;
+  z = Math.max(0.1, Math.min(z, 40));
+  if (center) {
+    S.panX = (vp.clientWidth - d.w * z) / 2;
+    S.panY = (vp.clientHeight - d.h * z) / 2;
+  } else {
+    S.panX = cx - (cx - S.panX) * (z / S.zoom);
+    S.panY = cy - (cy - S.panY) * (z / S.zoom);
+  }
+  S.zoom = z;
+  draw();
+}
+
+function draw() {
+  const dpr = window.devicePixelRatio || 1;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const d = S.detail;
+  const empty = $("#emptyMsg");
+  for (const b of $("#modeSeg").children) b.classList.toggle("on", b.dataset.mode === S.mode);
+  if (!d || !S.imgs.orig) {
+    empty.style.display = "flex";
+    empty.textContent = S.ready ? "Pick a field on the left." : "Preparing field images…";
+    $("#modeBadge").textContent = "";
+    return;
+  }
+  empty.style.display = "none";
+  const W = d.w, H = d.h;
+  ctx.setTransform(dpr * S.zoom, 0, 0, dpr * S.zoom, dpr * S.panX, dpr * S.panY);
+  // Current frame of each playing animation, from its strip, over the group's area.
+  // FF7 fields run at 30 fps; `wait` is how many game frames each animation frame lasts.
+  const now = performance.now();
+  const drawFrames = (side) => {
+    for (const st of S.strips) {
+      const frames = st[side];
+      if (!frames) continue;
+      const [x, y, w, h] = st.rect;
+      const i = Math.floor(now / (st.wait * 1000 / 30)) % st.frames;
+      // only on the group's own tiles, so a group spread over the scene doesn't paint a big
+      // rectangle over everything else (or over another group's animation)
+      ctx.save();
+      if (st.tiles) {
+        ctx.beginPath();
+        for (const [tx, ty, ts] of st.tiles) ctx.rect(tx, ty, ts, ts);
+        ctx.clip();
+      }
+      ctx.drawImage(frames[i], x, y, w, h);
+      ctx.restore();
+    }
+  };
+  const paint = (side) => {
+    if (side !== "orig" && !S.imgs[side]) side = "orig";
+    if (side === "orig") {
+      ctx.imageSmoothingEnabled = !S.pixel;
+    } else {
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+    }
+    ctx.drawImage(S.imgs[side], 0, 0, W, H);
+    drawFrames(side);
+  };
+  const nv = viewedVersion(), lv = leftVersion();
+  const label = (v, img) => `${verKind(v)} ${fmtWhen(v.created)}` +
+    (img ? ` · ${Math.round(img.naturalWidth / W)}×` : "") + (v.built ? "" : " · raw render, not built");
+  let badge;
+  if (S.mode === "orig") {
+    paint("orig");
+    badge = "Original";
+  } else if (S.mode === "new") {
+    paint("new");
+    badge = S.imgs.new ? label(nv, S.imgs.new) : "No versions yet (showing original)";
+  } else {
+    paint("new");
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, 0, W * S.split, H); ctx.clip();
+    paint(lv ? "left" : "orig");
+    ctx.restore();
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 2 / S.zoom;
+    ctx.beginPath(); ctx.moveTo(W * S.split, 0); ctx.lineTo(W * S.split, H); ctx.stroke();
+    badge = `${lv ? label(lv, S.imgs.left) : "Original"}   |   ${S.imgs.new ? label(nv, S.imgs.new) : "no version yet"}`;
+  }
+  if (S.overlay && S.imgs.overlay) {
+    ctx.imageSmoothingEnabled = false;
+    ctx.globalAlpha = 0.9;
+    ctx.drawImage(S.imgs.overlay, 0, 0, W, H);
+    ctx.globalAlpha = 1;
+  }
+  $("#modeBadge").textContent = badge;
+}
+
+function setMode(m) {
+  S.mode = m;
+  S.userMode = m;
+  renderSplitPick();
+  renderVersionHead();
+  draw();
+}
+
+let drag = null;
+vp.addEventListener("mousedown", (e) => {
+  const r = vp.getBoundingClientRect();
+  const x = e.clientX - r.left;
+  const divider = S.panX + S.zoom * (S.detail ? S.detail.w : 0) * S.split;
+  drag = S.mode === "split" && Math.abs(x - divider) < 10
+    ? { type: "split" }
+    : { type: "pan", x: e.clientX, y: e.clientY, px: S.panX, py: S.panY };
+  vp.classList.add("dragging");
+});
+window.addEventListener("mousemove", (e) => {
+  const r = vp.getBoundingClientRect();
+  const x = e.clientX - r.left;
+  if (!drag) {
+    if (S.mode === "split" && S.detail) {
+      const divider = S.panX + S.zoom * S.detail.w * S.split;
+      vp.classList.toggle("split-hover", Math.abs(x - divider) < 10 && e.target === canvas);
+    }
+    return;
+  }
+  if (drag.type === "split") {
+    S.split = Math.max(0, Math.min(1, (x - S.panX) / (S.zoom * S.detail.w)));
+  } else {
+    S.panX = drag.px + (e.clientX - drag.x);
+    S.panY = drag.py + (e.clientY - drag.y);
+  }
+  draw();
+});
+window.addEventListener("mouseup", () => { drag = null; vp.classList.remove("dragging"); });
+vp.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const r = vp.getBoundingClientRect();
+  setZoom(S.zoom * Math.pow(1.0015, -e.deltaY), false, e.clientX - r.left, e.clientY - r.top);
+}, { passive: false });
+
+window.addEventListener("keydown", (e) => {
+  if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) return;
+  if (!$("#looksModal").hidden) { if (e.key === "Escape") $("#looksModal").hidden = true; return; }
+  if (e.key === "Escape") {
+    if (!$("#queuePop").hidden) $("#queuePop").hidden = true;
+    else if (S.sel.size) clearPicks();
+    return;
+  }
+  if (e.code === "Space") { e.preventDefault(); setMode(S.mode === "orig" ? "new" : "orig"); }
+  else if (e.key === "1") setMode("orig");
+  else if (e.key === "2") setMode("new");
+  else if (e.key === "3") setMode("split");
+  else if (e.key === "f" || e.key === "F") fitView();
+  else if (e.key === "o" || e.key === "O") $("#optOverlay").click();
+  else if (e.key === "a" || e.key === "A") $("#optAnimate").click();
+  else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+    const d = S.detail, v = viewedVersion();
+    if (!d || !v) return;
+    e.preventDefault();
+    const i = d.versions.findIndex((x) => x.id === v.id);
+    const j = Math.max(0, Math.min(d.versions.length - 1, i + (e.key === "ArrowRight" ? 1 : -1)));
+    if (j !== i) pickVersion(d.versions[j].id);
+  } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    const visible = [...$("#fieldList").children].filter((li) => li.style.display !== "none");
+    const i = visible.findIndex((li) => li.dataset.name === S.current);
+    const next = visible[Math.max(0, Math.min(visible.length - 1, i + (e.key === "ArrowDown" ? 1 : -1)))];
+    if (next) { selectField(next.dataset.name); next.scrollIntoView({ block: "nearest" }); }
+  }
+});
+
+/* ------------------------------------------------------------ status, estimate, queue */
+
+function renderStatus() {
+  const d = S.detail;
+  if (!d) return;
+  const parts = [`<b>${d.name}</b> ${d.w}×${d.h}`];
+  if (d.copies.length) parts.push(`also used by ${d.copies.join(", ")}`);
+  parts.push(`look "${esc(d.look.name)}"${d.custom ? " + field changes" : ""} · ${famShort(d.effective.family)}`);
+  const cur = d.versions.find((v) => v.current);
+  parts.push(cur ? `in game: ${esc(verKind(cur))} from ${fmtWhen(cur.created, true)}` : `<span class="warn">nothing in game yet</span>`);
+  parts.push(`${d.versions.length} version${d.versions.length === 1 ? "" : "s"}`);
+  if (d.error) parts.push(`<span class="bad">last run failed: ${esc(d.error)}</span>`);
+  $("#stageStatus").innerHTML = parts.join(" · ");
+}
+
+function renderEstimate() {
+  const d = S.detail, el = $("#estimate");
+  if (!d) return;
+  const s = d.effective, e = d.estimate.final, p = d.estimate.preview;
+  const size = (k) => `${d.w * k}×${d.h * k} (${k}×)`;
+  const parts = [`render ~${fmtDuration(e.render)}`];
+  if (e.tiles) parts.push(`detail ${e.tiles} tiles`);
+  if (e.sheets) parts.push(`states: ${d.state_panels} in ${e.sheets} sheet${e.sheets > 1 ? "s" : ""}`);
+  let html = `<div>Renders with <b>${famShort(s.family)}</b>, look "${esc(d.look.name)}"` +
+    (d.custom ? ` <span style="color:var(--field)">+ ${d.override_keys.length} field change${d.override_keys.length > 1 ? "s" : ""}</span>` : "") + `</div>`;
+  html += `<div><b>Final</b> ${size(e.scale)} · ${parts.join(" + ")} · <b>~${fmtDuration(e.total)}</b></div>`;
+  html += `<div><b>Preview</b> ${size(p.scale)} · render only · ~${fmtDuration(p.total)}</div>`;
+  if (!e.tiles && !e.sheets && e.scale === p.scale) html += `<div class="hint">With the detail and states passes off, Final and Preview give the same result.</div>`;
+  el.innerHTML = html;
+}
+
+function jobLabel(j) {
+  if (j.kind === "build") return "building textures";
+  return `${j.try ? "try" : j.kind} ${famShort(j.family)}`;
+}
+
+function renderQueuePop() {
+  const q = S.queue || { queued: [], recent: [] };
+  const items = [];
+  if (q.current) {
+    items.push(`<li class="now"><span class="what"><b class="go" data-go="${q.current.name}">${q.current.name}</b> · ${jobLabel(q.current)} · ${esc(q.current.stage)}</span>` +
+      `<span>${Math.round(q.current.progress * 100)}%</span></li>`);
+  }
+  for (const j of q.queued) {
+    items.push(`<li><span class="what"><b class="go" data-go="${j.name}">${j.name}</b> · ${jobLabel(j)}</span>` +
+      `<span>~${fmtDuration(j.est || 0)}</span><span class="x" data-rm="${j.id}" title="Remove from the queue">×</span></li>`);
+  }
+  $("#queueList").innerHTML = items.join("") || "<li>Nothing queued.</li>";
+  $("#recentList").innerHTML = q.recent.slice().reverse().map((r) =>
+    `<li class="${r.ok ? "" : "bad"}"><span class="what">${r.ok ? "✓" : "✗"} <b class="go" data-go="${r.name}">${r.name}</b> · ${jobLabel(r)} · ${r.seconds}s` +
+    `${r.ok ? "" : " · " + esc(r.message)}</span></li>`).join("") || "<li>None yet.</li>";
+  for (const el of $("#queuePop").querySelectorAll("[data-rm]")) {
+    el.onclick = async () => { S.queue = await api("/api/queue/remove", { body: { id: Number(el.dataset.rm) } }); renderQueuePop(); renderVersions(); };
+  }
+  for (const el of $("#queuePop").querySelectorAll("[data-go]")) {
+    el.onclick = () => { selectField(el.dataset.go); const li = $(`#fieldList li[data-name="${el.dataset.go}"]`); if (li) li.scrollIntoView({ block: "nearest" }); };
+  }
+}
+
+async function pollQueue() {
+  try {
+    const q = await api("/api/queue");
+    S.queue = q;
+    const cur = q.current;
+    S.running = cur ? cur.name : null;
+    const elapsed = cur ? Date.now() / 1000 - cur.started : 0;
+    const left = q.queued.reduce((t, j) => t + (j.est || 0), 0) + (cur ? Math.max(0, (cur.est || 0) - elapsed) : 0);
+    const sum = $("#queueSummary");
+    sum.textContent = cur
+      ? `${cur.name} · ${jobLabel(cur)}: ${cur.stage}` + (q.queued.length ? ` · ${q.queued.length} queued · ~${fmtDuration(left)} left` : "")
+      : (q.queued.length ? `${q.queued.length} queued` : "Idle");
+    sum.classList.toggle("busy", !!cur);
+    const bar = $("#progress .bar"), txt = $("#progress .ptext");
+    if (cur) {
+      bar.style.width = `${Math.round(cur.progress * 100)}%`;
+      txt.textContent = `${cur.name} · ${jobLabel(cur)}: ${cur.stage} (${Math.round(elapsed)}s)`;
+    } else {
+      bar.style.width = "0";
+      txt.textContent = q.queued.length ? `${q.queued.length} queued` : "Idle";
+    }
+    // the version strip shows this field's running and queued renders
+    const key = JSON.stringify([S.current, cur && cur.id, q.queued.filter((j) => j.name === S.current).map((j) => j.id)]);
+    if (key !== S.queueKey) {
+      S.queueKey = key;
+      renderVersions();
+    } else if (cur && cur.name === S.current) {
+      const rb = $("#runBar"), rs = $("#runStage");
+      if (rb) rb.style.width = `${Math.round(cur.progress * 100)}%`;
+      if (rs) rs.textContent = cur.stage;
+    }
+    if (!$("#queuePop").hidden) renderQueuePop();
+
+    const newest = Math.max(0, ...q.recent.map((r) => r.finished));
+    if (S.lastFinished === null) S.lastFinished = newest;  // ignore jobs finished before this page loaded
+    if (newest > S.lastFinished) {
+      const fresh = q.recent.filter((r) => r.finished > S.lastFinished);
+      S.lastFinished = newest;
+      await loadFields();
+      loadLooks();
+      const mine = fresh.filter((r) => r.name === S.current);
+      if (mine.length) {
+        const made = mine.filter((r) => r.ok && r.kind !== "build" && r.version).pop();
+        if (made) {  // show what just finished
+          S.view = made.version;
+          if (S.mode === "orig") S.mode = "new";
+          S.userMode = S.mode;
+        }
+        await selectField(S.current, true);
+      }
+    }
+    renderList();
+  } catch (e) { /* server restarting */ }
+  setTimeout(pollQueue, 1000);
+}
+
+async function pollStatus() {
+  try {
+    const s = await api("/api/status");
+    $("#comfyStatus").classList.toggle("online", s.comfy_online);
+    $("#comfyStatus").title = `ComfyUI at ${s.comfy_url}: ${s.comfy_online ? "connected" : "not reachable; start ComfyUI"}`;
+    $("#btnInstall").title = `Copy the current versions' textures into ${s.game_mods}`;
+    if (s.ready && !S.ready) {
+      S.ready = true;
+      await loadLooks();
+      await loadFields();
+      if (!S.current && S.fields.length) selectField(S.byName.elm ? "elm" : S.fields[0].name);
+    }
+    if (!s.ready) $("#emptyMsg").textContent = s.status;
+  } catch (e) { /* ignore */ }
+  setTimeout(pollStatus, S.ready ? 5000 : 1500);
+}
+
+async function loadModels() {
+  try { S.models = await api("/api/models"); } catch (e) { S.models = { online: false }; }
+  if (S.detail) renderStyle();
+}
+
+async function queue(body, what) {
+  if (!S.current) return;
+  const r = await api("/api/generate", { body });
+  const skipped = (r.skipped || []).map(famShort);
+  toast((r.added ? `${what} queued` : "Already queued") +
+    (skipped.length ? `. Skipped ${skipped.join(", ")}: model file not installed.` : ""));
+}
+
+/* ------------------------------------------------------------ wiring */
+
+function setTab(t) {
+  S.tab = t;
+  setPref("tab", t);
+  for (const b of $("#panelTabs").children) b.classList.toggle("on", b.dataset.tab === t);
+  $("#tabStyle").hidden = t !== "style";
+  $("#tabLayers").hidden = t !== "layers";
+}
+
+async function init() {
+  S.styles = await api("/api/styles");
+  loadModels();
+  setTab(S.tab);
+  $("#advanced").open = pref("advanced", "0") === "1";
+  $("#advanced").addEventListener("toggle", () => setPref("advanced", $("#advanced").open ? "1" : "0"));
+  resizeCanvas();
+  window.addEventListener("resize", () => { resizeCanvas(); fitView(); });
+
+  for (const b of $("#modeSeg").children) b.onclick = () => setMode(b.dataset.mode);
+  for (const b of $("#panelTabs").children) b.onclick = () => setTab(b.dataset.tab);
+  for (const b of $("#targetSeg").children) b.onclick = () => setTarget(b.dataset.target);
+  $("#search").oninput = renderList;
+  $("#selectShown").onclick = () => {
+    for (const li of $("#fieldList").children) if (li.style.display !== "none") S.sel.add(li.dataset.name);
+    selChanged();
+  };
+  $("#selFinal").onclick = () => queuePicked("final");
+  $("#selPreview").onclick = () => queuePicked("preview");
+  $("#selClear").onclick = clearPicks;
+  $("#filter").onchange = renderList;
+  $("#lookFilter").onchange = renderList;
+  $("#optOverlay").onchange = (e) => { S.overlay = e.target.checked; loadImages(false); };
+  $("#optAnimate").onchange = (e) => { S.animate = e.target.checked; S.strips = []; if (S.detail) renderLayers(); loadImages(false); };
+  $("#optPixel").onchange = (e) => { S.pixel = e.target.checked; draw(); };
+  $("#btnFit").onclick = fitView;
+  $("#btn1x").onclick = () => setZoom(1);
+  $("#btnNative").onclick = () => setZoom((S.imgs.new ? S.imgs.new.naturalWidth / S.detail.w : 4) / (window.devicePixelRatio || 1));
+  $("#leftSel").onchange = (e) => { S.left = e.target.value; renderVersions(); loadImages(false); };
+  $("#rightSel").onchange = (e) => { S.view = e.target.value; renderVersions(); loadImages(false); };
+
+  // look bar
+  $("#lookSel").onchange = async (e) => {
+    const sel = e.target;
+    if (sel.value === "__manage") {
+      sel.value = S.detail.look.explicit ? S.detail.look.id : "";
+      openLooks();
+      return;
+    }
+    applyDetail(await api(`/api/field/${S.current}/look`, { body: { look: sel.value || null } }));
+    loadLooks();
+  };
+  $("#btnSaveLook").onclick = async () => {
+    const d = S.detail;
+    if (!d) return;
+    const name = prompt(`Name for a new look made from ${d.name}'s settings (its look "${d.look.name}"` +
+      (d.custom ? " plus its field changes" : "") + `).\n\n${d.name} will use it; assign it to more fields in Looks.`, `${d.name} look`);
+    if (!name) return;
+    await api("/api/looks", { body: { name, from_field: d.name, assign: true } });
+    S.target = "look";
+    setPref("target", "look");
+    await afterLooksChange();
+    toast(`Look "${name}" created; ${d.name} uses it.`);
+  };
+  $("#btnResetField").onclick = async () => {
+    const d = S.detail;
+    if (!confirm(`Drop ${d.name}'s own changes (${d.override_keys.map(keyLabel).join(", ")}) and follow look "${d.look.name}" again?`)) return;
+    applyDetail(await api(`/api/field/${d.name}/reset`, { body: {} }));
+  };
+
+  let promptTimer = null;
+  $("#prompt").oninput = (e) => {
+    clearTimeout(promptTimer);
+    promptTimer = setTimeout(() => saveSetting({ prompt: e.target.value }), 700);
+  };
+  $("#styleUpload").onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const fd = new FormData();
+    fd.append("file", file);
+    const r = await (await fetch("/api/styles", { method: "POST", body: fd })).json();
+    S.styles = await api("/api/styles");
+    await saveSetting({ style_refs: [...values().style_refs, r.name] });
+    e.target.value = "";
+  };
+
+  // generate
+  $("#btnGenerate").onclick = () => queue({ names: [S.current], mode: "final" }, "Final");
+  $("#btnPreview").onclick = () => queue({ names: [S.current], mode: "preview" }, "Preview");
+  $("#btnTryAll").onclick = () => queue({ names: [S.current], mode: "preview", families: Object.keys(FAMILIES) },
+    "A preview with each workflow");
+  $("#btnCancel").onclick = () => api("/api/queue/cancel", { body: {} });
+  $("#btnCancel2").onclick = () => api("/api/queue/cancel", { body: {} });
+  $("#queueSummary").onclick = () => { const p = $("#queuePop"); p.hidden = !p.hidden; if (!p.hidden) renderQueuePop(); };
+  document.addEventListener("mousedown", (e) => {
+    const p = $("#queuePop");
+    if (!p.hidden && !p.contains(e.target) && e.target !== $("#queueSummary")) p.hidden = true;
+  });
+
+  // versions
+  $("#btnUse").onclick = async () => {
+    const v = viewedVersion();
+    const r = await api(`/api/versions/${S.current}/${v.id}/use`, { body: {} });
+    applyDetail(r.field);
+    loadFields();
+    if (r.queued) toast(r.switched ? "In game now; its doors, lights and frames are being restyled in the queue." : "Cutting it into game textures in the queue; it goes in game when done.");
+  };
+  $("#btnUseWorkflow").onclick = () => saveSetting({ family: viewedVersion().family });
+  $("#btnRebuild").onclick = () => queue({ names: [S.current], mode: "build", version: viewedVersion().id }, "Rebuild");
+  $("#btnRedoStates").onclick = () => queue({ names: [S.current], mode: "build", version: viewedVersion().id, states: true }, "Redo states");
+  $("#btnReview").onclick = () => window.open(`/api/review/${S.current}.jpg?ver=${viewedVersion().id}&t=${Date.now()}`, "_blank");
+  $("#btnDeleteVer").onclick = async () => {
+    const v = viewedVersion();
+    if (!confirm(`Delete the ${verName(v)} version of ${S.current}?\n\nIts image, textures and review sheet are removed.`)) return;
+    try {
+      const r = await api(`/api/versions/${S.current}/${v.id}`, { method: "DELETE" });
+      if (S.view === v.id) S.view = null;
+      if (S.left === v.id) S.left = "orig";
+      applyDetail(r.field, true);
+      loadFields();
+    } catch (e) { toast(e.message); }
+  };
+
+  // looks
+  $("#btnLooks").onclick = openLooks;
+  $("#btnCloseLooks").onclick = () => { $("#looksModal").hidden = true; };
+  $("#looksModal").onclick = (e) => { if (e.target === $("#looksModal")) $("#looksModal").hidden = true; };
+  $("#btnNewLook").onclick = async () => {
+    const name = prompt("Name for the new look (starts as a copy of the default look):", "New look");
+    if (!name) return;
+    await api("/api/looks", { body: { name, from_look: S.looks.default } });
+    afterLooksChange();
+  };
+  $("#btnAddRule").onclick = () => {
+    const L = S.looks;
+    S.rules.push({ pattern: "", look: (L.looks.find((l) => l.id !== L.default) || L.looks[0]).id });
+    renderRules();
+    rulesDirty();
+    const inputs = $("#rulesTable").querySelectorAll('input[type="text"]');
+    if (inputs.length) inputs[inputs.length - 1].focus();
+  };
+  $("#btnSaveRules").onclick = async () => {
+    S.looks = await api("/api/assignments", { body: { rows: S.rules } });
+    S.rules = S.looks.assignments.map((r) => ({ ...r }));
+    S.rulesDirty = false;
+    await afterLooksChange();
+    toast("Rules saved");
+  };
+
+  $("#btnQueueMissing").onclick = async () => {
+    const e = await api("/api/estimate", { body: { scope: "missing", mode: "final" } });
+    if (!e.count) { toast("Every field already has a final-quality version."); return; }
+    const looks = Object.entries(e.by_look).sort((a, b) => b[1] - a[1]).map(([id, n]) => `  ${lookName(id)}: ${n}`).join("\n");
+    if (!confirm(`Queue ${e.count} fields for final-quality generation, each with its own look?\n\n${looks}\n\n` +
+      `Estimated time: about ${fmtDuration(e.seconds)}. You can keep browsing while it runs; Cancel queue stops it.`)) return;
+    const r = await api("/api/generate", { body: { scope: "missing" } });
+    toast(`${r.added} fields queued`);
+  };
+  $("#btnInstall").onclick = async () => {
+    if (!confirm(`Copy every field's current version into the game's FFNx folder?\n${$("#btnInstall").title.replace("Copy the current versions' textures into ", "")}\n\nThey are only used when the game runs through FFNx.`)) return;
+    const r = await api("/api/install", { body: {} });
+    alert(r.message);
+  };
+
+  pollStatus();
+  pollQueue();
+}
+
+init();

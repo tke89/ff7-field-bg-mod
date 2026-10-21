@@ -1,0 +1,24 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Data made from your copy of the game, and your renders: never commit these
+ai/
+ai_cli/
+dist/
+work/
+
+# Your Studio settings and style images
+studio/looks.json
+studio/settings*.json
+studio/*.tmp
+studio/styles/*
+!studio/styles/.gitkeep
+
+# Downloads in progress, editors, OS
+*.part
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

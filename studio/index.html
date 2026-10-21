@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FF7 Field Studio</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">FF7 Field Studio</div>
+  <div class="comfy" id="comfyStatus" title="ComfyUI connection"><span class="dot"></span><span class="label">ComfyUI</span></div>
+  <button class="queue-summary ghost" id="queueSummary" title="Show the queue and finished jobs">Idle</button>
+  <div class="spacer"></div>
+  <button id="btnLooks" title="Named looks and which fields use them">Looks</button>
+  <button id="btnQueueMissing" title="Queue every field without a final-quality version, each with its own look">Generate all missing</button>
+  <button id="btnInstall" title="Copy the current versions' textures into the game's FFNx mods folder">Install to game</button>
+</header>
+
+<div class="pop" id="queuePop" hidden>
+  <div class="pop-head"><b>Queue</b><button class="ghost small" id="btnCancel2">Cancel all</button></div>
+  <ul class="qlist" id="queueList"></ul>
+  <div class="pop-head"><b>Finished</b></div>
+  <ul class="qlist recent" id="recentList"></ul>
+</div>
+
+<main class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-tools">
+      <input id="search" type="search" placeholder="Search fields (md1, elm, nivl…)" autocomplete="off">
+      <div class="two">
+        <select id="filter">
+          <option value="all">All fields</option>
+          <option value="none">Not generated</option>
+          <option value="built">Final</option>
+          <option value="preview">Previews only</option>
+          <option value="flagged">Needs a look</option>
+          <option value="override">Field changes</option>
+        </select>
+        <select id="lookFilter"><option value="">All looks</option></select>
+      </div>
+      <div class="count-row">
+        <span class="count" id="fieldCount"></span>
+        <a id="selectShown" title="Select every field the search and filters show">Select all shown</a>
+      </div>
+    </div>
+    <ul class="field-list" id="fieldList"></ul>
+    <div class="sel-bar" id="selBar" hidden>
+      <div class="sel-info"><b id="selCount"></b> <span class="hint" id="selEst"></span></div>
+      <div class="row-btns tight">
+        <button id="selFinal" class="primary small" title="Queue a final render of every selected field, each with its own look">Generate final</button>
+        <button id="selPreview" class="small" title="Queue a preview of every selected field">Preview</button>
+        <button id="selClear" class="small ghost" title="Clear the selection (Esc)">Clear</button>
+      </div>
+    </div>
+  </aside>
+
+  <section class="stage">
+    <div class="stage-toolbar">
+      <div class="seg" id="modeSeg">
+        <button data-mode="orig" title="Original (1)">Original</button>
+        <button data-mode="new" title="The selected version (2)">New</button>
+        <button data-mode="split" title="Compare two side by side (3)">Split</button>
+      </div>
+      <span class="split-pick" id="splitPick" hidden>
+        <select id="leftSel" title="Left side"></select><span class="hint">|</span><select id="rightSel" title="Right side"></select>
+      </span>
+      <span class="hint" id="viewHint">Space toggles · drag to pan · wheel to zoom</span>
+      <div class="spacer"></div>
+      <label class="check" title="Play the field's animations (A)"><input type="checkbox" id="optAnimate" checked> Animate</label>
+      <label class="check" title="Where sprites walk behind scenery (O)"><input type="checkbox" id="optOverlay"> Walk-behind</label>
+      <label class="check" title="Show the original's pixels sharp instead of smoothed"><input type="checkbox" id="optPixel" checked> Pixelated</label>
+      <button id="btnFit" title="Fit (F)">Fit</button>
+      <button id="btn1x" title="Original pixels at 1:1">1:1</button>
+      <button id="btnNative" title="New image at native resolution">Native</button>
+    </div>
+    <div class="viewport" id="viewport">
+      <canvas id="canvas"></canvas>
+      <div class="badge" id="modeBadge"></div>
+      <div class="empty" id="emptyMsg"></div>
+    </div>
+    <div class="versions">
+      <div class="ver-head">
+        <div class="ver-title" id="verTitle"></div>
+        <div class="spacer"></div>
+        <button id="btnUse" class="primary small" title="Make this the version the game gets">Use this version</button>
+        <button id="btnUseWorkflow" class="small" hidden></button>
+        <button id="btnRebuild" class="small ghost" title="Cut this version into game textures again (no AI run)">Rebuild</button>
+        <button id="btnRedoStates" class="small ghost" title="Repaint this version's doors, lights and animation frames with the current states settings, keeping its main image">Redo states</button>
+        <button id="btnReview" class="small ghost" title="Original, AI output and in-game result side by side, with outline checks">Review sheet</button>
+        <button id="btnDeleteVer" class="small ghost danger" title="Delete this version">Delete</button>
+      </div>
+      <div class="ver-info" id="verInfo"></div>
+      <div class="ver-strip" id="verStrip"></div>
+    </div>
+    <div class="stage-status" id="stageStatus"></div>
+  </section>
+
+  <aside class="panel">
+    <div class="tabs" id="panelTabs">
+      <button data-tab="style">Style</button>
+      <button data-tab="layers">Layers &amp; states</button>
+    </div>
+    <div class="panel-body">
+      <div class="tab" id="tabStyle">
+        <section class="card lookbar">
+          <div class="look-row">
+            <label class="lbl" for="lookSel">Look</label>
+            <select id="lookSel" title="Which look this field uses"></select>
+          </div>
+          <div class="seg small target" id="targetSeg">
+            <button data-target="look" id="targetLook">Edit look</button>
+            <button data-target="field" id="targetField">This field only</button>
+          </div>
+          <div class="scope-note" id="scopeNote"></div>
+          <div class="row-btns tight">
+            <button id="btnSaveLook" class="small ghost" title="Save this field's settings as a new named look and use it here">Save as new look…</button>
+            <button id="btnResetField" class="small ghost" title="Drop this field's own changes and follow its look again">Clear field changes</button>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Look</h2>
+          <div class="seg wf" id="familySeg"></div>
+          <div class="hint fam-hint" id="familyHint"></div>
+          <div class="seg small wf-var" id="variantSeg" hidden></div>
+          <div class="hint up-note" id="upscaleNote" hidden></div>
+          <div id="genControls">
+          <label class="lbl" for="prompt">Prompt</label>
+          <textarea id="prompt" rows="6" spellcheck="false"></textarea>
+          <div class="lbl-row"><span class="lbl" id="refsLbl">Style reference images</span><label class="upload">+ Add<input type="file" id="styleUpload" accept="image/*" hidden></label></div>
+          <div class="refs" id="styleRefs"></div>
+          <div id="lookSliders"></div>
+          <div class="seed-row" id="seedRow"></div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>Output</h2>
+          <div id="outputBox"></div>
+        </section>
+
+        <details class="card adv" id="advanced">
+          <summary><h2>Advanced</h2><span class="hint" id="advNote">model files, steps, render size…</span></summary>
+          <div id="advBox"></div>
+        </details>
+      </div>
+
+      <div class="tab" id="tabLayers" hidden>
+        <section class="card">
+          <h2>Layers</h2>
+          <div id="layerToggles" class="toggles"></div>
+          <div id="paramGroups"></div>
+        </section>
+      </div>
+    </div>
+
+    <section class="gen-foot">
+      <div class="estimate" id="estimate"></div>
+      <div class="row-btns">
+        <button id="btnPreview" title="Fast look: up to 4×, no detail or states pass">Preview</button>
+        <button id="btnGenerate" class="primary" title="Full quality at the output scale, with the detail and states passes if on">Generate final</button>
+      </div>
+      <div class="row-btns tight">
+        <button id="btnTryAll" class="small" title="Preview this field with every workflow; the results are added as versions and the game keeps the current one">Try all workflows</button>
+        <button id="btnCancel" class="small ghost">Cancel queue</button>
+      </div>
+      <div class="progress" id="progress"><div class="bar"></div><span class="ptext"></span></div>
+    </section>
+  </aside>
+</main>
+
+<div class="modal" id="looksModal" hidden>
+  <div class="modal-card">
+    <div class="modal-head"><h2>Looks</h2><button class="ghost small" id="btnCloseLooks">Close</button></div>
+    <p class="hint">A look is a named set of generation settings: workflow, prompt, style images, output and model choices. Each workflow keeps its own tuning inside a look. Fields use the default look unless a rule below or the Look menu picks another; a field can still change settings for itself on top.</p>
+    <table class="tbl" id="looksTable"></table>
+    <div class="row-btns tight"><button id="btnNewLook" class="small">+ New look (copy of the default)</button></div>
+    <h3>Assign by field name</h3>
+    <p class="hint">The first matching rule wins, checked against the field name and the maps that share its background. <code>*</code> matches anything: <code>md*</code> is every Midgar field, <code>mds*</code> the slums. Fields given a look directly keep it.</p>
+    <table class="tbl" id="rulesTable"></table>
+    <div class="row-btns tight">
+      <button id="btnAddRule" class="small">+ Add rule</button>
+      <div class="spacer"></div>
+      <span class="hint" id="rulesState"></span>
+      <button id="btnSaveRules" class="small primary">Save rules</button>
+    </div>
+  </div>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
