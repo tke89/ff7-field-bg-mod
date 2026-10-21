@@ -230,8 +230,11 @@ every workflow but Upscale) repaints only the signs lightly, at **Sign repaint**
 scene gets the full Repaint strength.
 
 - **Finding the signs.** Qwen3.5 9B (the scene describer) is asked for a box around every sign, logo and label,
-  once per field, the first time a render needs them, in about 2 s. It finds most but not all: on blin1 it got
-  "Shin-Ra", the yellow warning signs and the counter logo, but missed the pink logo. **Show and edit on the
+  once per field, the first time a render needs them, in about 2-6 s. It answers twice and both answers are
+  kept: once plainly (it names the most signs) and once with a little randomness and a penalty for repeating
+  itself (fewer signs, but it caught blin1's pink logo, which the plain answer missed). The plain answer can get
+  stuck, repeating one box until it runs out of room (blin1) or walking a made-up box down a wall (Kalm). The
+  signs before that are still read, and the repeats are dropped. It finds most signs but not all. **Show and edit on the
   image** draws the areas over the picture: drag to add one, click one to remove it (Shift+drag moves the
   picture). **Find again** looks again and keeps the areas you drew.
 - **No visible edge.** The repaint strength rises from the signs' to the scene's over about 18 original pixels
