@@ -606,7 +606,53 @@ async function selectField(name, keepView = false) {
   renderStyle();
   renderStatus();
   renderVersions();
+  loadRequirements();
   await loadImages(first);
+}
+
+// What each workflow needs that ComfyUI doesn't have, for this field's settings (server: ff7bg/requirements.py)
+let reqTimer = null;
+function loadRequirements() {
+  clearTimeout(reqTimer);
+  reqTimer = setTimeout(async () => {
+    const name = S.current;
+    if (!name) return;
+    try {
+      const r = await api(`/api/requirements/${name}`);
+      if (S.current !== name) return;
+      S.req = { name, ...r };
+      if (S.detail) renderStyle();
+    } catch (e) { /* server restarting */ }
+  }, 250);
+}
+
+function missingFor(fam) {
+  const r = S.req && S.detail && S.req.name === S.detail.name && S.req.families && S.req.families[fam];
+  return r && (r.files.length || r.nodes.length || r.tools.length) ? r : null;
+}
+
+const fmtGB = (gb) => gb >= 1 ? `${gb.toFixed(1)} GB` : `${Math.max(1, Math.round(gb * 1000))} MB`;
+
+function renderRequirements(fam) {
+  const box = $("#reqBox"), r = missingFor(fam);
+  box.hidden = !r;
+  if (!r) { box.innerHTML = ""; return; }
+  const link = (url, text) => `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(text)}</a>`;
+  const items = r.files.map((f) =>
+    `<li>${f.url ? link(f.url, f.file) : `<b>${esc(f.file)}</b>`}${f.gb ? ` · ${fmtGB(f.gb)}` : ""}${f.what ? ` · for ${esc(f.what)}` : ""}` +
+    `<br><span class="hint">Put it in ComfyUI's <code>models\\${esc(f.folder)}</code> folder` +
+    `${f.note ? `; ${esc(f.note)}` : ""}${f.url ? "" : ". There's no download link for it: it's a file picked in Advanced"}.</span></li>`);
+  for (const n of r.nodes) {
+    items.push(n.pack
+      ? `<li>The ${link(n.url, n.pack)} node pack. In ComfyUI, open the Manager, search for it and install it, then restart ComfyUI.</li>`
+      : `<li>A newer ComfyUI (yours lacks the <code>${esc(n.node)}</code> node): update ComfyUI Desktop.</li>`);
+  }
+  for (const t of r.tools) items.push(`<li>${link(t.url, t.name)}: ${esc(t.note)}.</li>`);
+  const gb = r.files.reduce((a, f) => a + (f.gb || 0), 0);
+  box.innerHTML = `<div class="req-head">⚠ ${esc(famShort(fam))} can't run with these settings yet. It needs:</div><ul>${items.join("")}</ul>` +
+    `<div class="hint">${gb ? `About ${fmtGB(gb)} to download. ComfyUI Desktop keeps models in <code>Documents\\ComfyUI\\models</code>. ` : ""}` +
+    `Once everything is in place: <button class="small ghost">Check again</button></div>`;
+  box.querySelector("button").onclick = loadModels;
 }
 
 // Take a fresh field detail from the server (after a settings change, version action, ...).
@@ -622,6 +668,7 @@ function applyDetail(nd, reload = false) {
   renderStyle();
   renderStatus();
   renderVersions();
+  loadRequirements();
   const key = (d) => d.versions.map(verStamp).join(",") + "|" + d.current;
   if (reload || !prev || key(prev) !== key(nd)) loadImages(false);
 }
@@ -885,13 +932,13 @@ function renderStyle() {
   }
   const nodes = (S.models && S.models.nodes) || {};
   for (const b of seg.children) {
-    if (nodes[b.dataset.fam] === false) {
+    if (nodes[b.dataset.fam] === false || missingFor(b.dataset.fam)) {
       b.textContent += " ⚠";
-      b.title = "Needs a newer ComfyUI: update ComfyUI Desktop";
+      b.title = "Missing files or nodes with these settings: pick it to see what's needed and where to get it";
     }
   }
-  $("#familyHint").textContent = FAMILIES[fam].hint +
-    (nodes[fam] === false ? " Your ComfyUI is too old to run it yet: update ComfyUI Desktop." : "");
+  $("#familyHint").textContent = FAMILIES[fam].hint;
+  renderRequirements(fam);
   renderVariants(v);
   const up = fam === "upscale";
   $("#genControls").hidden = up;
@@ -1213,35 +1260,23 @@ function renderAdvanced(v) {
     if (fam === "krea2") {
       if (base && !looksKrea2(base)) warns.push(`"${base}" doesn't look like a Krea 2 model.`);
       if (v.style_refs.length > 2) warns.push(`Krea 2's style-reference LoRA was trained on 1-2 images; ${v.style_refs.length} are selected (only the first 3 are used).`);
-      if (v.style_refs.length && !(m.loras || []).includes("krea2_style_reference.safetensors")) warns.push("Style images need loras/krea2_style_reference.safetensors.");
-      if (v.depth_lock > 0 && !(m.loras || []).includes("krea2_depth_control_lora.safetensors"))
-        warns.push("The depth lock needs loras/krea2_depth_control_lora.safetensors (depth-control-lora.safetensors from Patil/Krea-2-depth-controlnet, renamed); or set Depth lock to 0.");
-      if (v.depth_lock > 0 && !(m.depth_models || []).includes("depth_anything_3_mono_large.safetensors"))
-        warns.push("The depth lock needs geometry_estimation/depth_anything_3_mono_large.safetensors (Comfy-Org/Depth-Anything-3); or set Depth lock to 0.");
+
     } else if (fam === "qwen21") {
       if (base && !looksQwen21(base)) warns.push(`"${base}" doesn't look like a Qwen-Image 2.1 model.`);
-      if (v.depth_lock > 0 && !(m.model_patches || []).includes("qwen_image_2.1_fun_controlnet_union_int8_convrot.safetensors"))
-        warns.push("The depth lock needs model_patches/qwen_image_2.1_fun_controlnet_union_int8_convrot.safetensors (Comfy-Org/Qwen-Image-2.1); or set Depth lock to 0.");
-      if (v.depth_lock > 0 && !(m.depth_models || []).includes("depth_anything_3_mono_large.safetensors"))
-        warns.push("The depth lock needs geometry_estimation/depth_anything_3_mono_large.safetensors (Comfy-Org/Depth-Anything-3); or set Depth lock to 0.");
+
     } else if (fam === "flux3k") {
       if (base && !looksFlux3(base)) warns.push(`"${base}" doesn't look like a FLUX 3 Klein model.`);
-      if (base && !(m.unets || []).includes(base)) warns.push("The FLUX 3 Klein files are gated: accept the license at huggingface.co/black-forest-labs/flux-3-image-klein-comfy, then put the model in models/diffusion_models.");
+
     } else if (fam === "mageflow") {
       if (base && !looksMage(base)) warns.push(`"${base}" doesn't look like a Mage-Flow Edit model.`);
     } else if (fam === "fibo2") {
       if (base && !/fibo/i.test(base)) warns.push(`"${base}" doesn't look like a FIBO 2.0 model.`);
     } else if (fam === "moss") {
       if (base && !/moss/i.test(base)) warns.push(`"${base}" doesn't look like a MOSS-Image model.`);
-      if (v.depth_lock > 0 && !(m.loras || []).includes("moss_image_color_depth_control.safetensors"))
-        warns.push("The depth lock needs loras/moss_image_color_depth_control.safetensors (Comfy-Org/MOSS-Image); or set Depth lock to 0.");
-      if (v.depth_lock > 0 && !(m.depth_models || []).includes("depth_anything_3_mono_large.safetensors"))
-        warns.push("The depth lock needs geometry_estimation/depth_anything_3_mono_large.safetensors (Comfy-Org/Depth-Anything-3); or set Depth lock to 0.");
+
     } else if (base && !looksFlux1(base)) {
       warns.push(`"${base}" doesn't look like a Flux.1 model; the Flux.1 workflow uses prompt guidance, the Flux ControlNet and USO style images.`);
     }
-    if (fam === "flux1" && v.depth_lock > 0 && !(m.depth_models || []).includes("depth_anything_3_mono_large.safetensors"))
-      warns.push("The depth lock needs geometry_estimation/depth_anything_3_mono_large.safetensors (Comfy-Org/Depth-Anything-3); or set Depth lock to 0.");
     if (separate && (!v.unet || !v.clip1 || !v.vae)) warns.push("Pick a diffusion model, at least one text encoder and a VAE.");
     if (warns.length) {
       const w = document.createElement("div");
@@ -1714,6 +1749,7 @@ async function pollStatus() {
 async function loadModels() {
   try { S.models = await api("/api/models"); } catch (e) { S.models = { online: false }; }
   if (S.detail) renderStyle();
+  loadRequirements();
 }
 
 async function queue(body, what) {
@@ -1721,7 +1757,7 @@ async function queue(body, what) {
   const r = await api("/api/generate", { body });
   const skipped = (r.skipped || []).map(famShort);
   toast((r.added ? `${what} queued` : "Already queued") +
-    (skipped.length ? `. Skipped ${skipped.join(", ")}: model file not installed.` : ""));
+    (skipped.length ? `. Skipped ${skipped.join(", ")}: missing files (pick a workflow to see what it needs).` : ""));
 }
 
 /* ------------------------------------------------------------ wiring */

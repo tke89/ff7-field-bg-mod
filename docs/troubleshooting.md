@@ -4,9 +4,11 @@
 
 - **The ComfyUI dot is red.** Start ComfyUI Desktop and wait until it's ready. The Studio expects it at
   `http://127.0.0.1:8000`; if yours runs elsewhere, set `comfy_url` in `studio/looks.json` and restart the Studio.
-- **A model doesn't show in the lists, or a workflow button shows ⚠.** Check the file is in the right ComfyUI
-  model folder ([Getting started](getting-started.md#2-models)), then Advanced → **Refresh models**. **Try all
-  workflows** skips workflows whose model file is missing and says so.
+- **A workflow button shows ⚠.** The workflow needs a file or node ComfyUI doesn't have, with your current
+  settings (a depth lock or style images can need extra files). Pick the workflow: the Look card lists what's
+  missing, with download links, sizes and the folder each file goes in. Put them there, then press **Check
+  again**. A render that would need them stops straight away and names them, and **Try all workflows** skips
+  those workflows.
 - **Upscayl's models don't show in the Upscaler list.** The Studio looks for an installed Upscayl app, or for
   `tools/upscayl/upscayl-bin.exe` with a `models` folder next to it
   ([Getting started](getting-started.md#optional-imagemagick-and-upscayl)). Press Advanced → **Refresh models**.

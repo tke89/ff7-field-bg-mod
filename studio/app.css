@@ -216,6 +216,13 @@ code { background: #12151a; border: 1px solid var(--line); border-radius: 4px; p
 .refs.unused { opacity: 0.4; }
 .scene textarea { margin-top: 4px; font-size: 12px; }
 .help-range span { display: block; }
+.req-warn { border: 1px solid #a0782a; background: rgba(224, 176, 80, .08); border-radius: 6px; padding: 8px 10px;
+  margin: 8px 0; font-size: 12px; }
+.req-warn ul { margin: 6px 0; padding-left: 18px; }
+.req-warn li { margin: 4px 0; }
+.req-warn a { color: var(--accent); }
+.req-warn .req-head { color: #e0b050; font-weight: 600; }
+.req-warn code { font-size: 11px; }
 .help-rec { color: var(--text); margin-top: 2px; }
 .help-note { color: #e0b050; margin-bottom: 3px; }
 .ctl-help > div + div, .help > div + div { margin-top: 2px; }

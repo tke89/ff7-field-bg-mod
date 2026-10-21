@@ -23,7 +23,7 @@ import numpy as np
 from flask import Flask, abort, jsonify, request, send_file, send_from_directory
 from PIL import Image
 
-from ff7bg import ai, looks, states, upscalers
+from ff7bg import ai, looks, requirements, states, upscalers
 from ff7bg.comfy import (
     DEFAULT_SETTINGS, FAMILIES, FAMILY_PRESETS, Comfy, ComfyError, build_caption_workflow, build_workflow,
     clean_caption, edit_keep, edit_padding, tile_count, work_size,
@@ -604,7 +604,7 @@ class Worker(threading.Thread):
         comfy = Comfy(self.p.comfy_url)
         if not comfy.online():
             raise ComfyError(f"ComfyUI isn't reachable at {self.p.comfy_url}; start ComfyUI and try again")
-        check_lock_node(comfy, s)
+        check_requirements(comfy, s)
         scene = self.p.scene(name, s, comfy)
         if scene:
             s = dict(s, scene=scene)
@@ -708,7 +708,7 @@ class Worker(threading.Thread):
                 comfy = Comfy(self.p.comfy_url)
                 if not comfy.online():
                     raise ComfyError(f"ComfyUI isn't reachable at {self.p.comfy_url}; start ComfyUI and try again")
-                check_lock_node(comfy, s)
+                check_requirements(comfy, s)
                 refs = [comfy.upload(STYLES / r, "ff7studio_styles") for r in s["style_refs"] if (STYLES / r).exists()]
             panels = states.run(
                 comfy, bg, main["rect"], main, s, refs, sdir,
@@ -733,12 +733,11 @@ class Worker(threading.Thread):
             self.p.make_current(name, vid)
 
 
-def check_lock_node(comfy, s):
-    """The depth lock of some workflows needs a node pack ComfyUI may not have."""
-    node = FAMILIES.get(s.get("family"), {}).get("lock_node")
-    if node and s["depth_lock"] > 0 and not comfy.has_node(node):
-        raise ComfyError("the depth lock needs the comfyui-krea2-controlnet node pack: install it with ComfyUI "
-                         "Manager and restart ComfyUI, or set Depth lock to 0")
+def check_requirements(comfy, s):
+    """Stop before rendering when ComfyUI lacks a file or node these settings need."""
+    miss = requirements.missing(s, comfy)
+    if miss["files"] or miss["nodes"] or miss["tools"]:
+        raise ComfyError(f"missing {requirements.summary(miss)}; the Look card has the download links")
 
 
 # ---------------------------------------------------------------- rendering helpers
@@ -1191,6 +1190,7 @@ def api_version_import(name):
 def api_models():
     """Model files ComfyUI can load, per loader, for the Advanced panel."""
     comfy = Comfy(project.comfy_url)
+    requirements.refresh_models()  # files may have been added: look again
     local = upscalers.available()  # ImageMagick and Upscayl, outside ComfyUI
     if not comfy.online():
         return jsonify(online=False, local=local)
@@ -1217,6 +1217,17 @@ def api_models():
         except Exception:
             out[key] = []
     return jsonify(out)
+
+
+@app.get("/api/requirements/<name>")
+def api_requirements(name):
+    """Per workflow, what this field's settings need that ComfyUI doesn't have, with download links."""
+    _field_or_404(name)
+    comfy = Comfy(project.comfy_url)
+    if not comfy.online():
+        return jsonify(online=False)
+    return jsonify(online=True, families={
+        f: requirements.missing(project.job_settings(name, "final", f), comfy) for f in looks.FAMILIES})
 
 
 @app.get("/api/styles")
@@ -1263,17 +1274,12 @@ def api_generate():
         fams = [f for f in body.get("families") or [] if f in FAMILIES]
         skipped = []
         if fams:
-            # leave out workflows whose diffusion model isn't installed (e.g. FLUX 3 before its gated download)
-            try:
-                have = set(Comfy(project.comfy_url).models("UNETLoader", "unet_name"))
-            except Exception:
-                have = None
-            if have is not None and names:
-                comfy = Comfy(project.comfy_url)
+            # leave out workflows that miss a file or node (e.g. FLUX 3 before its gated download)
+            comfy = Comfy(project.comfy_url)
+            if names and comfy.online():
                 for f in list(fams):
-                    s = project.effective(names[0], f)
-                    node = FAMILIES[f].get("node")
-                    if (s["model_source"] == "separate" and s["unet"] not in have) or (node and not comfy.has_node(node)):
+                    miss = requirements.missing(project.job_settings(names[0], mode, f), comfy)
+                    if miss["files"] or miss["nodes"] or miss["tools"]:
                         fams.remove(f)
                         skipped.append(f)
             jobs = [make_job(n, mode, family=f, current=False, is_try=True) for n in names for f in fams]

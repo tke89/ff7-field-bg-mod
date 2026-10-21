@@ -99,7 +99,8 @@ its own tuning inside a look, so switching a look from Qwen to Flux and back los
 
 - **Workflow:** Flux.1, Krea 2, Qwen 2.1, FLUX 3, Mage-Flow, FIBO 2, MOSS or Upscale. The edit models (Qwen, FLUX 3, Mage-Flow, FIBO 2)
   and MOSS have a fast/full switch underneath (Turbo · 8 steps / Full · 25 steps and so on). ⚠ marks a version whose model
-  file isn't installed. See [Workflows](workflows.md) for which to use.
+  file isn't installed. A ⚠ on a workflow button means it needs files or nodes ComfyUI doesn't have with these
+  settings; picking it lists them, with download links. See [Workflows](workflows.md) for which to use.
 - **Prompt:** describe the rendering, not the content. Naming materials ("timber, tiles") turned Midgar's
   train station into a medieval alley in testing.
 - **Describe the scene in the prompt:** adds the field's own description (made once by a vision-language
