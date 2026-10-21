@@ -54,7 +54,9 @@ REPAINT_FAMILIES = {"flux1", "krea2", "moss"}  # the ones with a repaint strengt
 AVG_STATE_RUNS = 488 / 670  # states-pass sheets per field, game-wide (batch estimates)
 # version settings shown in the version strip
 SUMMARY_KEYS = ("denoise", "structure", "seed", "style_refs", "style_ref_strength", "detail_pass",
-                "detail_denoise", "out_scale", "upscaler", "states_pass", "align", "work_mp")
+                "detail_denoise", "out_scale", "upscaler", "states_pass", "align", "work_mp", "unet", "steps",
+                "cfg", "depth_lock", "input_upscaler", "input_scale", "keep_colors", "describe_scene", "tries",
+                "seedvr2_unet", "seedvr2_input")
 
 app = Flask(__name__, static_folder=None)
 

@@ -296,14 +296,68 @@ function leftVersion() {
   return S.detail.versions.find((v) => v.id === S.left) || null;
 }
 
+// Short upscaler names for the version cards
+function shortUp(u, s = {}) {
+  if (!u) return "plain";
+  if (u === "seedvr2") return /7b/i.test(s.seedvr2_unet || "") ? "SeedVR2 7B" : "SeedVR2";
+  if (u === "magick") return "Lanczos";
+  if (u.startsWith("upscayl:")) return UPSCAYL_NAMES[u.slice(8)] || u.slice(8);
+  return u.replace(/\.(safetensors|pth|pt)$/i, "").replace(/^\dx[-_]?/i, "");
+}
+
+// What sets a version apart, as [key, text, short text for the card] (older versions recorded fewer settings)
+function verBits(v) {
+  const s = v.settings || {}, f = v.family, out = [];
+  if (f === "upscale") {
+    if (s.upscaler !== undefined) {
+      out.push(["up", s.upscaler === "seedvr2" && !s.seedvr2_input && s.input_upscaler
+        ? `${shortUp(s.input_upscaler, s)} → ${shortUp("seedvr2", s)}` : shortUp(s.upscaler, s)]);
+    }
+    return out;
+  }
+  if (s.steps !== undefined) {
+    const variant = Object.values(VARIANTS[f] || {}).find((x) => x.unet === s.unet);
+    out.push(["steps", `${variant ? variant.label.split(" · ")[0] + " " : ""}${s.steps} steps`]);
+  }
+  if (usesRepaint(f) && s.denoise !== undefined) out.push(["denoise", `repaint ${s.denoise}`]);
+  else if (s.cfg > 1) out.push(["cfg", `prompt strength ${s.cfg}`]);
+  if (s.depth_lock > 0) out.push(["depth", `depth lock ${s.depth_lock}`, `depth ${s.depth_lock}`]);
+  if (s.input_upscaler !== undefined) {
+    const t = `${s.input_scale ? `${s.input_scale}×` : "auto"} ${shortUp(s.input_upscaler, s)}`;
+    out.push(["orig", `original art ${t}`, `orig ${t}`]);
+  }
+  if (s.upscaler !== undefined) out.push(["up", `output upscaler ${shortUp(s.upscaler, s)}`, `out ${shortUp(s.upscaler, s)}`]);
+  const kc = (v.result && v.result.keep_colors) ?? s.keep_colors;
+  if (kc > 0) out.push(["colours", `original colours ${Math.round(kc * 100)}%`, `colours ${Math.round(kc * 100)}%`]);
+  if (s.detail_pass) out.push(["detail", `detail pass ${s.detail_denoise}`, `detail ${s.detail_denoise}`]);
+  if (s.describe_scene) out.push(["scene", "scene description", "scene text"]);
+  return out;
+}
+
+// Said on a card that lacks a setting the viewed version has
+const VER_OFF = { depth: "no depth lock", colours: "colours off", detail: "no detail pass", scene: "no scene text" };
+
+// The card's summary; what differs from the version being viewed stands out
+function verBitsHtml(v, viewed) {
+  const mine = verBits(v);
+  const theirs = viewed && viewed.id !== v.id && viewed.family === v.family ? new Map(verBits(viewed).map((b) => [b[0], b[1]])) : null;
+  const diff = (t) => `<span class="d" title="Differs from the version you're viewing">${esc(t)}</span>`;
+  const html = mine.map(([k, t, short]) => theirs && theirs.has(k) && theirs.get(k) !== t ? diff(short || t) : esc(short || t));
+  if (theirs) {
+    const have = new Set(mine.map((b) => b[0]));
+    for (const k of theirs.keys()) if (VER_OFF[k] && !have.has(k)) html.push(diff(VER_OFF[k]));
+  }
+  return html.join(" · ");
+}
+
 function verTip(v) {
   const s = v.settings || {}, lines = [verName(v)];
   if (v.look) lines.push(`look: ${v.look}`);
-  const bits = [];
-  if (s.denoise !== undefined && usesRepaint(v.family)) bits.push(`repaint ${s.denoise}`);
+  const bits = verBits(v).map(([, t]) => t);
   if (s.seed !== undefined) bits.push(`seed ${s.seed}`);
-  if (s.style_refs) bits.push(`${s.style_refs.length} style image(s)`);
-  if (bits.length) lines.push(bits.join(" · "));
+  if (s.style_refs) bits.push(s.style_refs.length ? `${s.style_refs.length} style image${s.style_refs.length === 1 ? "" : "s"}` : "no style images");
+  if (s.tries > 1) bits.push(`best of ${s.tries}`);
+  if (bits.length) lines.push(...bits);
   if (!v.built) lines.push("not cut into game textures yet");
   lines.push("Click to view · Shift+click to compare on the left of Split");
   return lines.join("\n");
@@ -357,6 +411,7 @@ function renderVersions() {
     html.push(`<div class="${cls}" data-id="${v.id}" title="${esc(verTip(v))}">` +
       `<img loading="lazy" alt="" src="/api/vthumb/${d.name}/${v.id}.jpg">` +
       `<div class="vl">${verKind(v, true)}</div>` +
+      `<div class="vs">${verBitsHtml(v, nv)}</div>` +
       `<div class="vt">${fmtWhen(v.created)}${v.result ? ` · ${v.result.scale}×` : ""}</div>` +
       (v.current ? `<span class="vbadge star" title="The version the game uses">★</span>` : "") +
       (lv && v.id === lv.id ? `<span class="vbadge lft">L</span>` : "") +
@@ -401,8 +456,7 @@ function renderVersionHead() {
     }
     if (r.flag) parts.push(`<span class="warn">check: ${esc(r.flag)}</span>`);
   }
-  if (s.denoise !== undefined && usesRepaint(v.family)) parts.push(`repaint ${s.denoise}`);
-  if (v.family === "upscale" && s.upscaler !== undefined) parts.push(upscalerLabel(s));
+  parts.push(...verBits(v).map(([, t]) => esc(t)));
   if (s.seed !== undefined) parts.push(`seed ${s.seed}`);
   if (s.style_refs) parts.push(s.style_refs.length ? `${s.style_refs.length} style image${s.style_refs.length === 1 ? "" : "s"}` : "no style images");
   if (v.mode === "imported" && v.note && !/^earlier/.test(v.note)) parts.push(esc(v.note));
