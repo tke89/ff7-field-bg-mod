@@ -123,7 +123,10 @@ const SL = {
     what: "How much the protected signs and lettering are repainted. It fades smoothly into the rest of the scene.",
     up: "signs take on more of the new style, but letters start to warp",
     down: "signs stay closer to the original; 0 keeps them as they are",
-    rec: "0.15", recValue: 0.15 },
+    rec: "0.15", recValue: 0.15,
+    // the edit models redraw everything else from scratch: no Repaint strength to compare with
+    by: Object.fromEntries(["qwen21", "flux3k", "mageflow", "fibo2"].map((f) => [f, { label: "Sign change",
+      what: "How much the model may change the protected signs and lettering. Everything else is redrawn from scratch, as always with this workflow (which is why it has no Repaint strength)." }])) },
   tries: { label: "Renders per field", min: 1, max: 4, step: 1, fmt: (v) => v > 1 ? `best of ${v}` : "1",
     what: "Final renders only: paints each field several times, each from a different random start, and keeps the one that matches the original layout best. The others are deleted.",
     up: "a better chance of a clean result, but it takes that many times as long",
@@ -909,7 +912,8 @@ function slider(key, v, opts = {}) {
   w.className = `slider ${m} ${opts.dim ? "dim" : ""}`;
   if (m === "overridden") w.title = OVERRIDDEN_TIP;
   const fmt = sd.fmt || ((x) => String(x));
-  w.innerHTML = `<div class="top"><span>${sd.label}</span><b>${fmt(Number(v[key]))}</b></div>` +
+  const label = ((sd.by || {})[v.family] || {}).label || sd.label;
+  w.innerHTML = `<div class="top"><span>${label}</span><b>${fmt(Number(v[key]))}</b></div>` +
     `<input type="range" min="${sd.min}" max="${sd.max}" step="${sd.step}" value="${v[key]}">` +
     `<div class="help">${opts.help ? `<div class="help-note">${opts.help}</div>` : ""}${sliderHelp(key, v)}</div>`;
   const input = w.querySelector("input");
