@@ -132,7 +132,7 @@ def needs(s):
         wfs.append(build_states_workflow(s, "c.png", "o.png", "m.png", 1024, 768, 2560, 1920, "p", refs))
     if s.get("describe_scene") and s.get("family") != "upscale":
         wfs.append(build_caption_workflow("x.png", s, 640, 480))
-    if s.get("protect_text") and s.get("family") in ("flux1", "krea2", "moss"):
+    if s.get("protect_text") and s.get("family") != "upscale":
         from .signs import build_find_workflow
         wfs.append(build_find_workflow("x.png", s, 640, 480))
     files, nodes = {}, set()

@@ -336,7 +336,7 @@ function verBits(v) {
   if (kc > 0) out.push(["colours", `original colours ${Math.round(kc * 100)}%`, `colours ${Math.round(kc * 100)}%`]);
   if (s.detail_pass) out.push(["detail", `detail pass ${s.detail_denoise}`, `detail ${s.detail_denoise}`]);
   if (s.describe_scene) out.push(["scene", "scene description", "scene text"]);
-  if (s.protect_text && usesRepaint(f)) out.push(["signs", `signs protected at ${s.text_repaint}`, `signs ${s.text_repaint}`]);
+  if (s.protect_text && !(f === "qwen21" && !(s.depth_lock > 0))) out.push(["signs", `signs protected at ${s.text_repaint}`, `signs ${s.text_repaint}`]);
   return out;
 }
 
@@ -1103,17 +1103,28 @@ function renderScene(v) {
 function renderSigns(v) {
   const box = $("#signBox"), d = S.detail;
   box.innerHTML = "";
-  const usable = usesRepaint(v.family) && v.protect_text;
+  const fam = v.family, usable = fam !== "upscale" && v.protect_text;
   if (S.signEdit && (!usable || S.signEditField !== d.name)) setSignEdit(false, false);
-  if (!usesRepaint(v.family)) return;
+  if (fam === "upscale") return;
   box.appendChild(check("protect_text", "Protect signs and text", v, helpText(
-    "Repaints signs, lettering and logos only lightly, so the text stays readable while the rest of the scene is repainted more strongly. The signs are found automatically, once per field, and you can add or remove areas on the image.",
-    "on for fields with signs, whenever Repaint strength is above about 0.15")));
+    usesRepaint(fam)
+      ? "Repaints signs, lettering and logos only lightly, so the text stays readable while the rest of the scene is repainted more strongly. The signs are found automatically, once per field, and you can add or remove areas on the image."
+      : "Keeps signs, lettering and logos close to the original, so the model doesn't turn them into made-up letters while it redraws the rest. The signs are found automatically, once per field, and you can add or remove areas on the image.",
+    usesRepaint(fam) ? "on for fields with signs, whenever Repaint strength is above about 0.15"
+      : fam === "mageflow" ? "on for fields with signs: Mage-Flow garbles lettering"
+      : "on for fields whose signs come out garbled; this model often keeps big lettering readable by itself")));
   if (!v.protect_text) return;
+  if (fam === "qwen21" && !(v.depth_lock > 0)) {
+    const n = document.createElement("div");
+    n.className = "model-warn";
+    n.textContent = "Turn on Qwen's Depth lock to use this. Without it Qwen shifts the picture by a few pixels, and the protected signs wouldn't line up with the rest (they came out doubled). Until then, signs aren't protected.";
+    box.appendChild(n);
+  }
   box.appendChild(slider("text_repaint", v));
   const boxes = d.text_boxes, n = boxes ? boxes.length : 0, mine = boxes ? boxes.filter((b) => !b.auto).length : 0;
+  const active = !(fam === "qwen21" && !(v.depth_lock > 0));
   const status = boxes == null ? "Not looked for yet: the next render finds them, or press Find signs."
-    : n ? `${n} sign area${n === 1 ? "" : "s"} protected${mine ? ` (${mine} drawn by you)` : ""}.`
+    : n ? `${n} sign area${n === 1 ? "" : "s"} ${active ? "protected" : "marked"}${mine ? ` (${mine} drawn by you)` : ""}.`
     : "No signs found. If it missed some, draw them on the image.";
   const row = document.createElement("div");
   row.className = "signs";

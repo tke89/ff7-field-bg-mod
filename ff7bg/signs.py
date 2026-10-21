@@ -4,7 +4,10 @@ At the repaint strengths that restyle a scene well (0.3-0.5), letters turn into 
 signs, Shin-Ra's lobby sign). Qwen3.5 (the scene describer, through ComfyUI's TextGenerate) points out the
 signs as boxes, once per field; the user can add the ones it misses and remove wrong ones. The render then
 uses a per-pixel repaint strength (Differential Diffusion): `text_repaint` on the signs, rising smoothly to
-the scene's own over TEXT_FADE original pixels, so there's no visible edge.
+the scene's own over TEXT_FADE original pixels, so there's no visible edge. The edit models (Qwen, FLUX 3,
+Mage-Flow, FIBO 2) paint from scratch instead; they start from the original on the signs and blend it back
+in at every step, with the same fading mask. Qwen only with its depth lock: otherwise it shifts the picture
+by several pixels and the pinned signs no longer line up (Kalm's INN sign came out doubled).
 """
 import json
 import re

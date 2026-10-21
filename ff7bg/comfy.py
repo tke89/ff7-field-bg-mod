@@ -616,7 +616,16 @@ def _build_edit_workflow(s, input_name, canvas_w, canvas_h, prefix, style_ref_na
     refs = _load_refs(wf, style_ref_names)
     work = _resize(wf, "work", s, ["src", 0], ww, wh)
     positive, negative, latent = _edit_conditioning(wf, s, clip, vae, work, refs, size=(ww, wh))
-    _edit_sample(wf, s, _control_chain(wf, s, base, work, latent, vae), positive, negative, latent)
+    model = _control_chain(wf, s, base, work, latent, vae)
+    if s.get("text_mask"):
+        # signs: start from the original there and blend it back in at every step (a soft noise mask), so
+        # the lettering survives. Not Differential Diffusion: with these models' samplers it held back the
+        # whole picture (Qwen's change from the original fell from 64 to 18 with nothing protected).
+        wf["sign_enc"] = {"class_type": "VAEEncode", "inputs": {"pixels": work, "vae": vae}}
+        wf["sign_mask"] = {"class_type": "LoadImageMask", "inputs": {"image": s["text_mask"], "channel": "red"}}
+        wf["sign_noise"] = {"class_type": "SetLatentNoiseMask", "inputs": {"samples": ["sign_enc", 0], "mask": ["sign_mask", 0]}}
+        latent = ["sign_noise", 0]
+    _edit_sample(wf, s, model, positive, negative, latent)
     wf["dec"] = {"class_type": "VAEDecode", "inputs": {"samples": ["sample", 0], "vae": vae}}
     # the encoder rounds sizes to multiples of 32: back to the exact working size, then drop the margin
     wf["back"] = {"class_type": "ImageScale", "inputs": {

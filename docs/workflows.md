@@ -225,8 +225,8 @@ Edit models see the image anyway and need it least.
 ## Signs and text
 
 Above a repaint of about 0.15, lettering turns into made-up glyphs: Kalm's shop signs, the Shin-Ra lobby's sign
-(MOSS at 0.4 turned "Shin-Ra" into a blank panel and the logo into "6 2"). **Protect signs and text** (Look card;
-Flux.1, Krea 2 and MOSS) repaints only the signs lightly, at **Sign repaint** (0.15), while the rest of the
+(MOSS at 0.4 turned "Shin-Ra" into a blank panel and the logo into "6 2"). **Protect signs and text** (Look card,
+every workflow but Upscale) repaints only the signs lightly, at **Sign repaint** (0.15), while the rest of the
 scene gets the full Repaint strength.
 
 - **Finding the signs.** Qwen3.5 9B (the scene describer) is asked for a box around every sign, logo and label,
@@ -236,8 +236,17 @@ scene gets the full Repaint strength.
   picture). **Find again** looks again and keeps the areas you drew.
 - **No visible edge.** The repaint strength rises from the signs' to the scene's over about 18 original pixels
   (with smoothstep easing), around boxes padded by 10%. A short fade left a hard line beside "Shin-Ra".
-- It's a per-pixel repaint strength (ComfyUI's Differential Diffusion), so it costs no time. The detail pass
-  leaves the signs as the main render made them. Doors, lights and animation frames aren't covered yet.
+- Flux.1, Krea 2 and MOSS get a per-pixel repaint strength (ComfyUI's Differential Diffusion), so it costs no
+  time. The detail pass leaves the signs as the main render made them.
+- The edit models (Qwen, FLUX 3, Mage-Flow, FIBO 2) paint the picture from scratch, so they start from the
+  original on the signs instead, and blend it back in at every step with the same fading mask. Differential
+  Diffusion didn't work for them: with their samplers it held back the whole picture, not just the signs.
+  - Mage-Flow garbles lettering ("Shin-Ra" became "gthn-Ry"); with protection it stays readable.
+  - Qwen, FIBO 2 and FLUX 3 often keep big lettering readable by themselves; protection helps with the signs
+    they garble (Qwen turned Kalm's INN sign into "JUNN").
+  - **Qwen needs its depth lock for this.** Without it Qwen shifts the picture by several pixels while the
+    protected signs stay put, so they came out doubled; the Studio says so and leaves the signs alone.
+- Doors, lights and animation frames aren't covered yet.
 
 ## Keeping the original colours
 

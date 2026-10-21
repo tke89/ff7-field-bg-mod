@@ -249,8 +249,11 @@ class Project:
         return mine + found
 
     def sign_boxes(self, name, s, comfy):
-        """The field's sign areas when these settings protect text ([] when not), found the first time."""
-        if not s.get("protect_text") or s.get("family") not in REPAINT_FAMILIES:
+        """The field's sign areas when these settings protect text ([] when not), found the first time.
+        Not for Qwen without its depth lock: it shifts the picture, so pinned signs wouldn't line up."""
+        if not s.get("protect_text") or s.get("family") == "upscale":
+            return []
+        if s.get("family") == "qwen21" and s["depth_lock"] <= 0:
             return []
         boxes = self.meta(name).get("text_boxes")
         return self.find_signs(name, comfy, s) if boxes is None else boxes
@@ -640,22 +643,27 @@ class Worker(threading.Thread):
         scene = self.p.scene(name, s, comfy)
         if scene:
             s = dict(s, scene=scene)
-        boxes = self.p.sign_boxes(name, s, comfy)
-        inside = s["text_repaint"] / max(s["denoise"], 1e-3)
-        if boxes and inside < 1:  # signs: a lighter repaint, fading into the scene's
-            k = work_size(s, w, h)[0] // w
-            repaint, keep = signs.masks(boxes, w, h, k, inside)
-            up = AI / "input_up"
-            up.mkdir(exist_ok=True)
-            Image.fromarray(repaint).save(up / f"{name}_signs.png")
-            s = dict(s, text_mask=comfy.upload(up / f"{name}_signs.png"), signs=len(boxes))
-            if s["detail_pass"]:
-                Image.fromarray(keep).save(up / f"{name}_signs_keep.png")
-                s["text_keep"] = comfy.upload(up / f"{name}_signs_keep.png")
         self._stage("uploading", 0.02)
         if s.get("family") in EDIT_FAMILIES:
             # edit models reframe slightly: give them a blurred margin, mostly cropped off inside the workflow
             pad = edit_padding(w, h, s["edit_margin"])
+        boxes = self.p.sign_boxes(name, s, comfy)
+        edit = s.get("family") in EDIT_FAMILIES  # these repaint everything: strength 1
+        inside = s["text_repaint"] / (1.0 if edit else max(s["denoise"], 1e-3))
+        if boxes and inside < 1:  # signs: a lighter repaint, fading into the scene's
+            l, t, r, b = pad  # edit models get the padded original: boxes move with it
+            pw, ph = w + l + r, h + t + b
+            k = work_size(s, pw, ph)[0] // pw
+            moved = [dict(x, x1=x["x1"] + l, x2=x["x2"] + l, y1=x["y1"] + t, y2=x["y2"] + t) for x in boxes]
+            repaint, keep = signs.masks(moved, pw, ph, k, inside)
+            up = AI / "input_up"
+            up.mkdir(exist_ok=True)
+            Image.fromarray(repaint).save(up / f"{name}_signs.png")
+            s = dict(s, text_mask=comfy.upload(up / f"{name}_signs.png"), signs=len(boxes))
+            if s["detail_pass"] and not edit:
+                Image.fromarray(keep).save(up / f"{name}_signs_keep.png")
+                s["text_keep"] = comfy.upload(up / f"{name}_signs_keep.png")
+        if s.get("family") in EDIT_FAMILIES:
             padded = ai._pad(np.asarray(Image.open(source).convert("RGB")), *pad)
             source = AI / "input_edit" / f"{name}.png"
             source.parent.mkdir(exist_ok=True)
