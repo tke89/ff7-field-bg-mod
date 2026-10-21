@@ -911,6 +911,24 @@ def api_field_caption(name):
     return jsonify(field_detail(name))
 
 
+@app.get("/api/captions")
+def api_captions():
+    """How many fields have a scene description."""
+    return jsonify(count=sum(1 for n in project.jobs if project.meta(n).get("caption")))
+
+
+@app.post("/api/captions/clear")
+def api_captions_clear():
+    """Drop every field's scene description; each is made again the next time it's needed."""
+    cleared = 0
+    for n in project.jobs:
+        if project.meta(n).get("caption"):
+            project.update_meta(n, caption=None)
+            cleared += 1
+    name = request.get_json(force=True).get("field")
+    return jsonify(cleared=cleared, field=field_detail(name) if name in project.jobs else None)
+
+
 @app.post("/api/field/<name>/reset")
 def api_field_reset(name):
     _field_or_404(name)

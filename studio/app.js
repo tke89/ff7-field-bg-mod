@@ -1009,8 +1009,20 @@ function renderScene(v) {
   w.className = "scene";
   w.innerHTML = `<textarea rows="3" spellcheck="false" placeholder="Made on the next render, or press Describe now."></textarea>` +
     `<div class="row-btns tight"><button class="small ghost">${d.caption ? "Describe again" : "Describe now"}</button>` +
-    `<span class="hint">Only for this field. Fix anything it got wrong: it's plain text added to your prompt.</span></div>`;
-  const t = w.querySelector("textarea"), b = w.querySelector("button");
+    `<button class="small ghost" title="Delete the scene description of every field">Clear all descriptions</button></div>` +
+    `<div class="hint">Only for this field. Fix anything it got wrong: it's plain text added to your prompt.</div>`;
+  const t = w.querySelector("textarea"), [b, clear] = w.querySelectorAll("button");
+  clear.onclick = async () => {
+    const { count } = await api("/api/captions");
+    if (!count) { toast("No field has a scene description yet."); return; }
+    if (!confirm(`Clear ${count === 1 ? "the one scene description there is" : `the scene descriptions of all ${count} fields`}? Any you edited are lost too. ` +
+      "Each field gets a new one the next time it renders with descriptions on.")) return;
+    try {
+      const r = await api("/api/captions/clear", { body: { field: d.name } });
+      if (r.field) applyDetail(r.field);
+      toast(`Cleared ${r.cleared} scene description${r.cleared === 1 ? "" : "s"}.`);
+    } catch (e) { toast(`Couldn't clear them: ${e.message}`); }
+  };
   t.value = d.caption || "";
   t.onchange = async () => {
     try { applyDetail(await api(`/api/field/${d.name}/caption`, { body: { text: t.value } })); }
