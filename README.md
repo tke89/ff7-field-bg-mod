@@ -66,7 +66,9 @@ Start Studio.bat     starts the Studio
 Created on first run and not part of the repository: `ai/` (prepared inputs, every version), `dist/` (the game
 textures to install), `studio/looks.json` (your looks), `work/` (command-line exports).
 
-## Legal
+## License and legal
+
+The code and documentation are under the [MIT License](LICENSE).
 
 This repository contains no game data and no AI models. You need your own copy of FINAL FANTASY VII; everything
 the tools produce comes from your installation. FINAL FANTASY VII is a trademark of Square Enix; this is an
