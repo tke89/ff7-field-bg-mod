@@ -12,6 +12,7 @@ settings for every workflow. Model files and download links are in
 | **Qwen 2.1 Full** | very well, after alignment | Turbo plus more detail (brick, ground texture) | about 15–20 s | finals where detail matters |
 | **FLUX 3 Klein** | the best (0.1 px drift) | clean, closer to the original colours, less painterly | Distilled about 15–20 s (estimated), Base 50–85 s | fields where exact layout matters most |
 | **Mage-Flow Turbo** | very well | keeps the original colours; flattens some surfaces | about 2–5 s | fast drafts and big batches |
+| **FIBO 2 Edit Turbo** | not tested yet | not tested yet | not measured | needs a ComfyUI newer than 0.42.1 |
 | **Flux.1** | well (ControlNet structure lock) | depends heavily on settings | about 15–20 s | style images (USO), the detail pass |
 | **Krea 2 Turbo** | only at low repaint | good, stylised | about 9–19 s | experimenting; no structure lock |
 | **Upscale** | exactly (no restyle) | the original, sharper | about 2–4 s | a faithful HD version, or a baseline |
@@ -60,6 +61,21 @@ Microsoft's 4B edit model.
   outlines. It keeps the original colours more than Qwen, but flattens some surfaces: Kalm's plaza went smooth.
 - **Full** (30 steps, CFG 5) redesigns the scene freely, even at CFG 2: the train station became a golden tunnel.
   It's in the switch, labelled "redesigns", but isn't useful here.
+
+## FIBO 2 (Edit Turbo, Dev)
+
+Bria's 8B FIBO 2.0 (released 20 October 2026), the top open-weights image editor on Artificial Analysis at
+release. It runs through ComfyUI's native support (`TextEncodeFibo2`, PR #17240), which is newer than ComfyUI
+0.42.1. Until ComfyUI Desktop updates past that, the workflow button shows ⚠ and **Try all workflows** skips it.
+
+- The original goes in as `<image_1>`. The result size is set explicitly; the default render size is 2 MP,
+  against its native size of about 1 MP. The instruction is plain text; FIBO also understands Bria's structured
+  JSON prompts (VGL).
+- **Edit Turbo:** 4 steps, CFG 1, negative prompt has no effect. **Dev:** 30 steps, CFG 5 (optional download,
+  `fibo2_dev_int8_convrot`).
+- It uses the bf16 Qwen3-VL-4B text encoder, because the int8 one has a vision bug (ComfyUI issue #17248).
+- License: CC BY-NC 4.0, non-commercial only.
+- Not tested yet: compare it with Try all workflows once ComfyUI has updated.
 
 ## Flux.1
 

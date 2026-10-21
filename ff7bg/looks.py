@@ -20,7 +20,7 @@ from pathlib import Path
 
 from .comfy import DEFAULT_SETTINGS, FAMILY_PRESETS
 
-FAMILIES = ("flux1", "krea2", "qwen21", "flux3k", "mageflow", "upscale")
+FAMILIES = ("flux1", "krea2", "qwen21", "flux3k", "mageflow", "fibo2", "upscale")
 
 # Settings that belong to a workflow (stored per profile); everything else is shared by the look.
 FAMILY_KEYS = {

@@ -46,16 +46,19 @@ const FAMILIES = {
   qwen21: { short: "Qwen 2.1", hint: "Qwen-Image 2.1: an edit model that keeps the layout well; style images as references; renders ~2K." },
   flux3k: { short: "FLUX 3", hint: "FLUX 3 Image Klein (Black Forest Labs, Oct 2026): an edit model that renders up to 4K natively; style images as references." },
   mageflow: { short: "Mage-Flow", hint: "Mage-Flow Edit (Microsoft, 4B): a small, very fast edit model; style images as references." },
+  fibo2: { short: "FIBO 2", hint: "Bria FIBO 2.0 Edit (Oct 2026): an 8B edit model, the top open-weights editor at release; 4 steps in Turbo. Non-commercial license (CC BY-NC 4.0)." },
   upscale: { short: "Upscale", hint: "No AI restyle: the original art enlarged by the upscaler under Output." },
 };
 const usesRepaint = (f) => f === "flux1" || f === "krea2";
-const EDIT = new Set(["qwen21", "flux3k", "mageflow"]);  // edit models: no repaint strength or detail pass
+const EDIT = new Set(["qwen21", "flux3k", "mageflow", "fibo2"]);  // edit models: no repaint strength or detail pass
 // Fast and full versions of the edit models; mirrors EDIT_VARIANTS in ff7bg/comfy.py
 const VARIANTS = {
   qwen21: { turbo: { label: "Turbo · 8 steps", unet: "qwen_image_2.1_turbo_int8_convrot.safetensors", steps: 8, cfg: 1 },
             full: { label: "Full · 25 steps", unet: "qwen_image_2.1_int8_convrot.safetensors", steps: 25, cfg: 1 } },
   flux3k: { turbo: { label: "Distilled · 16 steps", unet: "flux3-image-klein-int8-convrot.safetensors", steps: 16, cfg: 1 },
             full: { label: "Base · 50 steps", unet: "flux3-image-klein-base-int8-convrot.safetensors", steps: 50, cfg: 1 } },
+  fibo2: { turbo: { label: "Edit Turbo · 4 steps", unet: "fibo2_edit_turbo_int8_convrot.safetensors", steps: 4, cfg: 1 },
+           full: { label: "Dev · 30 steps", unet: "fibo2_dev_int8_convrot.safetensors", steps: 30, cfg: 5 } },
   mageflow: { turbo: { label: "Turbo · 4 steps", unet: "mage_flow_edit_turbo_int8_convrot.safetensors", steps: 4, cfg: 1 },
               full: { label: "Full · 30 steps (redesigns)", unet: "mage_flow_edit_int8_convrot.safetensors", steps: 30, cfg: 5 } },
 };
@@ -74,6 +77,7 @@ const SL = {
     helpBy: { qwen21: "Off (0) by default: Qwen copies content from style images (it repainted ancnt1 as Kalm). Raise it only to experiment.",
               flux3k: "Off (0) by default: in testing FLUX 3 mostly ignored style images anyway.",
               mageflow: "Off (0) by default: Mage-Flow pastes textures from style images over the scene.",
+              fibo2: "Off (0) by default, like the other edit models. FIBO 2 takes up to 4 images; with style images it no longer crops the field to the exact result size.",
               krea2: "Strength of the style-reference LoRA; it was trained on 1-2 images." } },
   out_scale: { label: "Output scale", min: 2, max: 10, step: 1, help: "Final texture resolution vs. the original. 6× suits 1440p, 8× is close to 4K.", fmt: (v) => `${v}×` },
   detail_denoise: { label: "Detail strength", min: 0.1, max: 0.5, step: 0.01, help: "How much the detail pass repaints at full resolution. Above ~0.45 tiles may disagree." },
@@ -94,6 +98,7 @@ const LOOK_SLIDERS = {
   qwen21: ["style_ref_strength"],
   flux3k: ["style_ref_strength"],
   mageflow: ["style_ref_strength"],
+  fibo2: ["style_ref_strength"],
   upscale: [],
 };
 const KEY_LABELS = {
@@ -750,7 +755,15 @@ function renderStyle() {
     const fb = seg.querySelector(`[data-fam="${d.effective.family}"]`);
     if (fb) { fb.classList.add("overridden"); fb.title = `${d.name} uses ${famShort(d.effective.family)} (This field only)`; }
   }
-  $("#familyHint").textContent = FAMILIES[fam].hint;
+  const nodes = (S.models && S.models.nodes) || {};
+  for (const b of seg.children) {
+    if (nodes[b.dataset.fam] === false) {
+      b.textContent += " ⚠";
+      b.title = "Needs a newer ComfyUI: update ComfyUI Desktop";
+    }
+  }
+  $("#familyHint").textContent = FAMILIES[fam].hint +
+    (nodes[fam] === false ? " Your ComfyUI is too old to run it yet: update ComfyUI Desktop." : "");
   renderVariants(v);
   const up = fam === "upscale";
   $("#genControls").hidden = up;
@@ -862,6 +875,7 @@ function renderOutput(v) {
     krea2: "Undoes an overall zoom or shift (one correction for the whole image, so lines stay straight); local changes stay.",
     flux3k: "Keep on for edit models: they can zoom or shift slightly. One overall correction, so straight lines stay straight.",
     mageflow: "Keep on for edit models: they can zoom or shift slightly. One overall correction, so straight lines stay straight.",
+    fibo2: "Keep on for edit models: they can zoom or shift slightly. One overall correction, so straight lines stay straight.",
   }[fam];
   box.appendChild(check("align", "Auto-align to the original layout", v, alignHelp));
 }
@@ -942,11 +956,11 @@ function renderAdvanced(v) {
       add(selectRow("unet_dtype", "Weight type", m.unet_dtypes, v));
       add(selectRow("clip1", "Text encoder 1", m.clips, v, {
         hint: { krea2: "Krea 2 uses qwen3vl_4b.", qwen21: "Qwen-Image 2.1 uses qwen3vl_8b.", flux3k: "FLUX 3 Klein uses qwen3vl_4b.",
-                mageflow: "Mage-Flow uses qwen3vl_4b." }[fam] || "Flux.1 uses clip_l + t5xxl." }));
+                mageflow: "Mage-Flow uses qwen3vl_4b.", fibo2: "FIBO 2 uses qwen3vl_4b (bf16: the int8 one has a vision bug)." }[fam] || "Flux.1 uses clip_l + t5xxl." }));
       add(selectRow("clip2", "Text encoder 2", m.clips, v, { none: "(none: single encoder)" }));
       add(selectRow("clip_type", "Encoder type", types, v, {
         hint: { krea2: "\"krea2\" for Krea 2.", qwen21: "\"qwen_image\" for Qwen-Image 2.1.", flux3k: "\"flux3\" for FLUX 3 Klein.",
-                mageflow: "\"mage\" for Mage-Flow." }[fam] || "\"flux\" for Flux.1 with two encoders." }));
+                mageflow: "\"mage\" for Mage-Flow.", fibo2: "\"fibo2\" for FIBO 2." }[fam] || "\"flux\" for Flux.1 with two encoders." }));
       add(selectRow("vae", "VAE", m.vaes, v));
     }
     if (fam === "flux1") {
@@ -969,6 +983,8 @@ function renderAdvanced(v) {
       if (base && !(m.unets || []).includes(base)) warns.push("The FLUX 3 Klein files are gated: accept the license at huggingface.co/black-forest-labs/flux-3-image-klein-comfy, then put the model in models/diffusion_models.");
     } else if (fam === "mageflow") {
       if (base && !looksMage(base)) warns.push(`"${base}" doesn't look like a Mage-Flow Edit model.`);
+    } else if (fam === "fibo2") {
+      if (base && !/fibo/i.test(base)) warns.push(`"${base}" doesn't look like a FIBO 2.0 model.`);
     } else if (base && !looksFlux1(base)) {
       warns.push(`"${base}" doesn't look like a Flux.1 model; the Flux.1 workflow uses prompt guidance, the Flux ControlNet and USO style images.`);
     }

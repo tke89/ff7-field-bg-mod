@@ -71,6 +71,17 @@ first. The license is free for individuals and companies under $5M annual revenu
 | `qwen3vl_4b_bf16.safetensors` | `text_encoders` | (same as FLUX 3) |
 | `mage_flow_vae_bf16.safetensors` | `vae` | [Comfy-Org/Mage-Flow](https://huggingface.co/Comfy-Org/Mage-Flow/resolve/main/vae/mage_flow_vae_bf16.safetensors) |
 
+### FIBO 2 (needs a ComfyUI newer than 0.42.1)
+
+Non-commercial license (CC BY-NC 4.0).
+
+| File | Folder | Download |
+|---|---|---|
+| `fibo2_edit_turbo_int8_convrot.safetensors` | `diffusion_models` | [Comfy-Org/Fibo-2.0](https://huggingface.co/Comfy-Org/Fibo-2.0/resolve/main/diffusion_models/fibo2_edit_turbo_int8_convrot.safetensors) |
+| `fibo2_dev_int8_convrot.safetensors` (Dev, optional) | `diffusion_models` | [Comfy-Org/Fibo-2.0](https://huggingface.co/Comfy-Org/Fibo-2.0/resolve/main/diffusion_models/fibo2_dev_int8_convrot.safetensors) |
+| `qwen3vl_4b_bf16.safetensors` | `text_encoders` | (same as FLUX 3) |
+| `flux2-vae.safetensors` | `vae` | (same as FLUX 3) |
+
 ### Krea 2 Turbo
 
 | File | Folder | Download |

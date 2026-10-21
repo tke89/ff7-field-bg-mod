@@ -97,7 +97,7 @@ its own tuning inside a look, so switching a look from Qwen to Flux and back los
 
 ### Look card
 
-- **Workflow:** Flux.1, Krea 2, Qwen 2.1, FLUX 3, Mage-Flow or Upscale. The edit models (Qwen, FLUX 3, Mage-Flow)
+- **Workflow:** Flux.1, Krea 2, Qwen 2.1, FLUX 3, Mage-Flow, FIBO 2 or Upscale. The edit models (Qwen, FLUX 3, Mage-Flow, FIBO 2)
   have a fast/full switch underneath (Turbo · 8 steps / Full · 25 steps and so on). ⚠ marks a version whose model
   file isn't installed. See [Workflows](workflows.md) for which to use.
 - **Prompt:** describe the rendering, not the content. Naming materials ("timber, tiles") turned Midgar's

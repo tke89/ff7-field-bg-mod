@@ -14,7 +14,7 @@ It works with the 2026 Steam re-release (Steam app 3837340). The game's own file
 
 - **FF7 Field Studio**: a local web app for the whole job.
   - Browse every field, composed exactly as the game draws it, and compare original and new with a split view.
-  - Restyle with six workflows: Flux.1, Krea 2, Qwen-Image 2.1, FLUX 3 Klein, Mage-Flow, or upscale only.
+  - Restyle with seven workflows: Flux.1, Krea 2, Qwen-Image 2.1, FLUX 3 Klein, Mage-Flow, FIBO 2, or upscale only.
   - Keep every render as a version, compare any two, and pick the one the game uses.
   - Save named **looks** (prompt, workflow, settings) and assign them to fields or areas by name (`md*` = Midgar).
   - Queue single fields, selections or the whole game; install to the game with one click.
@@ -46,7 +46,7 @@ python -m venv .venv
 |---|---|
 | [Getting started](docs/getting-started.md) | Installing, models, first run, FFNx |
 | [Studio guide](docs/studio-guide.md) | Every part of the Studio, and a suggested way to work through the game |
-| [Workflows](docs/workflows.md) | The six workflows and upscalers compared, with test results and recommended settings |
+| [Workflows](docs/workflows.md) | The workflows and upscalers compared, with test results and recommended settings |
 | [How it works](docs/how-it-works.md) | Field format, alignment, the states pass, glows, where data is stored |
 | [Command line](docs/command-line.md) | `ff7bgmod.py`: export and paint by hand, outside generators, verify |
 | [Troubleshooting](docs/troubleshooting.md) | Common problems in the Studio, ComfyUI and the game |

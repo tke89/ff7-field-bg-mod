@@ -225,6 +225,8 @@ class Project:
                 per = 6 * mp if "turbo" in s["unet"] else 0.25 * mp * evals  # full: ~10 s at 1.6 MP, 25 steps
             elif fam == "flux3k":
                 per = 0.25 * mp * evals  # about 4 s per megapixel at 16 steps on a 5090
+            elif fam == "fibo2":
+                per = 0.35 * mp * evals  # 8B; a guess until measured
             else:  # mageflow; Turbo measured 1-3 s at 1.6 MP
                 per = 0.5 * mp * evals
             first, tile, sheet = 4 + per, 0, 6 + 0.8 * per
@@ -1034,7 +1036,8 @@ def api_models():
         "upscalers": ("UpscaleModelLoader", "model_name"),
         "loras": ("LoraLoaderModelOnly", "lora_name"),
     }
-    out = {"online": True, "presets": FAMILY_PRESETS}
+    out = {"online": True, "presets": FAMILY_PRESETS,
+           "nodes": {f: comfy.has_node(spec["node"]) for f, spec in FAMILIES.items() if spec.get("node")}}
     for key, (node, field) in lists.items():
         try:
             out[key] = comfy.models(node, field)
@@ -1093,9 +1096,11 @@ def api_generate():
             except Exception:
                 have = None
             if have is not None and names:
+                comfy = Comfy(project.comfy_url)
                 for f in list(fams):
                     s = project.effective(names[0], f)
-                    if s["model_source"] == "separate" and s["unet"] not in have:
+                    node = FAMILIES[f].get("node")
+                    if (s["model_source"] == "separate" and s["unet"] not in have) or (node and not comfy.has_node(node)):
                         fams.remove(f)
                         skipped.append(f)
             jobs = [make_job(n, mode, family=f, current=False, is_try=True) for n in names for f in fams]

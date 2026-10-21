@@ -108,6 +108,13 @@ FAMILY_PRESETS = {
                  "clip1": "qwen3vl_4b_bf16.safetensors", "clip2": "", "clip_type": "mage",
                  "vae": "mage_flow_vae_bf16.safetensors", "steps": 4, "cfg": 1.0, "work_mp": 2.0, "align": True,
                  "detail_pass": False, "style_ref_strength": 0.0},
+    # Bria FIBO 2.0 Edit Turbo (8B): 4-step edits. Trained at about 1 MP; the int8 text encoder has a
+    # vision bug (ComfyUI issue #17248), so the bf16 one.
+    "fibo2": {"family": "fibo2", "model_source": "separate",
+              "unet": "fibo2_edit_turbo_int8_convrot.safetensors", "unet_dtype": "default",
+              "clip1": "qwen3vl_4b_bf16.safetensors", "clip2": "", "clip_type": "fibo2",
+              "vae": "flux2-vae.safetensors", "steps": 4, "cfg": 1.0, "work_mp": 2.0, "align": True,
+              "detail_pass": False, "style_ref_strength": 0.0},
     # Upscale only: no diffusion model; the original art goes straight through the upscaler.
     "upscale": {"family": "upscale", "align": False, "detail_pass": False},
 }
@@ -124,6 +131,8 @@ EDIT_VARIANTS = {
                "full": {"unet": "flux3-image-klein-base-int8-convrot.safetensors", "steps": 50, "cfg": 1.0}},
     "mageflow": {"turbo": {"unet": "mage_flow_edit_turbo_int8_convrot.safetensors", "steps": 4, "cfg": 1.0},
                  "full": {"unet": "mage_flow_edit_int8_convrot.safetensors", "steps": 30, "cfg": 5.0}},
+    "fibo2": {"turbo": {"unet": "fibo2_edit_turbo_int8_convrot.safetensors", "steps": 4, "cfg": 1.0},
+              "full": {"unet": "fibo2_dev_int8_convrot.safetensors", "steps": 30, "cfg": 5.0}},
 }
 
 
@@ -192,6 +201,9 @@ FAMILIES = {
     # Mage-Flow-Edit: instruction + reference images through its own encoder node
     # (ComfyUI's image_mage_flow_edit_*_int8 templates).
     "mageflow": {"scheduler": "simple", "controlnet": False, "edit": True},
+    # Bria FIBO 2.0: the original as <image_1> of TextEncodeFibo2, which needs a ComfyUI newer than 0.42.1
+    # (PR #17240); the result size is set explicitly, since a single image is cropped to it pixel for pixel.
+    "fibo2": {"scheduler": "simple", "controlnet": False, "edit": True, "node": "TextEncodeFibo2"},
     # No restyle: the original enlarged by the chosen upscaler (SeedVR2 or an ESRGAN-style model),
     # states included, as a faithful HD baseline.
     "upscale": {"scheduler": "simple", "controlnet": False, "upscale": True},
@@ -217,9 +229,10 @@ def _edit_instruction(s, first, ref_tags):
 EDIT_REF_MP = 0.35
 
 
-def _edit_conditioning(wf, s, clip, vae, image, refs):
+def _edit_conditioning(wf, s, clip, vae, image, refs, size=(0, 0)):
     """Edit instruction with the image to restyle first and the style images after it.
-    Returns (positive, negative, latent at the image's size)."""
+    Returns (positive, negative, latent at the image's size). size: the image's (w, h), for models
+    that need it given."""
     fam = _family(s)["name"]
     use = refs if s["style_ref_strength"] > 0 else []
     if EDIT_REF_MP:
@@ -239,6 +252,14 @@ def _edit_conditioning(wf, s, clip, vae, image, refs):
         for i, r in enumerate(use):
             enc[f"images.image{i + 1}"] = r
         wf["qenc"] = {"class_type": "ReferenceMultiLatent", "inputs": enc}
+        return ["qenc", 0], ["qenc", 1], ["qenc", 2]
+    if fam == "fibo2":
+        tags = [f"<image_{i + 2}>" for i in range(len(use))]
+        enc = {"clip": clip, "prompt": _edit_instruction(s, "<image_1>", tags), "negative_prompt": "",
+               "vae": vae, "width": size[0], "height": size[1], "batch_size": 1, "images.image_1": image}
+        for i, r in enumerate(use):
+            enc[f"images.image_{i + 2}"] = r
+        wf["qenc"] = {"class_type": "TextEncodeFibo2", "inputs": enc}
         return ["qenc", 0], ["qenc", 1], ["qenc", 2]
     if fam == "mageflow":
         tags = [f"reference image {i + 2}" for i in range(len(use))]
@@ -433,7 +454,7 @@ def _build_edit_workflow(s, input_name, canvas_w, canvas_h, prefix, style_ref_na
     base, clip, vae = _loaders(wf, s)
     refs = _load_refs(wf, style_ref_names)
     work = _resize(wf, "work", s, ["src", 0], ww, wh)
-    positive, negative, latent = _edit_conditioning(wf, s, clip, vae, work, refs)
+    positive, negative, latent = _edit_conditioning(wf, s, clip, vae, work, refs, size=(ww, wh))
     _edit_sample(wf, s, base, positive, negative, latent)
     wf["dec"] = {"class_type": "VAEDecode", "inputs": {"samples": ["sample", 0], "vae": vae}}
     # the encoder rounds sizes to multiples of 32: back to the exact working size, then drop the margin
@@ -522,7 +543,7 @@ def build_states_workflow(s, ctx_name, orig_name, mask_name, gen_w, gen_h, out_w
     wf["noise_mask"] = {"class_type": "SetLatentNoiseMask", "inputs": {"samples": ["enc", 0], "mask": ["mask", 0]}}
     if _family(s).get("edit"):
         # partial repaint inside the mask (keeps each state's shape); the noise mask keeps the rest
-        positive, negative, _ = _edit_conditioning(wf, s, clip, vae, ["inp", 0], refs)
+        positive, negative, _ = _edit_conditioning(wf, s, clip, vae, ["inp", 0], refs, size=(gen_w, gen_h))
         _edit_sample(wf, s, base, positive, negative, ["noise_mask", 0],
                      denoise=s["state_denoise"] if denoise is None else denoise)
     else:
@@ -551,6 +572,12 @@ class Comfy:
         r = requests.get(f"{self.url}/object_info/{node}", timeout=10).json()
         spec = r[node]["input"]["required"][field]
         return spec[1]["options"] if spec[0] == "COMBO" else spec[0]
+
+    def has_node(self, node):
+        try:
+            return bool(requests.get(f"{self.url}/object_info/{node}", timeout=10).json())
+        except (requests.RequestException, ValueError):
+            return False
 
     def upload(self, path, subfolder="ff7studio"):
         with open(path, "rb") as f:
