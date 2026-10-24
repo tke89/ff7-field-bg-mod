@@ -327,3 +327,8 @@ details.adv[open] summary { margin-bottom: 4px; }
 
 .up-note { margin-top: 8px; line-height: 1.45; }
 .sel-bar .row-btns button { white-space: nowrap; }
+.dialog-modal { z-index: 60; }
+.modal-card.dialog { width: min(460px, 94vw); }
+.dialog-msg { white-space: pre-line; line-height: 1.5; margin: 2px 0 12px; }
+.dialog-input { width: 100%; margin-bottom: 12px; }
+.dialog .row-btns { justify-content: flex-end; }

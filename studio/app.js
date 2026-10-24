@@ -39,6 +39,40 @@ function toast(msg, ms = 4500) {
   toastTimer = setTimeout(() => { el.hidden = true; }, ms);
 }
 
+// Dialogs in the page itself: some browsers block the native confirm, prompt and alert boxes (the Claude app's
+// built-in browser answers every confirm box with Cancel). ask -> true/false, askText -> the text or null, tell ->
+// when closed.
+function dialog(message, { input = null, ok = "OK", cancel = "Cancel" } = {}) {
+  return new Promise((resolve) => {
+    const wrap = document.createElement("div");
+    wrap.className = "modal dialog-modal";
+    wrap.innerHTML = `<div class="modal-card dialog"><p class="dialog-msg"></p>` +
+      (input !== null ? `<input type="text" class="dialog-input">` : "") +
+      `<div class="row-btns tight">${cancel ? `<button class="ghost" data-r="no">${esc(cancel)}</button>` : ""}` +
+      `<button class="primary" data-r="yes">${esc(ok)}</button></div></div>`;
+    wrap.querySelector(".dialog-msg").textContent = message;
+    const field = wrap.querySelector(".dialog-input");
+    if (field) field.value = input;
+    const no = input !== null ? null : false;
+    const done = (value) => { window.removeEventListener("keydown", keys, true); wrap.remove(); resolve(value); };
+    const yes = () => done(field ? field.value : true);
+    const keys = (e) => {
+      if (e.key === "Escape") { e.stopPropagation(); e.preventDefault(); done(no); }
+      else if (e.key === "Enter") { e.stopPropagation(); e.preventDefault(); yes(); }
+    };
+    wrap.querySelector('[data-r="yes"]').onclick = yes;
+    if (cancel) wrap.querySelector('[data-r="no"]').onclick = () => done(no);
+    wrap.onclick = (e) => { if (e.target === wrap) done(no); };
+    window.addEventListener("keydown", keys, true);
+    document.body.appendChild(wrap);
+    (field || wrap.querySelector('[data-r="yes"]')).focus();
+    if (field) field.select();
+  });
+}
+const ask = (message, ok = "OK") => dialog(message, { ok });
+const askText = (message, value = "") => dialog(message, { input: value });
+const tell = (message) => dialog(message, { cancel: null });
+
 const LAYER_NAMES = { 0: "L0 floor & walls", 1: "L1 objects", 2: "L2 back", 3: "L3 front" };
 const FAMILIES = {
   flux1: { short: "Flux.1", hint: "Flux.1: repaints the original while an edge lock keeps every outline in place. Works with style images. About 20 s per field, with lots of settings to tune." },
@@ -636,7 +670,7 @@ async function queuePicked(mode) {
   if (!names.length) return;
   const e = await api("/api/estimate", { body: { names, mode } });
   const label = mode === "final" ? "final renders" : "previews";
-  if (names.length > 3 && !confirm(`Queue ${label} of ${names.length} fields, each with its own look?\n\n` +
+  if (names.length > 3 && !await ask(`Queue ${label} of ${names.length} fields, each with its own look?\n\n` +
     `Estimated time: about ${fmtDuration(e.seconds)}. You can keep browsing while they run; Cancel queue stops them.`)) return;
   const r = await api("/api/generate", { body: { names, mode, fresh: true } });
   const skipped = names.length - r.added;
@@ -1087,7 +1121,7 @@ function renderScene(v) {
   clear.onclick = async () => {
     const { count } = await api("/api/captions");
     if (!count) { toast("No field has a scene description yet."); return; }
-    if (!confirm(`Clear ${count === 1 ? "the one scene description there is" : `the scene descriptions of all ${count} fields`}? Any you edited are lost too. ` +
+    if (!await ask(`Clear ${count === 1 ? "the one scene description there is" : `the scene descriptions of all ${count} fields`}? Any you edited are lost too. ` +
       "Each field gets a new one the next time it renders with descriptions on.")) return;
     try {
       const r = await api("/api/captions/clear", { body: { field: d.name } });
@@ -1532,14 +1566,14 @@ function renderLooksModal() {
       afterLooksChange();
     };
     tr.querySelector('[data-a="dup"]').onclick = async () => {
-      const name = prompt("Name for the copy:", `${lookName(id)} copy`);
+      const name = await askText("Name for the copy:", `${lookName(id)} copy`);
       if (!name) return;
       await api("/api/looks", { body: { name, from_look: id } });
       afterLooksChange();
     };
     tr.querySelector('[data-a="del"]').onclick = async () => {
       const l = L.looks.find((x) => x.id === id);
-      if (!confirm(`Delete look "${l.name}"?\n\nThe ${l.fields} field(s) using it go back to automatic (rules or the default look). Rules for it are removed. Versions made with it are kept.`)) return;
+      if (!await ask(`Delete look "${l.name}"?\n\nThe ${l.fields} field(s) using it go back to automatic (rules or the default look). Rules for it are removed. Versions made with it are kept.`)) return;
       try { await api(url, { method: "DELETE" }); } catch (e) { toast(e.message); return; }
       S.rules = S.rules.filter((r) => r.look !== id);
       afterLooksChange();
@@ -2049,7 +2083,7 @@ async function init() {
   $("#btnSaveLook").onclick = async () => {
     const d = S.detail;
     if (!d) return;
-    const name = prompt(`Name for a new look made from ${d.name}'s settings (its look "${d.look.name}"` +
+    const name = await askText(`Name for a new look made from ${d.name}'s settings (its look "${d.look.name}"` +
       (d.custom ? " plus its field changes" : "") + `).\n\n${d.name} will use it; assign it to more fields in Looks.`, `${d.name} look`);
     if (!name) return;
     await api("/api/looks", { body: { name, from_field: d.name, assign: true } });
@@ -2060,7 +2094,7 @@ async function init() {
   };
   $("#btnResetField").onclick = async () => {
     const d = S.detail;
-    if (!confirm(`Drop ${d.name}'s own changes (${d.override_keys.map(keyLabel).join(", ")}) and follow look "${d.look.name}" again?`)) return;
+    if (!await ask(`Drop ${d.name}'s own changes (${d.override_keys.map(keyLabel).join(", ")}) and follow look "${d.look.name}" again?`)) return;
     applyDetail(await api(`/api/field/${d.name}/reset`, { body: {} }));
   };
 
@@ -2107,7 +2141,7 @@ async function init() {
   $("#btnReview").onclick = () => window.open(`/api/review/${S.current}.jpg?ver=${viewedVersion().id}&t=${Date.now()}`, "_blank");
   $("#btnDeleteVer").onclick = async () => {
     const v = viewedVersion();
-    if (!confirm(`Delete the ${verName(v)} version of ${S.current}?\n\nIts image, textures and review sheet are removed.`)) return;
+    if (!await ask(`Delete the ${verName(v)} version of ${S.current}?\n\nIts image, textures and review sheet are removed.`)) return;
     try {
       const r = await api(`/api/versions/${S.current}/${v.id}`, { method: "DELETE" });
       if (S.view === v.id) S.view = null;
@@ -2122,7 +2156,7 @@ async function init() {
   $("#btnCloseLooks").onclick = () => { $("#looksModal").hidden = true; };
   $("#looksModal").onclick = (e) => { if (e.target === $("#looksModal")) $("#looksModal").hidden = true; };
   $("#btnNewLook").onclick = async () => {
-    const name = prompt("Name for the new look (starts as a copy of the default look):", "New look");
+    const name = await askText("Name for the new look (starts as a copy of the default look):", "New look");
     if (!name) return;
     await api("/api/looks", { body: { name, from_look: S.looks.default } });
     afterLooksChange();
@@ -2147,15 +2181,15 @@ async function init() {
     const e = await api("/api/estimate", { body: { scope: "missing", mode: "final" } });
     if (!e.count) { toast("Every field already has a final-quality version."); return; }
     const looks = Object.entries(e.by_look).sort((a, b) => b[1] - a[1]).map(([id, n]) => `  ${lookName(id)}: ${n}`).join("\n");
-    if (!confirm(`Queue ${e.count} fields for final-quality generation, each with its own look?\n\n${looks}\n\n` +
+    if (!await ask(`Queue ${e.count} fields for final-quality generation, each with its own look?\n\n${looks}\n\n` +
       `Estimated time: about ${fmtDuration(e.seconds)}. You can keep browsing while it runs; Cancel queue stops it.`)) return;
     const r = await api("/api/generate", { body: { scope: "missing", fresh: true } });
     toast(`${r.added} fields queued`);
   };
   $("#btnInstall").onclick = async () => {
-    if (!confirm(`Copy every field's current version into the game's FFNx folder?\n${$("#btnInstall").title.replace("Copy the current versions' textures into ", "")}\n\nThey are only used when the game runs through FFNx.`)) return;
+    if (!await ask(`Copy every field's current version into the game's FFNx folder?\n${$("#btnInstall").title.replace("Copy the current versions' textures into ", "")}\n\nThey are only used when the game runs through FFNx.`)) return;
     const r = await api("/api/install", { body: {} });
-    alert(r.message);
+    await tell(r.message);
   };
 
   pollStatus();
