@@ -18,8 +18,8 @@ The Studio has four parts:
    look…** turns the current field's settings into a look. In **Looks**, add rules like `md*` → "Midgar" so every
    matching field uses it.
 4. **Render in batches.** Filter the list (for example by look, or "Not generated"), **Select all shown**, then
-   **Generate final**. Or use **Generate all missing** for everything without a final. You can keep browsing
-   while the queue runs.
+   **Generate final**. Or use **Generate all missing** for everything without a final. A batch describes each
+   scene and looks for its signs again before rendering it. You can keep browsing while the queue runs.
 5. **Check the flagged fields.** The "Needs a look" filter shows fields whose render changed the layout (fewer
    than 80% of the original outlines kept) or needed edges filled. Look at them with **Walk-behind** on, try
    another seed or workflow, and use the version you like.
@@ -37,7 +37,8 @@ All 670 unique backgrounds. Maps that share a background (`nivl`, `nivl_2`, `niv
 - **Search** by name, **filter** by status or look.
 - **Select several:** tick the checkboxes, Ctrl+click to toggle, Shift+click for a range, or **Select all
   shown**. A bar at the bottom of the list shows how many and the estimated time; **Generate final** or **Preview**
-  queues them all, each with its own look. Esc clears the selection.
+  queues them all, each with its own look. Each field's scene is described and its signs are looked for again
+  first (signs you drew yourself stay). Esc clears the selection.
 - ↑ / ↓ move through the list.
 
 ## Viewer
@@ -169,7 +170,7 @@ Shows the workflow and look the field renders with, plus the size and estimated 
   - **Assign by field name** rules map name patterns to looks. `md*` is all of Midgar, `mds*` the slums, `elm*`
     Kalm, `nivl*` Nibelheim. The first matching rule wins. A field given a look directly keeps it.
 - **Generate all missing:** every field without a final in game, each with its own look. It shows the count per
-  look and the estimated time first.
+  look and the estimated time first. Like any batch, it describes each scene and looks for its signs again.
 - **Install to game:** copies every field's in-game version to `ff7\workingdir\mods\Textures`.
 
 ## Keyboard

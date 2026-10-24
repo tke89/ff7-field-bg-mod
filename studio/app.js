@@ -638,7 +638,7 @@ async function queuePicked(mode) {
   const label = mode === "final" ? "final renders" : "previews";
   if (names.length > 3 && !confirm(`Queue ${label} of ${names.length} fields, each with its own look?\n\n` +
     `Estimated time: about ${fmtDuration(e.seconds)}. You can keep browsing while they run; Cancel queue stops them.`)) return;
-  const r = await api("/api/generate", { body: { names, mode } });
+  const r = await api("/api/generate", { body: { names, mode, fresh: true } });
   const skipped = names.length - r.added;
   toast(`${r.added} ${label} queued` + (skipped ? ` (${skipped} already queued)` : ""));
   clearPicks();
@@ -2149,7 +2149,7 @@ async function init() {
     const looks = Object.entries(e.by_look).sort((a, b) => b[1] - a[1]).map(([id, n]) => `  ${lookName(id)}: ${n}`).join("\n");
     if (!confirm(`Queue ${e.count} fields for final-quality generation, each with its own look?\n\n${looks}\n\n` +
       `Estimated time: about ${fmtDuration(e.seconds)}. You can keep browsing while it runs; Cancel queue stops it.`)) return;
-    const r = await api("/api/generate", { body: { scope: "missing" } });
+    const r = await api("/api/generate", { body: { scope: "missing", fresh: true } });
     toast(`${r.added} fields queued`);
   };
   $("#btnInstall").onclick = async () => {

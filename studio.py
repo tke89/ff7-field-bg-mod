@@ -257,12 +257,16 @@ class Project:
         self.update_meta(name, text_boxes=mine + found)
         return mine + found
 
+    @staticmethod
+    def wants_signs(s):
+        if not s.get("protect_text") or s.get("family") == "upscale":
+            return False
+        return not (s.get("family") == "qwen21" and s["depth_lock"] <= 0)
+
     def sign_boxes(self, name, s, comfy):
         """The field's sign areas when these settings protect text ([] when not), found the first time.
         Not for Qwen without its depth lock: it shifts the picture, so pinned signs wouldn't line up."""
-        if not s.get("protect_text") or s.get("family") == "upscale":
-            return []
-        if s.get("family") == "qwen21" and s["depth_lock"] <= 0:
+        if not self.wants_signs(s):
             return []
         boxes = self.meta(name).get("text_boxes")
         return self.find_signs(name, comfy, s) if boxes is None else boxes
@@ -472,11 +476,12 @@ class Project:
 
 # ---------------------------------------------------------------- generation queue
 
-def make_job(name, kind, family=None, version=None, current="auto", is_try=False, run_states=False):
+def make_job(name, kind, family=None, version=None, current="auto", is_try=False, run_states=False, fresh=False):
     """kind: final | preview (render a new version and build it) or build (cut an existing version
-    into game textures). current: True, False, or "auto" (Project.should_replace)."""
+    into game textures). current: True, False, or "auto" (Project.should_replace). fresh: describe the
+    scene and look for its signs again first (batches)."""
     job = {"name": name, "kind": kind, "family": family, "version": version, "current": current,
-           "try": is_try, "states": run_states}
+           "try": is_try, "states": run_states, "fresh": fresh}
     if kind in JOB_KINDS:
         job["est"] = JOB_KINDS[kind]["est"](name)
     elif kind == "build":
@@ -508,7 +513,8 @@ class Worker(threading.Thread):
     def _public(job):
         return {k: job.get(k) for k in ("id", "name", "kind", "family", "version", "est", "try")}
 
-    def enqueue(self, jobs):
+    def enqueue(self, jobs, front=False):
+        """Add jobs (not ones already queued or running); front: run them next, in their order."""
         with self.lock:
             busy = {self._key(j) for j in self.queue}
             if self.current:
@@ -518,7 +524,10 @@ class Worker(threading.Thread):
                 if self._key(j) in busy:
                     continue
                 j["id"] = next(self.ids)
-                self.queue.append(j)
+                if front:
+                    self.queue.insert(added, j)
+                else:
+                    self.queue.append(j)
                 busy.add(self._key(j))
                 added += 1
             self.lock.notify()
@@ -593,6 +602,8 @@ class Worker(threading.Thread):
         with_states = not preview and s["states_pass"]
         est = self.p.estimate(name, s, preview)
         split = (est["render"] + est["detail"]) / est["total"] if with_states and est["states"] else 0.97
+        if job.get("fresh"):
+            self.refresh_texts(name, s)
         tries = max(1, s["tries"])
         if tries == 1 and not s["retry"]:
             self.band = (0.0, split)
@@ -611,6 +622,22 @@ class Worker(threading.Thread):
                                  "(the AI changed the scene); it's in the version strip if you want it anyway")
             self.p.make_current(name, vid)
         return vid
+
+    def refresh_texts(self, name, s):
+        """A batch starts each field afresh: its scene described and its signs looked for again (the signs
+        the user drew stay)."""
+        describe = s.get("describe_scene") and s.get("family") != "upscale"
+        if not describe and not self.p.wants_signs(s):
+            return
+        comfy = Comfy(self.p.comfy_url)
+        if not comfy.online():
+            raise ComfyError(f"ComfyUI isn't reachable at {self.p.comfy_url}; start ComfyUI and try again")
+        if describe:
+            self._stage("describing the scene", 0.0)
+            self.p.describe(name, comfy, s)
+        if self.p.wants_signs(s):
+            self._stage("looking for signs", 0.01)
+            self.p.find_signs(name, comfy, s)
 
     def best_of(self, name, s, job, tries, split):
         """Render with `tries` seeds (and once more at a lower repaint when retry is on and all keep under
@@ -1401,7 +1428,7 @@ def api_generate():
                         skipped.append(f)
             jobs = [make_job(n, mode, family=f, current=False, is_try=True) for n in names for f in fams]
         else:
-            jobs = [make_job(n, mode) for n in names]
+            jobs = [make_job(n, mode, fresh=bool(body.get("fresh"))) for n in names]
         return jsonify(added=worker.enqueue(jobs), skipped=skipped)
     else:
         abort(400)
