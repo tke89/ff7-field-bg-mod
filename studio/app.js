@@ -541,7 +541,20 @@ async function loadFields() {
   const fields = await api("/api/fields");
   S.fields = fields;
   S.byName = Object.fromEntries(fields.map((f) => [f.name, f]));
+  renderFamilyFilter();
   renderList();
+}
+
+// The workflows behind the versions in the game, with how many fields each made
+function renderFamilyFilter() {
+  const sel = $("#familyFilter");
+  const cur = sel.value;
+  const counts = {};
+  for (const f of S.fields) if (f.family) counts[f.family] = (counts[f.family] || 0) + 1;
+  const fams = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+  sel.innerHTML = `<option value="">All workflows</option>` +
+    fams.map((f) => `<option value="${esc(f)}">Workflow: ${esc(famShort(f) || f)} (${counts[f]})</option>`).join("");
+  sel.value = fams.includes(cur) ? cur : "";
 }
 
 function statusClass(f) {
@@ -563,6 +576,7 @@ function renderList() {
   const q = $("#search").value.trim().toLowerCase();
   const filter = $("#filter").value;
   const lookFilter = $("#lookFilter").value;
+  const familyFilter = $("#familyFilter").value;
   const existing = new Map([...ul.children].map((li) => [li.dataset.name, li]));
   const defLook = S.looks ? S.looks.default : "default";
   let shown = 0;
@@ -600,6 +614,7 @@ function renderList() {
     const pass =
       (!q || text.includes(q)) &&
       (!lookFilter || f.look === lookFilter) &&
+      (!familyFilter || f.family === familyFilter) &&
       (LIST_FILTERS[filter] ? LIST_FILTERS[filter](f) : filter === "all" ||
         (filter === "none" && f.status === "none") ||
         (filter === "built" && f.status === "built") ||
@@ -2060,6 +2075,7 @@ async function init() {
   $("#selClear").onclick = clearPicks;
   $("#filter").onchange = renderList;
   $("#lookFilter").onchange = renderList;
+  $("#familyFilter").onchange = renderList;
   $("#optOverlay").onchange = (e) => { S.overlay = e.target.checked; loadImages(false); };
   $("#optAnimate").onchange = (e) => { S.animate = e.target.checked; S.strips = []; if (S.detail) renderLayers(); loadImages(false); };
   $("#optPixel").onchange = (e) => { S.pixel = e.target.checked; draw(); };

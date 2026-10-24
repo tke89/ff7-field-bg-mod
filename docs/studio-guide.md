@@ -34,7 +34,8 @@ All 670 unique backgrounds. Maps that share a background (`nivl`, `nivl_2`, `niv
   green = a final is in game, yellow = needs a look, red = the last run failed, pulsing = rendering now.
 - **Tags:** the field's look (when it isn't the default) and "field changes" when the field changes settings for
   itself.
-- **Search** by name, **filter** by status or look.
+- **Search** by name, **filter** by status, look, or the workflow that made the version in game. The filters
+  combine.
 - **Select several:** tick the checkboxes, Ctrl+click to toggle, Shift+click for a range, or **Select all
   shown**. A bar at the bottom of the list shows how many and the estimated time; **Generate final** or **Preview**
   queues them all, each with its own look. Each field's scene is described and its signs are looked for again
