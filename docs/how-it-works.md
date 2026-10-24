@@ -136,6 +136,16 @@ look that never changed it.
 It talks to ComfyUI over its HTTP and websocket API (`ff7bg/comfy.py`): upload images, queue a workflow, follow
 progress, fetch the result. The page (`studio/`) is plain JavaScript and polls the server once a second.
 
+Plug-ins extend it without touching its code: every `studio/plugins/*.py` with a `register(studio)` function is
+loaded at start (`studio` is the server module). A plug-in can
+- add job kinds that run in the same queue (`JOB_KINDS[kind] = {"run": fn(worker, job), "est": fn(name)}`);
+- hear when a field's version in the game changes (`ON_CURRENT`);
+- add routes to the Flask app, and return the URL of a script the page loads.
+
+On the page, that script can label its jobs (`JOB_LABELS`), add field list filters (`LIST_FILTERS` plus an option in
+the status filter), add a tab to the side panel (a button in `#panelTabs`, a `.tab` with the same `data-tab`), and
+follow the page through the `studio:field`, `studio:jobs` and `studio:list` events.
+
 ## Palette effects
 
 Some animations change colours, not tiles. A script copies a palette out of VRAM (`STPAL`), changes the copy

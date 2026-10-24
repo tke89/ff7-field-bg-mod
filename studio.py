@@ -12,6 +12,7 @@ import io
 import itertools
 import json
 import shutil
+import sys
 import threading
 import time
 import traceback
@@ -46,6 +47,7 @@ GAME_WORKDIR = Path(
     r"C:\Program Files (x86)\Steam\steamapps\common\FINAL FANTASY VII Steam Edition\ff7\workingdir"
 )
 LOOKS_FILE = STUDIO / "looks.json"
+PLUGINS = STUDIO / "plugins"
 LEGACY_SETTINGS = STUDIO / "settings.json"
 EDIT_FAMILIES = {name for name, f in FAMILIES.items() if f.get("edit")}
 KEEP_IN_GAME = 0.6  # a new version below this share of original outlines doesn't go in game by itself
@@ -59,6 +61,13 @@ SUMMARY_KEYS = ("denoise", "structure", "seed", "style_refs", "style_ref_strengt
                 "seedvr2_unet", "seedvr2_input", "protect_text", "text_repaint")
 
 app = Flask(__name__, static_folder=None)
+
+# Plug-ins (studio/plugins/*.py, each with register(studio) returning its UI script's URL or None) can add job
+# kinds (kind -> {"run": fn(worker, job), "est": fn(name) -> seconds}) and hear when a field's version in the
+# game changes (fn(name, version id)).
+JOB_KINDS = {}
+ON_CURRENT = []
+PLUGIN_SCRIPTS = []
 
 
 # ---------------------------------------------------------------- project data
@@ -361,6 +370,11 @@ class Project:
     def make_current(self, name, vid):
         self.versions.publish(name, vid, self.jobs[name]["copies"])
         self.update_meta(name, current=vid)
+        for hook in ON_CURRENT:
+            try:
+                hook(name, vid)
+            except Exception:  # a plug-in's trouble mustn't stop the Studio
+                traceback.print_exc()
 
     def should_replace(self, name, kind):
         """A new final always becomes current; a preview only replaces nothing or another preview."""
@@ -463,7 +477,9 @@ def make_job(name, kind, family=None, version=None, current="auto", is_try=False
     into game textures). current: True, False, or "auto" (Project.should_replace)."""
     job = {"name": name, "kind": kind, "family": family, "version": version, "current": current,
            "try": is_try, "states": run_states}
-    if kind == "build":
+    if kind in JOB_KINDS:
+        job["est"] = JOB_KINDS[kind]["est"](name)
+    elif kind == "build":
         s = project.effective(name)
         job["est"] = 4 + (project.estimate(name, s, exact_states=False)["states"] if run_states else 0)
     else:
@@ -537,7 +553,10 @@ class Worker(threading.Thread):
             name = job["name"]
             ok, msg, vid = True, "", job.get("version")
             try:
-                if job["kind"] == "build":
+                if job["kind"] in JOB_KINDS:
+                    self.band = (0.0, 1.0)
+                    JOB_KINDS[job["kind"]]["run"](self, job)
+                elif job["kind"] == "build":
                     self.band = (0.0, 1.0)
                     self.build(name, vid, run_states=job.get("states", False))
                     if job["current"] is True:
@@ -865,6 +884,11 @@ def static_files(f):
 @app.get("/styles/<path:f>")
 def style_file(f):
     return send_from_directory(STYLES, f)
+
+
+@app.get("/api/plugins")
+def api_plugins():
+    return jsonify(PLUGIN_SCRIPTS)
 
 
 @app.get("/api/status")
@@ -1432,6 +1456,23 @@ def api_install():
 
 # ---------------------------------------------------------------- main
 
+def load_plugins():
+    """Optional extensions: every studio/plugins/*.py with a register(studio) function (studio: this module)."""
+    import importlib.util
+    for path in sorted(PLUGINS.glob("*.py")) if PLUGINS.exists() else []:
+        try:
+            spec = importlib.util.spec_from_file_location(f"studio_plugin_{path.stem}", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            script = mod.register(sys.modules[__name__])
+            if script:
+                PLUGIN_SCRIPTS.append(script)
+            print(f"plug-in {path.stem} loaded")
+        except Exception:
+            print(f"plug-in {path.stem} didn't load:")
+            traceback.print_exc()
+
+
 def main():
     global project, worker
     ap = argparse.ArgumentParser()
@@ -1445,6 +1486,7 @@ def main():
     threading.Thread(target=project.prepare, daemon=True).start()
     worker = Worker(project)
     worker.start()
+    load_plugins()
 
     url = f"http://127.0.0.1:{args.port}"
     print(f"FF7 Field Studio: {url}")

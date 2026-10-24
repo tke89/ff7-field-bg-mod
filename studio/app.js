@@ -566,7 +566,7 @@ function renderList() {
     const pass =
       (!q || text.includes(q)) &&
       (!lookFilter || f.look === lookFilter) &&
-      (filter === "all" ||
+      (LIST_FILTERS[filter] ? LIST_FILTERS[filter](f) : filter === "all" ||
         (filter === "none" && f.status === "none") ||
         (filter === "built" && f.status === "built") ||
         (filter === "preview" && f.status === "preview") ||
@@ -578,6 +578,7 @@ function renderList() {
   const done = S.fields.filter((f) => f.status === "built").length;
   const previews = S.fields.filter((f) => f.status === "preview").length;
   $("#fieldCount").textContent = `${shown} shown · ${done}/${S.fields.length} final` + (previews ? ` · ${previews} previews` : "");
+  emit("studio:list");
 }
 
 /* ------------------------------------------------------------ multi-select */
@@ -674,6 +675,7 @@ async function selectField(name, keepView = false) {
   renderStatus();
   renderVersions();
   loadRequirements();
+  emit("studio:field", d);
   await loadImages(first);
 }
 
@@ -736,6 +738,7 @@ function applyDetail(nd, reload = false) {
   renderStatus();
   renderVersions();
   loadRequirements();
+  emit("studio:field", nd);
   const key = (d) => d.versions.map(verStamp).join(",") + "|" + d.current;
   if (reload || !prev || key(prev) !== key(nd)) loadImages(false);
 }
@@ -1868,7 +1871,15 @@ function renderEstimate() {
   el.innerHTML = html;
 }
 
+// Plug-ins (studio/plugins) name their own job kinds here, and hear the Studio through document events:
+// studio:field (a field's details shown), studio:jobs (jobs finished), studio:list (the field list redrawn)
+const JOB_LABELS = {};
+// ...and add field list filters: an option in #filter plus LIST_FILTERS[its value] = (field summary) => shown?
+const LIST_FILTERS = {};
+const emit = (type, detail) => document.dispatchEvent(new CustomEvent(type, { detail }));
+
 function jobLabel(j) {
+  if (JOB_LABELS[j.kind]) return JOB_LABELS[j.kind](j);
   if (j.kind === "build") return "building textures";
   return `${j.try ? "try" : j.kind} ${famShort(j.family)}`;
 }
@@ -1934,6 +1945,7 @@ async function pollQueue() {
     if (newest > S.lastFinished) {
       const fresh = q.recent.filter((r) => r.finished > S.lastFinished);
       S.lastFinished = newest;
+      emit("studio:jobs", fresh);
       await loadFields();
       loadLooks();
       const mine = fresh.filter((r) => r.name === S.current);
@@ -1989,8 +2001,7 @@ function setTab(t) {
   S.tab = t;
   setPref("tab", t);
   for (const b of $("#panelTabs").children) b.classList.toggle("on", b.dataset.tab === t);
-  $("#tabStyle").hidden = t !== "style";
-  $("#tabLayers").hidden = t !== "layers";
+  for (const el of document.querySelectorAll(".panel-body > .tab")) el.hidden = el.dataset.tab !== t;
 }
 
 async function init() {
@@ -2149,6 +2160,11 @@ async function init() {
 
   pollStatus();
   pollQueue();
+  for (const src of await api("/api/plugins").catch(() => [])) {
+    const el = document.createElement("script");
+    el.src = src;
+    document.body.appendChild(el);
+  }
 }
 
 init();
