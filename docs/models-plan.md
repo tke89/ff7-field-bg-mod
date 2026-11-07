@@ -359,6 +359,70 @@ ENEMY081) has no texture at all. FFNx-3d draws a part from a per-model atlas whe
   - Zolom's coils are still faceted in lightness, and the party is small from the battle cameras, so the 2D look shows
     most on Zolom.
 
+### Variants, the AI check, the touch-up, 2D in the viewer (2026-11-07)
+The user asked for these after the 2D paints needed hand-iterating. Code: `ff7bg/models/paint2d_extras.py`; the
+Studio's "Paint in 2D style" card and viewer (`studio/plugins/models.py`, `models.js`). battleatlas.py is unchanged.
+- **Variants:** one paint job paints 1-4 versions, each from its own random seed (the look's `seed`, which the
+  workflows give the sampler). `seeded()` swaps the seed into `restyle.look_settings` for one `make()`. Each is a normal
+  version; info.json `studio` has `batch`, `variant`, `try`, `seed`. The card shows one job's versions side by side.
+- **The AI check** (`check()`, after every paint and touch-up; `check.json` and `preview/check.jpg` in the version):
+  - The painted model and the original are drawn from 10 angles (12 when the recipe knows the arms: each shoulder close
+    up), on a plain background.
+  - Each pair goes to the describer (Qwen3.5 9B, `comfy.CAPTION_CLIP`) as two pictures, with up to three questions:
+    - COMPARE: anything added, the same counts, the same colours. The model's words and the recipe's hint for that
+      view go with it.
+    - COUNT: shoulder pads, open mouths, tongues, heads and arms in each picture, compared in code.
+    - SHOULDERS (shoulder views only): skin, cloth or armour on each shoulder, in each picture.
+  - It fails when:
+    - a part is counted more in the painting, in any view;
+    - armour sits on a shoulder that is bare in the original, in 2 views or more;
+    - COMPARE finds something added in 4 views or more;
+    - the colours differ in 80% of the views or more.
+  - It takes 17-25 s a version (45 s for the modded high-poly Barret).
+  - "Repaint automatically when the AI check fails" (on by default): a failed version is painted again with a new seed,
+    up to 2 more times. The failed ones stay; the first that passed becomes ★.
+- **Measured** on the existing versions (ground truth by eye; real AI, 4 rounds of wording on the same set, so these
+  numbers are optimistic):
+  - Known problems: 5 of 6 caught.
+    - Cloud rt v1 (the second pauldron) was caught by SHOULDERS. COMPARE and COUNT missed it: the describer reads the
+      game's low-poly bare shoulder as a pad too.
+    - rt v2 (more armour), and Zolom dd v2, v6 and v7 (an open mouth and a tongue) were caught.
+    - Missed: rt v3, a faint skin-coloured pad shape left after the colour lock.
+  - Clean versions: 0 of 5 failed (dd v10, v12; field Cloud aaaa v4, v6, v8).
+  - Unclear ones:
+    - rt v4, v5 (faint pad shapes) and aaaa v1 passed.
+    - sc v4 failed on colours: its painting no longer fits the modded Barret.
+    - sc v6 (smeared eyes) passed: the check misses lost details.
+  - Wordings that failed: an "invented / description" wording failed every version, and the two pictures side by side
+    in one image did no better. COMPARE alone flagged a view or two of clean versions ("markings on the face", "a mouth
+    and teeth" where the original's are faint).
+  - Calibration files: the session scratchpad, `x2d/calib*`.
+- **Touch-up** (the card's Touch up, or "Touch up this view" in the viewer; queue job `model_2d_touchup`):
+  - A version's view is drawn from its painted texture. The views are the battle camera, 8 sides, 2 of the head, or the
+    viewer's own camera in any pose (`Battle.placed_camera`). Their cameras are stored in the version's `views.json`.
+  - The marked areas are repainted with the version's look and words, at the strength asked. This is touchup.py's
+    crops, fades and colour match, through the states pass's masked repaint. Inside the marks the AI starts from the
+    model as the game colours it (the unpainted atlas, as paint() shows it), not from the painting: started from the
+    painting, Cloud's invented grey pad came back blue and gold.
+  - Only the changed pixels go back, through paint.Painter.add, onto the texels the camera sees there (`project()`).
+    Then the version's colour lock is applied and a new version is exported, with its pictures and the check.
+  - Real test on rt v1's pad (sandbox copy):
+    - 0 pixels changed outside the marks.
+    - The grey pad went: grey 91% -> 0% with words, -> 49% without. Without words, the lock made the rest skin-toned.
+    - It stayed a rounded pad shape, though. With "his bare right shoulder, skin, no armour, no shoulder pad" (unlocked
+      then) the AI drew a red ring round it, so the lock now applies with words too.
+    - The new version still failed the check: the pad shows in other views.
+- **The viewer:**
+  - Any 2D version (battle, or fieldatlas' field builds) on the model, as the game draws it: flat (the texture's colour),
+    with texels at half alpha or less cut out.
+  - Field models are rounded as `char_round` does (`pn_round`: PN triangles, a 70 degree crease); a toggle turns it off.
+  - Battle models can be shown in each animation's first pose (only frame 0 is decoded: no playback).
+  - Right-drag pans.
+- **Not done:**
+  - animation playback;
+  - touch-up for field models;
+  - the check misses lost details (smeared eyes) and faint leftovers of an invented part.
+
 ## Painted field models: the field atlas (2026-11-07)
 The battle atlas for the models the game draws on the fields: `ff7bg/models/fieldatlas.py`. FFNx-3d (main session)
 treats field parts like battle parts under `mesh/field/atlas/`, one texture per part.

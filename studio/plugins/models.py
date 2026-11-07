@@ -39,6 +39,14 @@ without textures (most enemies) can be painted too, in the 2D anime style the us
 (model.json "paint2d", P2D_DEFAULTS), a queue job (JOB_2D: battleatlas' build, paint and export into a new version
 folder, work/models/battle/atlas/<id>/<version>/), the versions there (the ★ one: model.json "current2d") and Install /
 Uninstall (battleatlas' manifest; the user's clicks only). The engine lights atlas-drawn parts flat by itself.
+Its extras (ff7bg/models/paint2d_extras.py): Variants (one job paints several versions, each with its own seed), the AI
+check after each (the Studio's describer compares the painted model with the original from the same angles: check.json
+in the version; a failed one is repainted with a new seed when "Repaint automatically" is on, up to P2D_RETRIES more
+tries) and Touch up (a version's view repainted where the user marks it, projected back: a new version; JOB_2D_TOUCH).
+The viewer shows 2D versions on the model too (ver "2d:<version>"; battle models' and field models' fieldatlas builds)
+as the game draws them: flat light, texels at half alpha or less cut out, field models rounded as char_round does
+(paint2d_extras.pn_round), a battle model in any animation's first pose; and it can be moved (pan) as well as turned.
+"Touch up this view" stores the viewer's camera with the version (views.json, "cam<hash>") for the touch-up.
 
 SYW Unified Battle Textures (Tsunamods, in 7th Heaven's library; restyle.syw_battle_*): its ready-made 4x of a model's
 textures can be the upscaler before painting (battle scenes and battle models; the default upscaler for any it lacks),
@@ -204,9 +212,20 @@ SUMMARY = ("family", "denoise", "keep_colors", "depth_lock", "describe_scene", "
 # models in it (Zolom, Cloud, Barret); moving.jpg its separately moving parts (Zolom's tongue); identity.png the game's
 # own colours on the new texture against the original) and each view the AI painted (view_NN.jpg, original | painted)
 JOB_2D = "model_2d"
-P2D_DEFAULTS = {"look": None, "strength": None, "words": "", "size": None}
+JOB_2D_CHECK, JOB_2D_TOUCH = "model_2d_check", "model_2d_touchup"  # the AI check of a version, a touch-up of one
+# variants: how many versions a paint makes (None: 1); retry: a version the AI check fails is painted again with a new
+# seed, up to P2D_RETRIES more times (None: on)
+P2D_DEFAULTS = {"look": None, "strength": None, "words": "", "size": None, "variants": None, "retry": None}
 P2D_SIZES = (1024, 2048, 4096)  # the game is 32-bit: 4096 px is 64 MB decoded (85 with its smaller copies)
-P2D_PICTURES = ("battle.jpg", "turntable.jpg", "vs_target.jpg", "moving.jpg", "identity.png")
+P2D_VARIANTS = (1, 2, 3, 4)
+P2D_RETRIES = 2
+P2D_CHECK_SECONDS = 30.0   # the AI check of a version (10 pairs of pictures), before any has run here
+P2D_TOUCH_SECONDS = 30.0   # a touch-up: a marked area or two repainted, the pictures, the files (then the check)
+# check.jpg: what the AI check looked at; touchup.jpg: a touch-up's view before (the marks outlined) | after
+P2D_PICTURES = ("battle.jpg", "turntable.jpg", "vs_target.jpg", "moving.jpg", "check.jpg", "touchup.jpg", "identity.png")
+# a touch-up view (paint2d_extras.Battle.touch_views; "cam" + a hash: one from the viewer's angle)
+P2D_VIEW_KEY = re.compile(r"(battle|yaw\d{3}|head\d|cam[0-9a-f]{8})")
+P2D_TOUCH_STRENGTH = (0.2, 0.9)
 P2D_VIEW = re.compile(r"view_\d{2}\.jpg")
 P2D_VIEW_SECONDS = 5.0     # a view painted and put on, before any 2D paint has run here (Zolom: 61 s for 12 views)
 P2D_VIEWS = 12             # ...and the views when the model's own can't be counted
@@ -229,6 +248,10 @@ def clean_p2d(ps, looks=None):
         out["words"] = " ".join(ps["words"].split())[:PROMPT_MAX]
     if ps.get("size") in P2D_SIZES and not isinstance(ps.get("size"), bool):
         out["size"] = int(ps["size"])
+    if ps.get("variants") in P2D_VARIANTS and not isinstance(ps.get("variants"), bool):
+        out["variants"] = None if ps["variants"] == 1 else int(ps["variants"])
+    if isinstance(ps.get("retry"), bool):
+        out["retry"] = None if ps["retry"] else False
     return out
 
 
@@ -681,6 +704,144 @@ def register(studio):
         r = render.rasterize(mesh, cam)
         bg = (0, 0, 0) if kind == "scene" else BG_MODEL
         return render.shade(mesh, r, images, modulate=True, background=bg)
+
+    def pan_camera(cam, panx, pany):
+        """The camera moved sideways with what it looks at (the viewer's pan): panx, pany in view heights, right and
+        down."""
+        if not panx and not pany:
+            return cam
+        R = cam.rotation()
+        dist = float(np.linalg.norm(np.asarray(cam.target, float) - np.asarray(cam.eye, float)))
+        k = dist / cam.f_px() * cam.height
+        off = (R[0] * float(panx) + R[1] * float(pany)) * k
+        return replace(cam, eye=np.asarray(cam.eye, float) + off, target=np.asarray(cam.target, float) + off)
+
+    posed = OrderedDict()  # (battle model, animation) -> its mesh at that animation's first frame
+
+    def posed_original(mid, pose):
+        """A battle model as the game draws it at the first frame of animation `pose` (the viewer's Pose)."""
+        key = (mid, int(pose))
+        with lock:
+            if key in posed:
+                posed.move_to_end(key)
+                return posed[key]
+        m = battle.load_model(mid, int(pose))
+        with lock:
+            _remember(posed, key, m, 6)
+        return m
+
+    def p2d_poses(mid):
+        """[(animation, label)] the poses the viewer offers a battle model: the first frame of each of its
+        animations whose pose differs from the one painted (battleatlas.MOVING's parts named where they show)."""
+        key = ("poses", mid)
+        with lock:
+            if key in posed:
+                return posed[key]
+        out = []
+        try:
+            from ff7bg.models import battleatlas as A
+            moving = {p["animation"]: p["name"] for p in A.model_views(mid).get("moving") or []}
+            hd = battle.header(mid)
+            base = battle.load_model(mid, 0)
+            seen = [base.pos]
+            for k in range(1, int(hd.animations)):
+                try:
+                    m = battle.load_model(mid, k)
+                except Exception:
+                    continue
+                if m.pos.shape != base.pos.shape or any(np.abs(m.pos - p).max() < 1.0 for p in seen):
+                    continue
+                seen.append(m.pos)
+                out.append((k, f"animation {k}" + (f" ({moving[k]} showing)" if k in moving else "")))
+        except Exception:
+            traceback.print_exc()  # the viewer shows the painted pose only
+        with lock:
+            posed[key] = out
+        return out
+
+    def p2d_viewer_dir(kind, mid, vid):
+        """A 2D version's folder: battleatlas' (battle models) or fieldatlas' (field models), or None."""
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", vid or "") or vid.endswith(".partial") or vid.startswith("."):
+            return None
+        if kind == "battle":
+            d = batlas().WORK / mid / vid
+        elif kind == "field":
+            from ff7bg.models import fieldatlas as F
+            d = F.WORK / mid.lower() / vid
+        else:
+            return None
+        return d if (d / "info.json").exists() else None
+
+    def p2d_viewer_versions(kind, mid):
+        """The model's 2D versions for the viewer: [{id, at, painted, check}], oldest first (field models: fieldatlas'
+        builds; battle models: the card's own list)."""
+        if kind == "battle":
+            A = batlas()
+            return [{"id": v["id"], "at": v["at"], "painted": v["painted"], "current": False,
+                     "check": v["check"], "label": p2d_from_line(v)} for v in p2d_versions(A, mid)]
+        if kind != "field":
+            return []
+        from ff7bg.models import fieldatlas as F
+        d = F.WORK / mid.lower()
+        out = []
+        for p in (d.iterdir() if d.is_dir() else []):
+            if not p.is_dir() or p.name.endswith(".partial") or not (p / "info.json").exists():
+                continue
+            try:
+                info = json.loads((p / "info.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            pt = info.get("painted") or {}
+            out.append({"id": p.name, "at": p2d_time(info.get("at"), p.stat().st_mtime), "painted": bool(pt),
+                        "current": False, "check": p2d_check_summary(p),
+                        "label": (f"{pt.get('look', '')} · strength {pt.get('strength')}" if pt else
+                                  "the game's own colours (not painted)")})
+        out.sort(key=lambda v: (v["at"], v["id"]))
+        return out
+
+    def p2d_from_line(v):
+        bits = [f"strength {v['strength']:.2f}" if isinstance(v.get("strength"), (int, float)) else "",
+                f"touched up from {v['touchup']['source']}" if v.get("touchup") else ""]
+        return " · ".join(b for b in bits if b) or ("painted" if v.get("painted") else "not painted")
+
+    p2d_sets = OrderedDict()  # (kind, model, version, pose, folder time) -> {"mesh", "images"}
+
+    def p2d_viewer_set(kind, mid, vid, pose=0, rounded=False):
+        """A 2D version on its model for the viewer, as the game draws it: {"mesh", "images"} in model space (the
+        viewer's camera), or None. Battle: battleatlas' layout (build_of) showing the version's painted texture,
+        posed at the first frame of animation `pose`. Field: the version's own files, a texture per part
+        (fieldatlas.files_mesh, the layers the game shows: FieldAtlas.seen). Drawn flat (the texture's colour, no
+        light: the painting carries the shading); render.rasterize cuts out texels at half alpha or less, as the engine
+        does (field Cloud's eye and mouth decals). rounded: a field model rounded as the engine's char_round rounds it
+        (paint2d_extras.pn_round)."""
+        d = p2d_viewer_dir(kind, mid, vid)
+        if d is None:
+            return None
+        key = (kind, mid, vid, int(pose), bool(rounded), d.stat().st_mtime)
+        with lock:
+            if key in p2d_sets:
+                p2d_sets.move_to_end(key)
+                return p2d_sets[key]
+        if kind == "battle":
+            A = batlas()
+            ba = A.build_of(mid, vid)
+            png = d / f"{ba.name}.png"
+            if not png.exists():
+                return None
+            img = np.asarray(Image.open(png).convert("RGBA"))
+            m = A.posed_as(ba, pose) if pose else ba.posed
+            out = {"mesh": A.atlas_only(A.with_image(ba, img, m), ba.atlas.index), "images": [img]}
+        elif rounded:  # (the flat one rounded: the build is the slow part)
+            flat = p2d_viewer_set(kind, mid, vid, pose, rounded=False)
+            out = {"mesh": p2x().pn_round(flat["mesh"]), "images": flat["images"]}
+        else:
+            from ff7bg.models import fieldatlas as F
+            fa = F.build_of(mid, vid)
+            fm = fa.seen(F.files_mesh(fa, F.build_files(d)))
+            out = {"mesh": fm, "images": [np.asarray(t.tex.pixels) for t in fm.textures]}
+        with lock:
+            _remember(p2d_sets, key, out, 3)
+        return out
 
     def jpeg(img, quality=86):
         buf = io.BytesIO()
@@ -1795,17 +1956,28 @@ def register(studio):
     P2D_GAME_RUNNING = ("Your game is running. Painting in 2D style is done by the AI, which shares the graphics card "
                         "with the game, so it has to wait until the game is closed: close the game, then press Paint "
                         "again.")
+    P2D_GAME_RUNNING_CHECK = ("Your game is running. The AI check is done by the AI, which shares the graphics card with "
+                              "the game, so it has to wait until the game is closed: close the game, then press AI check "
+                              "again.")
+    P2D_GAME_RUNNING_TOUCH = ("Your game is running. Touching up is done by the AI, which shares the graphics card with "
+                              "the game, so it has to wait until the game is closed: close the game, then press Repaint "
+                              "marked areas again.")
     P2D_NO_COMFY = ("ComfyUI isn't running (or isn't reachable), and painting in 2D style needs it: start ComfyUI, then "
                     "press Paint again.")
     P2D_NO_NAME = ("The game's own name for this model isn't known here (it's one of the Galian Beast's forms), so the "
                    "game couldn't find a painting for it: it can't be painted in 2D style.")
     p2d_game = {"at": 0.0, "running": False}  # the game running, as last asked (tasklist), for the page
-    p2d_secs = {"at": 0.0, "paint": None}     # the AI's part of the 2D paints so far, on average
+    p2d_secs = {"at": 0.0, "paint": None, "check": None}  # the AI's part of the 2D paints and checks so far, on average
 
     def batlas():
         """ff7bg.models.battleatlas, imported when first needed (an error in it shows on the card, not here)."""
         from ff7bg.models import battleatlas
         return battleatlas
+
+    def p2x():
+        """ff7bg.models.paint2d_extras (variants, the AI check, the touch-up), imported when first needed."""
+        from ff7bg.models import paint2d_extras
+        return paint2d_extras
 
     def p2d_settings(mid):
         return clean_p2d(model_meta("battle", mid).get("paint2d"), project.looks.data["looks"])
@@ -1819,7 +1991,8 @@ def register(studio):
         """What a paint uses: the user's settings, and battleatlas' own where they're None."""
         return {"look": ps["look"] or p2d_default_look(A),
                 "strength": ps["strength"] if ps["strength"] is not None else float(A.STRENGTH),
-                "size": ps["size"] or int(A.ATLAS_SIZE), "words": ps["words"]}
+                "size": ps["size"] or int(A.ATLAS_SIZE), "words": ps["words"],
+                "variants": ps.get("variants") or 1, "retry": ps.get("retry") is not False}
 
     def p2d_game_running(fresh=False):
         """Is the game running (battlelight.game_running: the task list)? Asked at most every 3 s for the page."""
@@ -1851,17 +2024,38 @@ def register(studio):
                 continue
             pt, st = info.get("painted") or {}, info.get("studio") or {}
             prev = p / "preview"
+            tu = info.get("touchup") or None
             out.append({"id": p.name, "at": p2d_time(info.get("at"), p.stat().st_mtime), "painted": bool(pt),
                         "look": pt.get("look"), "strength": pt.get("strength"),
-                        "size": (info.get("atlas") or {}).get("size"), "seconds": pt.get("seconds"),
-                        "views": len(pt.get("views") or []),
+                        "size": (info.get("atlas") or {}).get("size"),
+                        "seconds": (tu.get("seconds") if tu else pt.get("seconds")),
+                        "views": 0 if tu else len(pt.get("views") or []),
                         "studio": bool(st), "words": st.get("words") if st else None,
                         "prompt": pt.get("words") or "", "described": pt.get("describer") or "",
                         "graded": bool(info.get("graded")), "pictures": [n for n in P2D_PICTURES if (prev / n).exists()],
                         "view_pictures": sorted(x.name for x in prev.glob("view_*.jpg") if P2D_VIEW.fullmatch(x.name))
-                        if prev.is_dir() else []})
+                        if prev.is_dir() else [],
+                        # one paint job's variants share a batch; variant k, try t (a repaint after a failed check)
+                        "batch": st.get("batch"), "variant": st.get("variant"), "try": st.get("try"),
+                        "check": p2d_check_summary(p),
+                        "touchup": ({"source": tu.get("source"), "view": tu.get("label"), "areas": tu.get("areas"),
+                                     "hint": tu.get("hint") or "", "strength": tu.get("strength")} if tu else None)})
         out.sort(key=lambda v: (v["at"], v["id"]))
         return out
+
+    def p2d_check_summary(d):
+        """A version's AI check for the page: {"ok": True / False / None (it couldn't run), "reason", "problems":
+        the views' remarks in plain words, "at"}, or None when it hasn't been checked."""
+        try:
+            res = p2x().load_check(d)
+        except Exception:
+            traceback.print_exc()  # the versions show without it
+            return None
+        if not res:
+            return None
+        return {"ok": res.get("ok"), "reason": res.get("reason") or res.get("error") or "",
+                "problems": [x.get("text") for x in res.get("problems") or [] if x.get("text")][:8],
+                "at": p2d_time(res.get("at"), None)}
 
     def p2d_current(A, mid, versions):
         """The ★ version: the one picked (model.json "current2d"), else the one in the game, else the newest painted."""
@@ -1944,11 +2138,12 @@ def register(studio):
         except Exception:
             return None
 
-    def p2d_estimate(A, mid, size):
-        """Rough seconds a 2D paint takes: its views at what a view took in the paints so far (P2D_VIEW_SECONDS before
-        any), plus the rest, which grows with the painting's size."""
+    def p2d_estimate(A, mid, size, variants=1):
+        """Rough seconds a 2D paint takes: per variant its views at what a view took in the paints so far
+        (P2D_VIEW_SECONDS before any), the rest, which grows with the painting's size, and the AI check (what the
+        checks so far took, P2D_CHECK_SECONDS before any). A repaint after a failed check adds one more of those."""
         if time.time() - p2d_secs["at"] > 30:
-            per = []
+            per, chk = [], []
             try:
                 for p in A.WORK.glob("*/*/info.json"):
                     try:
@@ -1958,11 +2153,21 @@ def register(studio):
                     s, n = pt.get("seconds"), len(pt.get("views") or [])
                     if isinstance(s, (int, float)) and not isinstance(s, bool) and s > 0 and n:
                         per.append(float(s) / n)
+                for p in A.WORK.glob("*/*/check.json"):
+                    try:
+                        s = json.loads(p.read_text(encoding="utf-8")).get("seconds")
+                    except (OSError, ValueError):
+                        continue
+                    if isinstance(s, (int, float)) and not isinstance(s, bool) and s > 0:
+                        chk.append(float(s))
             except OSError:
                 pass
-            p2d_secs.update(at=time.time(), paint=sum(per) / len(per) if per else None)
+            p2d_secs.update(at=time.time(), paint=sum(per) / len(per) if per else None,
+                            check=sum(chk) / len(chk) if chk else None)
         views = p2d_view_count(A, mid) or P2D_VIEWS
-        return round(views * (p2d_secs["paint"] or P2D_VIEW_SECONDS) + P2D_EXTRA_SECONDS * max(1.0, (size / 2048) ** 2))
+        one = (views * (p2d_secs["paint"] or P2D_VIEW_SECONDS) + P2D_EXTRA_SECONDS * max(1.0, (size / 2048) ** 2)
+               + (p2d_secs.get("check") or P2D_CHECK_SECONDS))
+        return round(one * max(1, int(variants)))
 
     def p2d_view(e):
         """A battle model's 2D painting for the page: its settings (and what they mean with battleatlas' defaults), its
@@ -1996,15 +2201,20 @@ def register(studio):
             dest = "mesh\\battle\\atlas"
         out.update({
             "settings": ps, "effective": eff,
-            "defaults": {"look": p2d_default_look(A), "strength": float(A.STRENGTH), "size": int(A.ATLAS_SIZE)},
-            "sizes": list(P2D_SIZES), "strength_range": list(STRENGTH_RANGE),
+            "defaults": {"look": p2d_default_look(A), "strength": float(A.STRENGTH), "size": int(A.ATLAS_SIZE),
+                         "variants": 1, "retry": True},
+            "sizes": list(P2D_SIZES), "strength_range": list(STRENGTH_RANGE), "variant_choices": list(P2D_VARIANTS),
+            "retries": P2D_RETRIES, "touch_strength_range": list(P2D_TOUCH_STRENGTH),
             "uses_strength": s.get("family") in REPAINT_FAMILIES, "family": s.get("family"),
             "versions": versions, "current": cur,
             "installed": ({"version": inst.get("version"), "at": p2d_time(inst.get("at"), None),
                            "files": len(inst.get("files", []))} if inst else None),
             "problems": p2d_problems(inst)[:8] if inst else [],
             "error": model_meta("battle", mid).get("error2d"),
-            "game_running": p2d_game_running(), "estimate": p2d_estimate(A, mid, eff["size"]),
+            "game_running": p2d_game_running(),
+            "estimate": p2d_estimate(A, mid, eff["size"], eff["variants"]),
+            "estimate_one": p2d_estimate(A, mid, eff["size"]),
+            "touch_estimate": round(P2D_TOUCH_SECONDS + (p2d_secs.get("check") or P2D_CHECK_SECONDS)),
             "dest": dest, "game_name": battle.game_name(mid),
             "textures_installed": bool(tex_inst),
         })
@@ -2041,11 +2251,28 @@ def register(studio):
             traceback.print_exc()  # only a check
             return None
 
-    def p2d_make(w, A, mid, eff):
+    def p2d_partial_cleanup(tmp):
+        shutil.rmtree(tmp, ignore_errors=True)
+        try:
+            tmp.parent.rmdir()  # the model's folder, when this was to be its first version
+        except OSError:
+            pass
+
+    def p2d_finish_dir(A, mid, tmp, vid):
+        """The finished <vid>.partial renamed to its version (the next free one, if another was made meanwhile)."""
+        while (A.WORK / mid / vid).exists():  # made by someone else meanwhile (battleatlas' own command)
+            vid = f"v{int(vid[1:]) + 1}"
+        tmp.rename(A.WORK / mid / vid)
+        return vid
+
+    def p2d_make(w, A, mid, eff, seed=None, prefix="", extra=None):
         """battleatlas.make (the CLI's `paint`: the texture laid out, the identity check, the paint with the model's own
-        recipe, the game's colours put back, the grade, the pictures and the files, checked) for the queue. Made as
-        <version>.partial and renamed when complete, so a cancel or a failure leaves nothing half made. Returns the
-        version id. The painting size: the user's, else battleatlas' own choice (smaller for the party)."""
+        recipe, the game's colours put back, the grade, the pictures and the files, checked) for the queue, painted with
+        `seed` (paint2d_extras.seeded; None: the look's own). Made as <version>.partial and renamed when complete, so a
+        cancel or a failure leaves nothing half made; the views a touch-up can use are stored with it (views.json).
+        Returns the version id. The painting size: the user's, else battleatlas' own choice (smaller for the party).
+        prefix: the stage texts' start ("variant 2 of 3: "); extra: more for info.json's "studio"."""
+        X = p2x()
         t0 = time.time()
         vid = p2d_next(A, mid)
         tmp = A.WORK / mid / f"{vid}.partial"
@@ -2054,58 +2281,88 @@ def register(studio):
         tmp.parent.mkdir(parents=True, exist_ok=True)
 
         def progress(i, n, label):
-            w._stage(f"painting the views: {i} of {n} done (the last: {p2d_label(label)})", 0.1 + 0.8 * i / max(n, 1))
+            w._stage(f"{prefix}painting the views: {i} of {n} done (the last: {p2d_label(label)})",
+                     0.1 + 0.8 * i / max(n, 1))
 
-        w._stage("laying out the model's surface on one painted texture, then painting the first view", 0.05)
+        w._stage(f"{prefix}laying out the model's surface on one painted texture, then painting the first view", 0.05)
         try:
             size = None if eff["size"] == getattr(A, "ATLAS_SIZE", None) else eff["size"]
             try:
-                _folder, info = A.make(mid, size=size, look=eff["look"], strength=eff["strength"],
-                                       extra_words=eff["words"] or "", url=project.comfy_url, progress=progress,
-                                       cancelled=lambda: bool(w.cancel_flag), out_dir=tmp)
+                with X.seeded(seed):
+                    _folder, info = A.make(mid, size=size, look=eff["look"], strength=eff["strength"],
+                                           extra_words=eff["words"] or "", url=project.comfy_url, progress=progress,
+                                           cancelled=lambda: bool(w.cancel_flag), out_dir=tmp)
             except ValueError as e:
                 raise Plain(f"The painted texture didn't come out right, so it wasn't kept: {e}")
-            w._stage("saving", 0.97)
+            w._stage(f"{prefix}saving", 0.97)
             info_file = tmp / "info.json"
             if info_file.exists():
                 data = json.loads(info_file.read_text(encoding="utf-8"))
                 data["studio"] = {"words": eff["words"], "look": eff["look"], "strength": eff["strength"],
-                                  "size": size, "seconds": round(time.time() - t0)}
+                                  "size": size, "seconds": round(time.time() - t0), "seed": seed, **(extra or {})}
                 info_file.write_text(json.dumps(data, indent=1), encoding="utf-8")
-            while (A.WORK / mid / vid).exists():  # made by someone else meanwhile (battleatlas' own command)
-                vid = f"v{int(vid[1:]) + 1}"
-            tmp.rename(A.WORK / mid / vid)
+            try:  # the cameras of the views a touch-up can use (made again from the code when missing)
+                model, _img = X.battle_model(mid, tmp.name)
+                X.save_views(tmp, model.touch_views())
+            except Exception:
+                traceback.print_exc()
+            vid = p2d_finish_dir(A, mid, tmp, vid)
         except BaseException:
-            shutil.rmtree(tmp, ignore_errors=True)
-            try:
-                tmp.parent.rmdir()  # the model's folder, when this was to be its first version
-            except OSError:
-                pass
+            p2d_partial_cleanup(tmp)
             raise
         return vid
 
-    def run_p2d(w, job):
-        """A 2D paint of a battle model (JOB_2D) with the settings it was queued with: the game closed and ComfyUI up
-        first, then p2d_make. The new version becomes the ★ one; the game isn't touched."""
-        import requests
-        kind, mid = parse_job_name(job["name"])
-        if kind != "battle":
-            raise Plain("Only battle characters and enemies are painted in 2D style.")
-        e = entry_or_raise(kind, mid)
-        mid = key_of(kind, e)
-        A = batlas()
-        eff = p2d_effective(A, clean_p2d(job.get("settings"), project.looks.data["looks"]))
-        started = time.time()
+    def p2d_check(w, A, mid, vid, prefix=""):
+        """The AI check of a version (paint2d_extras.check: check.json and preview/check.jpg in its folder). It's
+        advice: when it can't run (the describer's model missing, ComfyUI's error), check.json says why and nothing
+        else changes. A cancel raises InterruptedError (the version stays, not checked)."""
+        X = p2x()
+        d = A.WORK / mid / vid
+        stop = lambda: bool(w.cancel_flag)  # noqa: E731
         try:
-            if not battle.game_name(mid):
-                raise Plain(P2D_NO_NAME)
-            w._stage("checking that the game is closed", 0.01)
-            if p2d_game_running(fresh=True):
-                raise Plain(P2D_GAME_RUNNING)
-            w._stage("connecting to ComfyUI", 0.02)
-            if not studio.Comfy(project.comfy_url).online():
-                raise Plain(P2D_NO_COMFY)
-            vid = p2d_make(w, A, mid, eff)
+            w._stage(f"{prefix}the AI is checking {vid}: drawing it and the original from the same angles", 0.05)
+            model, img = X.battle_model(mid, vid)
+            w._stage(f"{prefix}the AI is checking {vid}: comparing it with the original from "
+                     f"{len(X.check_views(model))} angles", 0.15)
+            if not (d / X.VIEWS_FILE).exists():
+                X.save_views(d, model.touch_views())
+            return X.check(model, img, project.comfy_url, d, cancelled=stop)
+        except InterruptedError:
+            raise
+        except Exception as ex:
+            if w.cancel_flag:
+                raise InterruptedError("cancelled") from ex
+            traceback.print_exc()
+            res = {"ok": None, "reason": "", "error": f"{type(ex).__name__}: {ex}"[:300],
+                   "at": time.strftime("%Y-%m-%d %H:%M:%S"), "problems": [], "views": []}
+            try:
+                X.save_check(d, res)
+            except OSError:
+                pass
+            return res
+
+    def p2d_check_words(res):
+        """A check's result in a few words, for the job's note."""
+        if not res or res.get("ok") is None:
+            return "AI check couldn't run" + (f" ({res['error']})" if res and res.get("error") else "")
+        return "AI check passed" if res["ok"] else f"AI check: {res.get('reason') or 'a problem'}"
+
+    def p2d_ready(w, mid):
+        """The game closed and ComfyUI up (the paint, the check and the touch-up all need the graphics card)."""
+        if not battle.game_name(mid):
+            raise Plain(P2D_NO_NAME)
+        w._stage("checking that the game is closed", 0.01)
+        if p2d_game_running(fresh=True):
+            raise Plain(P2D_GAME_RUNNING)
+        w._stage("connecting to ComfyUI", 0.02)
+        if not studio.Comfy(project.comfy_url).online():
+            raise Plain(P2D_NO_COMFY)
+
+    def p2d_errors(kind, mid, fn):
+        """fn() with run_p2d's failures in plain words (the card's last error, model.json "error2d")."""
+        import requests
+        try:
+            return fn()
         except InterruptedError:
             raise
         except (urllib.error.URLError, ConnectionError, requests.ConnectionError) as ex:
@@ -2124,18 +2381,202 @@ def register(studio):
         except Exception as ex:
             save_model_meta(kind, mid, error2d=str(ex) if isinstance(ex, Plain) else f"{type(ex).__name__}: {ex}")
             raise
-        save_model_meta(kind, mid, current2d=vid, error2d=None)
-        job["version"] = vid
-        job["note"] = f"painted in 2D style: {vid} in {round(time.time() - started)} s"
+
+    def run_p2d(w, job):
+        """A 2D paint of a battle model (JOB_2D) with the settings it was queued with: the game closed and ComfyUI up
+        first, then its variants, each painted with its own seed (p2d_make) and checked by the AI (p2d_check); with
+        "retry" on, a variant the check fails is painted again with a new seed, up to P2D_RETRIES more times (the
+        failed ones stay: the check is advice). The progress covers every variant (a repaint adds to it). Becomes ★:
+        the first that passed the check, else the first made. A cancel keeps the variants finished before it. The
+        game isn't touched."""
+        X = p2x()
+        kind, mid = parse_job_name(job["name"])
+        if kind != "battle":
+            raise Plain("Only battle characters and enemies are painted in 2D style.")
+        e = entry_or_raise(kind, mid)
+        mid = key_of(kind, e)
+        A = batlas()
+        eff = p2d_effective(A, clean_p2d(job.get("settings"), project.looks.data["looks"]))
+        n, auto = int(eff["variants"]), bool(eff["retry"])
+        started = time.time()
+        batch = time.strftime("%Y%m%d-%H%M%S")
+        made, results = [], {}
+        plan = {"done": 0, "total": n}  # paints done, paints planned (a repaint adds one)
+
+        def band(lo, hi):  # the share of the job's bar this paint's part reports into; never back (a repaint after a
+            k, t = plan["done"], plan["total"]  # failed check holds the bar where it is until the work catches up)
+            shown = float((w.current or {}).get("progress") or 0) if isinstance(w.current, dict) else 0.0
+            w.band = (max((k + lo) / t, min(shown, (k + hi) / t)), (k + hi) / t)
+
+        def pick():
+            ok = [v for v in made if (results.get(v) or {}).get("ok")]
+            return (ok or made or [None])[0]
+        try:
+            p2d_errors(kind, mid, lambda: p2d_ready(w, mid))
+            for k in range(n):
+                for t in range(1 + (P2D_RETRIES if auto else 0)):
+                    if w.cancel_flag:
+                        raise InterruptedError("cancelled")
+                    what = [f"variant {k + 1} of {n}"] if n > 1 else []
+                    if t:
+                        what.append(f"repaint {t} of {P2D_RETRIES} after the AI check")
+                    prefix = f"{', '.join(what)}: " if what else ""
+                    band(0.0, 0.88)
+                    vid = p2d_errors(kind, mid, lambda: p2d_make(
+                        w, A, mid, eff, seed=X.new_seed(), prefix=prefix,
+                        extra={"batch": batch, "variant": k + 1, "try": t + 1, "variants": n}))
+                    made.append(vid)
+                    band(0.88, 1.0)
+                    res = p2d_check(w, A, mid, vid, prefix)
+                    results[vid] = res
+                    plan["done"] += 1
+                    if res.get("ok") is not False or not auto or t == P2D_RETRIES:
+                        break
+                    plan["total"] += 1
+        finally:
+            w.band = (0.0, 1.0)
+            if made:  # (also when a later variant failed or was cancelled: the ones made are kept)
+                save_model_meta(kind, mid, current2d=pick())
+        save_model_meta(kind, mid, error2d=None)
+        job["version"] = pick()
+        job["made"] = made
+        secs = round(time.time() - started)
+        if len(made) == 1:
+            job["note"] = f"painted in 2D style: {made[0]} in {secs} s ({p2d_check_words(results.get(made[0]))})"
+        else:
+            passed = [v for v in made if (results.get(v) or {}).get("ok")]
+            job["note"] = (f"painted {len(made)} versions in 2D style ({', '.join(made)}) in {fmt_secs(secs)}: "
+                           f"{len(passed)} passed the AI check" + (f", {pick()} is ★" if pick() else ""))
         w._stage("done", 1.0)
+
+    def fmt_secs(s):
+        return f"{s} s" if s < 90 else f"{round(s / 60)} min"
 
     def p2d_est(name):
         try:
             kind, mid = parse_job_name(name)
             A = batlas()
-            return p2d_estimate(A, mid, p2d_effective(A, p2d_settings(mid))["size"])
+            eff = p2d_effective(A, p2d_settings(mid))
+            return p2d_estimate(A, mid, eff["size"], eff["variants"])
         except Exception:
-            return round(P2D_VIEWS * P2D_VIEW_SECONDS + P2D_EXTRA_SECONDS)
+            return round(P2D_VIEWS * P2D_VIEW_SECONDS + P2D_EXTRA_SECONDS + P2D_CHECK_SECONDS)
+
+    def run_p2d_check(w, job):
+        """The AI check of one 2D version (JOB_2D_CHECK; the card's "AI check" on a version painted before the check
+        existed, or to check again)."""
+        kind, mid = parse_job_name(job["name"])
+        e = entry_or_raise(kind, mid)
+        mid = key_of(kind, e)
+        A = batlas()
+        vid = job.get("version")
+        if not vid or vid not in {v["id"] for v in p2d_versions(A, mid)}:
+            raise Plain("That version is gone, so it wasn't checked.")
+        p2d_ready(w, mid)
+        res = p2d_check(w, A, mid, vid)
+        if res.get("ok") is None:
+            raise Plain(f"The AI check of {vid} couldn't run: {res.get('error') or 'no answer'}.")
+        job["note"] = f"{vid}: {p2d_check_words(res)}"
+        w._stage("done", 1.0)
+
+    # a version's views for the touch-up: (WORK, model, version, PNG's time) -> (paint2d_extras model, texture)
+    p2d_models = OrderedDict()
+    p2d_models_lock = threading.Lock()
+
+    def p2d_model(A, mid, vid):
+        X = p2x()
+        d = A.WORK / mid / vid
+        png = next(iter(sorted(d.glob("*.png"))), None)
+        key = (str(A.WORK), mid, vid, png.stat().st_mtime if png else 0)
+        with p2d_models_lock:
+            if key in p2d_models:
+                p2d_models.move_to_end(key)
+                return p2d_models[key]
+            got = X.battle_model(mid, vid)
+            p2d_models[key] = got
+            while len(p2d_models) > 2:
+                p2d_models.popitem(last=False)
+            return got
+
+    def p2d_touch_views(A, mid, vid):
+        """The version's touch-up views (stored with it: views.json, made now when it hasn't one)."""
+        model, _img = p2d_model(A, mid, vid)
+        return p2x().views_of(model, A.WORK / mid / vid)
+
+    def run_p2d_touchup(w, job):
+        """A touch-up of a 2D version (JOB_2D_TOUCH): its view drawn from its painted texture, the areas the user
+        marked repainted with the version's look and words at the strength asked (paint2d_extras.touch_up), only
+        those pixels put back on the texture, then a new version of it (the pictures, the files, checked) and the AI
+        check. The new version becomes ★ when its source was; the game isn't touched (a version in the game stays
+        there until the user installs the new one)."""
+        X = p2x()
+        kind, mid = parse_job_name(job["name"])
+        e = entry_or_raise(kind, mid)
+        mid = key_of(kind, e)
+        A = batlas()
+        src = job.get("version")
+        mask_path = Path(job.get("mask") or "")
+        started = time.time()
+        try:
+            if not src or src not in {v["id"] for v in p2d_versions(A, mid)}:
+                raise Plain("The version to touch up is gone, so nothing was done.")
+            p2d_ready(w, mid)
+            d = A.WORK / mid / src
+            was_current = p2d_current(A, mid, p2d_versions(A, mid)) == src
+            w._stage(f"drawing {src}'s view from its painted texture", 0.04)
+            model, img = X.battle_model(mid, src)
+            views = {v.key: v for v in X.views_of(model, d)}
+            view = views.get(job.get("view"))
+            if view is None:
+                raise Plain("That view of the model isn't there any more, so nothing was done.")
+            marks = np.asarray(Image.open(mask_path).convert("RGBA").getchannel("A"), np.float32) / 255
+            info = json.loads((d / "info.json").read_text(encoding="utf-8"))
+            pt = info.get("painted") or {}
+            strength = float(job.get("strength") or pt.get("strength") or A.STRENGTH)
+            hint = (job.get("hint") or "").strip()
+            w.band = (0.05, 0.7)
+            new, tinfo, before, after = X.touch_up(
+                model, img, view, marks, pt.get("look") or p2d_default_look(A), strength, pt.get("prompt") or "",
+                hint, lock=info.get("locked"), url=project.comfy_url, cancelled=lambda: bool(w.cancel_flag),
+                progress=lambda i, n: w._stage(f"repainting marked area {i + 1} of {n} in {view.label}", i / max(n, 1)))
+            w.band = (0.7, 0.88)
+            w._stage("putting the repainted parts back on the painted texture, drawing the pictures", 0.0)
+            vid = p2d_next(A, mid)
+            tmp = A.WORK / mid / f"{vid}.partial"
+            if tmp.exists():
+                shutil.rmtree(tmp)
+            try:
+                X.export_touchup(model, new, d, tmp, {
+                    "source": src, "view": view.key, "label": view.label, "strength": strength, "hint": hint,
+                    "seconds": round(time.time() - started), **tinfo}, before, after, marks, view)
+                data = json.loads((tmp / "info.json").read_text(encoding="utf-8"))
+                st = dict(info.get("studio") or {})
+                for k in ("batch", "variant", "try", "variants"):
+                    st.pop(k, None)
+                data["studio"] = {**st, "touchup_of": src}
+                (tmp / "info.json").write_text(json.dumps(data, indent=1), encoding="utf-8")
+                vid = p2d_finish_dir(A, mid, tmp, vid)
+            except ValueError as ex:
+                p2d_partial_cleanup(tmp)
+                raise Plain(f"The touched-up texture didn't come out right, so it wasn't kept: {ex}")
+            except BaseException:
+                p2d_partial_cleanup(tmp)
+                raise
+            w.band = (0.88, 1.0)
+            res = p2d_check(w, A, mid, vid)
+        except ValueError as ex:  # touch_up: nothing was marked, a look that only enlarges
+            raise Plain(f"Nothing was touched up: {ex}.") from ex
+        finally:
+            w.band = (0.0, 1.0)
+            mask_path.unlink(missing_ok=True)
+        if was_current:
+            save_model_meta(kind, mid, current2d=vid)
+        job["version"] = vid
+        n = tinfo["areas"]
+        inst = (A.installed().get(mid) or {}).get("version")
+        job["note"] = (f"touched up {src} ({n} area{'s' if n != 1 else ''} in {view.label}): {vid}, "
+                       f"{p2d_check_words(res)}" + (f". The game still has {inst}: install {vid} to see it there"
+                                                    if inst else ""))
+        w._stage("done", 1.0)
 
     # ---------------------------------------------------------------- routes
 
@@ -2215,9 +2656,20 @@ def register(studio):
         d = loaded(kind, mid)
         cam = view_camera(kind, d, int(a.get("cam", 0)), float(a.get("yaw", 0)), float(a.get("pitch", 0)),
                           min(max(float(a.get("zoom", 1)), 0.1), 20), w, h)
+        cam = pan_camera(cam, float(a.get("panx", 0) or 0), float(a.get("pany", 0) or 0))
         ver = a.get("ver", "orig")
+        pose = int(a.get("pose", 0) or 0) if kind == "battle" else 0
         t0 = time.time()
-        if ver == "orig":
+        if ver.startswith("2d:"):  # a 2D version (Paint in 2D style; a field model's fieldatlas build), as the game
+            got = p2d_viewer_set(kind, mid, ver[3:], pose,  # draws it: flat light, half-alpha texels cut out
+                                 rounded=kind == "field" and a.get("round", "1") == "1")
+            if got is None:
+                abort(404)
+            r = render.rasterize(got["mesh"], cam)
+            img = paint.shade(got["mesh"], r, got["images"], background=BG_MODEL)
+        elif ver == "orig" and pose:
+            img = draw(kind, posed_original(mid, pose), cam)
+        elif ver == "orig":
             img = draw(kind, d["mesh"], cam)
         elif ver == SYW:
             ps = syw_set(kind, mid)
@@ -2544,8 +2996,170 @@ def register(studio):
         eff = p2d_effective(A, ps)
         job = studio.make_job(job_name("battle", mid), JOB_2D, family=project.looks.look_settings(eff["look"]).get("family"),
                               settings=ps)
-        job["est"] = p2d_estimate(A, mid, eff["size"])
+        job["est"] = p2d_estimate(A, mid, eff["size"], eff["variants"])
+        return jsonify(added=worker.enqueue([job]), est=job["est"], variants=eff["variants"])
+
+    def p2d_version_or_404(A, mid, vid):
+        if vid.startswith(".") or vid.endswith(".partial") or vid not in {p.name for p in p2d_dirs(A, mid)}:
+            abort(404)
+        return A.WORK / mid / vid
+
+    @bp.post("/paint2d/check")
+    @safe
+    def api_p2d_check():
+        """Queue the AI check of a 2D version ({"id", "version"}): a version painted before the check existed, or
+        checked again. While the game runs nothing is queued (the AI needs the graphics card)."""
+        body = request.get_json(force=True)
+        e = entry("battle", body.get("id"))
+        mid = key_of("battle", e)
+        A = batlas()
+        vid = str(body.get("version") or "")
+        p2d_version_or_404(A, mid, vid)
+        if p2d_game_running(fresh=True):
+            return jsonify(message=P2D_GAME_RUNNING_CHECK, game_running=True), 409
+        job = studio.make_job(job_name("battle", mid), JOB_2D_CHECK, version=vid)
+        job["est"] = round(p2d_secs.get("check") or P2D_CHECK_SECONDS)
         return jsonify(added=worker.enqueue([job]), est=job["est"])
+
+    @bp.get("/paint2d/<mid>/<vid>/views")
+    @safe
+    def api_p2d_views(mid, vid):
+        """A 2D version's views for the touch-up ({key, label, width, height}), whether it's the one in the game, and
+        what a touch-up of it starts from (its look and strength)."""
+        e = entry("battle", mid)
+        mid = key_of("battle", e)
+        A = batlas()
+        d = p2d_version_or_404(A, mid, vid)
+        views = p2d_touch_views(A, mid, vid)
+        try:
+            pt = json.loads((d / "info.json").read_text(encoding="utf-8")).get("painted") or {}
+        except (OSError, ValueError):
+            pt = {}
+        inst = (A.installed().get(mid) or {}).get("version")
+        return jsonify(views=[{"key": v.key, "label": v.label, "width": v.camera.width, "height": v.camera.height}
+                              for v in views],
+                       installed=inst, painted=bool(pt), look=pt.get("look"),
+                       strength=float(pt.get("strength") or A.STRENGTH), estimate=round(
+                           P2D_TOUCH_SECONDS + (p2d_secs.get("check") or P2D_CHECK_SECONDS)))
+
+    @bp.get("/viewer2d/<kind>/<mid>")
+    @safe
+    def api_viewer2d(kind, mid):
+        """The 2D versions the viewer can show on the model (battle models: Paint in 2D style's; field models:
+        fieldatlas' builds) and, for battle models, the poses it can show them in."""
+        e = entry(kind, mid)
+        mid = key_of(kind, e)
+        if kind not in ("battle", "field"):
+            return jsonify(versions=[], poses=[])
+        return jsonify(versions=p2d_viewer_versions(kind, mid),
+                       poses=[{"animation": k, "label": label} for k, label in p2d_poses(mid)] if kind == "battle" else [])
+
+    @bp.post("/paint2d/<mid>/<vid>/views/custom")
+    @safe
+    def api_p2d_view_custom(mid, vid):
+        """A touch-up view from the viewer's angle ({yaw, pitch, zoom, panx, pany, pose, aspect}): the viewer's
+        camera (model space) moved to where the touch-up has the model, stored with the version's views
+        (views.json, key "cam" + its hash) and drawn at most 1024 px. Returns {"key", "label"}."""
+        import hashlib
+        e = entry("battle", mid)
+        mid = key_of("battle", e)
+        A = batlas()
+        d = p2d_version_or_404(A, mid, vid)
+        body = request.get_json(force=True)
+        try:
+            yaw, pitch = float(body.get("yaw", 0)), float(body.get("pitch", 0))
+            zoom = min(max(float(body.get("zoom", 1)), 0.1), 20)
+            panx, pany = float(body.get("panx", 0) or 0), float(body.get("pany", 0) or 0)
+            aspect = min(max(float(body.get("aspect", 1)), 0.25), 4.0)
+            pose = int(body.get("pose", 0) or 0)
+        except (TypeError, ValueError):
+            abort(400)
+        if pose and pose not in {k for k, _ in p2d_poses(mid)}:
+            abort(400)
+        w, h = (1024, max(64, round(1024 / aspect))) if aspect >= 1 else (max(64, round(1024 * aspect)), 1024)
+        cam = pan_camera(view_camera("battle", loaded("battle", mid), 0, yaw, pitch, zoom, w, h), panx, pany)
+        X = p2x()
+        model, _img = p2d_model(A, mid, vid)
+        views = X.views_of(model, d)
+        spec = json.dumps([round(yaw, 1), round(pitch, 1), round(zoom, 3), round(panx, 3), round(pany, 3), pose, w, h])
+        key = "cam" + hashlib.sha1(spec.encode()).hexdigest()[:8]
+        label = "your view from the viewer" + (f", animation {pose}" if pose else "")
+        if not any(v.key == key for v in views):  # (the version's own views, and the last few from the viewer)
+            fixed = [v for v in views if not v.key.startswith("cam")]
+            mine = [v for v in views if v.key.startswith("cam")][-5:]
+            X.save_views(d, fixed + mine + [X.View(key, label, model.placed_camera(cam), "sky", pose)])
+        return jsonify(key=key, label=label)
+
+    p2d_render_lock = threading.Lock()
+
+    @bp.get("/paint2d/<mid>/<vid>/view/<key>.jpg")
+    @safe
+    def api_p2d_view_picture(mid, vid, key):
+        """One of a version's touch-up views drawn from its painted texture (what the touch-up repaints), kept in the
+        version's touchup_views/ once drawn."""
+        e = entry("battle", mid)
+        mid = key_of("battle", e)
+        A = batlas()
+        d = p2d_version_or_404(A, mid, vid)
+        if not P2D_VIEW_KEY.fullmatch(key):
+            abort(404)
+        p = d / "touchup_views" / f"{key}.jpg"
+        if not p.exists():
+            with p2d_render_lock:  # one at a time: the page asks for all of them at once
+                if not p.exists():
+                    view = next((v for v in p2d_touch_views(A, mid, vid) if v.key == key), None)
+                    if view is None:
+                        abort(404)
+                    model, img = p2d_model(A, mid, vid)
+                    rgb, _, _ = model.draw(img, view.camera, view.background, view.animation)
+                    p.parent.mkdir(exist_ok=True)
+                    tmp = p.with_suffix(".tmp")
+                    Image.fromarray(rgb).save(tmp, "JPEG", quality=92)
+                    tmp.replace(p)
+        return send_file(p, mimetype="image/jpeg", max_age=0)
+
+    @bp.post("/paint2d/touchup")
+    @safe
+    def api_p2d_touchup():
+        """Repaint the areas the user marked on one of a 2D version's views: {"id", "version", "view", "mask": a PNG
+        data URL at the view's size (its alpha: the marks), "hint": what should be there (optional), "strength": how
+        much to change, P2D_TOUCH_STRENGTH}. A queue job (JOB_2D_TOUCH) that makes a new version."""
+        import base64
+        body = request.get_json(force=True)
+        e = entry("battle", body.get("id"))
+        mid = key_of("battle", e)
+        A = batlas()
+        vid = str(body.get("version") or "")
+        p2d_version_or_404(A, mid, vid)
+        key = str(body.get("view") or "")
+        if not P2D_VIEW_KEY.fullmatch(key):
+            abort(400)
+        data = str(body.get("mask") or "")
+        if not data.startswith("data:image/png;base64,"):
+            return jsonify(message="Nothing was marked: brush over what should be repainted first."), 400
+        img = Image.open(io.BytesIO(base64.b64decode(data.split(",", 1)[1]))).convert("RGBA")
+        if not img.getchannel("A").getbbox():
+            return jsonify(message="Nothing was marked: brush over what should be repainted first."), 400
+        if p2d_game_running(fresh=True):
+            return jsonify(message=P2D_GAME_RUNNING_TOUCH, game_running=True), 409
+        try:
+            strength = float(body.get("strength"))
+        except (TypeError, ValueError):
+            strength = None
+        if strength is not None:
+            strength = round(min(max(strength, P2D_TOUCH_STRENGTH[0]), P2D_TOUCH_STRENGTH[1]) * 20) / 20
+        path = Path(studio.AI) / "input" / f"p2d_{_safe_name(mid)}_touchup_marks_{int(time.time() * 1000)}.png"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        img.save(path)
+        job = studio.make_job(job_name("battle", mid), JOB_2D_TOUCH, version=vid,
+                              settings={"view": key, "mask": path.name})
+        job.update(view=key, mask=str(path), hint=" ".join(str(body.get("hint") or "").split())[:200],
+                   strength=strength)
+        job["est"] = round(P2D_TOUCH_SECONDS + (p2d_secs.get("check") or P2D_CHECK_SECONDS))
+        added = worker.enqueue([job])
+        if not added:
+            path.unlink(missing_ok=True)
+        return jsonify(added=added, est=job["est"])
 
     @bp.post("/paint2d/use")
     @safe
@@ -2606,5 +3220,8 @@ def register(studio):
     studio.JOB_KINDS[JOB_PREVIEW] = {"run": run_paint, "est": est_for("preview")}
     studio.JOB_KINDS[JOB_LOOK] = {"run": run_look, "est": lambda name: 90}
     studio.JOB_KINDS[JOB_2D] = {"run": run_p2d, "est": p2d_est}
+    studio.JOB_KINDS[JOB_2D_CHECK] = {"run": run_p2d_check, "est": lambda name: round(P2D_CHECK_SECONDS)}
+    studio.JOB_KINDS[JOB_2D_TOUCH] = {"run": run_p2d_touchup,
+                                      "est": lambda name: round(P2D_TOUCH_SECONDS + P2D_CHECK_SECONDS)}
     threading.Thread(target=load_catalogues, daemon=True).start()  # the lists are ready when the page asks
     return "/api/modelpaint/ui.js"

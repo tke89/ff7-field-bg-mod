@@ -24,6 +24,9 @@
     bl: null, blBusy: false, blSeq: 0,
     // paint in 2D style (battle models): what the Studio last said about it, the version shown, a click under way
     p2d: null, p2dSeq: 0, p2dVer: null, p2dBusy: false,
+    // the viewer: a 2D version shown on the model (its id; null: the Paint card's versions), the ones there are,
+    // the battle model's pose (an animation's first frame; 0 as painted) and the ones it has, the pan (view heights)
+    v2d: null, v2dList: [], poses: [], pose: 0, panX: 0, panY: 0, v2dSeq: 0, round2d: pref("models.round2d", "1") === "1",
   };
   if (!["orig", "new", "split"].includes(M.mode)) M.mode = "orig";
 
@@ -31,6 +34,9 @@
   JOB_LABELS.model_preview = (j) => `painting a preview${j.family ? ` · ${famShort(j.family)}` : ""}`;
   JOB_LABELS.model_look = () => "building the battle look";
   JOB_LABELS.model_2d = (j) => `painting in 2D style${j.family ? ` · ${famShort(j.family)}` : ""}`;
+  JOB_LABELS.model_2d_check = (j) => `the AI check of a 2D version${j.version ? ` (${j.version})` : ""}`;
+  JOB_LABELS.model_2d_touchup = (j) => `touching up a 2D version${j.version ? ` (${j.version})` : ""}`;
+  const P2D_KINDS = ["model_2d", "model_2d_check", "model_2d_touchup"];
 
   const css = document.createElement("style");
   css.textContent = `
@@ -101,6 +107,48 @@
                         background: #000; border: 1px solid var(--line); }
     .mdl-p2d-prev figcaption { font-size: 11px; color: var(--faint); margin-top: 2px; line-height: 1.3; }
     .mdl-sheet .mdl-p2d-views img + img { margin-top: 8px; }
+    .mdl-p2d-chk { font-size: 11px; line-height: 1.35; }
+    .mdl-p2d-chk.ok { color: var(--ok); }
+    .mdl-p2d-chk.bad { color: var(--warn); }
+    .mdl-p2d-chk.none { color: var(--faint); }
+    .mdl-p2d-var { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 6px; margin: 6px 0; }
+    .mdl-p2d-var .vc { border: 1px solid var(--line); border-radius: 6px; padding: 4px; cursor: pointer; min-width: 0;
+                       display: flex; flex-direction: column; gap: 3px; }
+    .mdl-p2d-var .vc:hover { border-color: var(--accent); }
+    .mdl-p2d-var .vc.viewing { border-color: var(--accent); background: rgba(255,255,255,.04); }
+    .mdl-p2d-var img { width: 100%; display: block; border-radius: 4px; background: #000; }
+    .mdl-p2d-var img.b { aspect-ratio: 4 / 3; object-fit: cover; object-position: right center; }
+    .mdl-p2d-var img.t { aspect-ratio: 5 / 2; object-fit: cover; }
+    .mdl-p2d-var .vl { font-size: 12px; }
+    .mdl-p2d-var button { margin-top: auto; }
+    .mdl-p2d-found { font-size: 11px; color: var(--faint); margin: 2px 0 4px; padding-left: 16px; }
+    .mdl-cmp-row { border-top: 1px solid var(--line); padding: 8px 0; }
+    .mdl-cmp-row .mdl-cmp-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; margin-bottom: 6px; }
+    .mdl-cmp-row .mdl-cmp-pics { display: grid; grid-template-columns: 5fr 3fr; gap: 6px; }
+    .mdl-cmp-row img { width: 100%; display: block; border-radius: 4px; background: #000; cursor: zoom-in; }
+    .mdl-touch .modal-card { width: min(1200px, 97vw); }
+    .mdl-2dbox { display: inline-flex; gap: 6px; align-items: center; margin-left: 8px; min-width: 0; }
+    .mdl-2dbox select { max-width: 150px; font-size: 12px; }
+    .mdl-2dbox button, .mdl-2dbox label { white-space: nowrap; font-size: 12px; }
+    .mdl-page .stage-toolbar { flex-wrap: wrap; row-gap: 4px; }
+    .mdl-tu-views { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 4px; margin: 4px 0; }
+    .mdl-tu-views button { padding: 2px; border: 2px solid transparent; background: #000; flex: 0 0 auto; border-radius: 4px; }
+    .mdl-tu-views button.on { border-color: #ff5050; }
+    .mdl-tu-views img { width: 76px; height: 64px; object-fit: contain; display: block; }
+    .mdl-tu-views span { display: block; font-size: 10px; color: var(--muted); max-width: 76px; white-space: nowrap;
+                         overflow: hidden; text-overflow: ellipsis; }
+    .mdl-tu-stage { position: relative; height: min(60vh, 760px); background: #000; border-radius: 6px; overflow: hidden;
+                    cursor: none; margin: 6px 0; }
+    .mdl-tu-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+    .mdl-tu-stage .hint { position: absolute; left: 8px; top: 6px; pointer-events: none; }
+    .mdl-tu-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; border: 2px solid #ff5050;
+                  border-radius: 6px; padding: 4px 8px; }
+    .mdl-tu-bar > b { color: #ff5050; cursor: help; }
+    .mdl-tu-bar label { display: flex; align-items: center; gap: 4px; color: var(--muted); }
+    .mdl-tu-bar input[type=range] { width: 80px; }
+    .mdl-tu-bar .mdl-tu-hint { width: 220px; }
+    .mdl-tu-bar .seg button { padding: 2px 8px; }
+    .mdl-tu-bar .seg button.on { background: var(--accent-2); border-color: var(--accent-2); color: #fff; }
     @media (max-width: 1150px) { .mdl-page { grid-template-columns: 220px minmax(0, 1fr) 300px; } }
     @media (max-width: 860px) { .mdl-page { grid-template-columns: 180px minmax(0, 1fr) 260px; } }`;
   document.head.appendChild(css);
@@ -138,7 +186,8 @@
           <button data-m="new" title="With the painted textures of the version picked below (2)">Painted</button>
           <button data-m="split" title="Original on the left, painted on the right; drag the line to move it (3)">Split</button>
         </div>
-        <span class="hint">drag to turn · wheel to zoom · R resets</span>
+        <span class="mdl-2dbox" id="mdl2dBox"></span>
+        <span class="hint">drag to turn · right-drag to move · wheel to zoom · R resets</span>
         <div class="spacer"></div>
         <button id="mdlReset" title="Back to the starting angle and zoom (R)">Reset view</button>
       </div>
@@ -319,6 +368,10 @@
       M.id = id;
       M.ver = null;
       M.p2dVer = null;
+      M.v2d = null;
+      M.v2dList = [];
+      M.poses = [];
+      M.pose = 0;
       M.cam = 0;
       resetView(false);
       R.shown = {};
@@ -351,6 +404,7 @@
     requestRender(false);
     loadBattleLook();
     loadP2d();
+    loadViewer2d();
   }
 
   function renderAll() {
@@ -1296,6 +1350,14 @@
     "moving.jpg": { cap: "the parts that move on their own", title: "the parts that move on their own",
       text: "Parts the game moves on their own (such as Midgar Zolom's tongue), close up: first with the part hidden, to " +
         "check none of it got painted onto what's behind it, then with it showing, as painted." },
+    "check.jpg": { cap: "what the AI check compared", title: "what the AI check compared",
+      text: "The AI check's pictures: from each angle, the model as the game draws it (left) next to the painted one " +
+        "(right). The bar under each pair is green where the AI found nothing wrong, red where it found a part the " +
+        "original doesn't have (that fails the version), amber where it noticed something that doesn't fail it on its " +
+        "own (a colour, or a detail only a view or two saw). The AI can be wrong both ways: look for yourself." },
+    "touchup.jpg": { cap: "the touch-up: before, with your marks | after", title: "the touch-up",
+      text: "The view that was touched up: on the left as it was, with the areas you marked outlined in red, on the " +
+        "right the same view of this version, after the repainted parts were put back on the painted texture." },
     "identity.png": { cap: "check: the game's own colours on the new texture", title: "the check",
       text: "The game's own colours put on the new painted texture, to check it fits the model: left as the game draws " +
         "it, middle on the new texture, right the differences (black where they're the same; thin bright lines between " +
@@ -1321,11 +1383,12 @@
     renderP2d();
   }
 
-  // this model's 2D paints in the Studio's queue
-  function p2dJobs(id = M.id) {
+  // this model's 2D jobs in the Studio's queue (kinds: the paints only, unless asked; P2D_KINDS: the checks and
+  // touch-ups too)
+  function p2dJobs(id = M.id, kinds = ["model_2d"]) {
     const q = S.queue, name = `${KINDS.battle.job} ${id}`;
     if (!q) return { running: null, queued: [], any: false };
-    const mine = (j) => j && j.name === name && j.kind === "model_2d";
+    const mine = (j) => j && j.name === name && kinds.includes(j.kind);
     const running = mine(q.current) ? q.current : null, queued = q.queued.filter(mine);
     return { running, queued, any: !!(running || queued.length) };
   }
@@ -1337,8 +1400,32 @@
       v.size ? `${v.size} px` : ""].filter(Boolean).join(" · ");
   }
 
+  // where a version came from: "variant 2, repaint 1" / "touched up from v4 (front)"
+  function p2dFrom(v) {
+    if (v.touchup) return `touched up from ${v.touchup.source}${v.touchup.view ? ` (${v.touchup.view})` : ""}`;
+    const bits = [];
+    if (v.variant && v.batch) bits.push(`variant ${v.variant}`);
+    if (v.try > 1) bits.push(`repaint ${v.try - 1} after the AI check`);
+    return bits.join(", ");
+  }
+
+  // a version's AI check in a few words, and how to colour it
+  function p2dCheck(v) {
+    const c = v.check;
+    if (!v.painted) return null;
+    if (!c) return { cls: "none", text: "AI check: not checked" };
+    if (c.ok === null || c.ok === undefined) return { cls: "none", text: "AI check: couldn't run" };
+    if (c.ok) return { cls: "ok", text: c.problems.length ? "AI check: passed, with remarks" : "AI check: passed" };
+    return { cls: "bad", text: `AI check: ${c.reason || "a problem"}` };
+  }
+
   function p2dTip(v) {
     const bits = [`${v.id}: ${p2dLine(v)}`];
+    const from = p2dFrom(v), chk = p2dCheck(v);
+    if (from) bits.push(from);
+    if (chk) bits.push(chk.text + (v.check && v.check.ok === null && v.check.reason ? ` (${v.check.reason})` : ""));
+    if (v.check && v.check.problems && v.check.problems.length) bits.push(`what it found: ${v.check.problems.join("; ")}`);
+    if (v.touchup && v.touchup.hint) bits.push(`the touch-up's words: ${v.touchup.hint}`);
     if (v.seconds) bits.push(`the AI took ${fmtDuration(v.seconds)}${v.views ? ` for ${v.views} views` : ""}`);
     if (v.graded) bits.push("its colours matched to the 2D picture afterwards");
     if (v.words) bits.push(`your words: ${v.words}`);
@@ -1370,7 +1457,7 @@
     const ps = P.settings, D = P.defaults, E = P.effective, L = M.looks;
     const jobs = p2dJobs(it.id);
     const ch = (k) => (ps[k] != null && ps[k] !== "" ? "changed" : "");
-    const allDefault = ["look", "strength", "size"].every((k) => ps[k] == null) && !ps.words;
+    const allDefault = ["look", "strength", "size", "variants", "retry"].every((k) => ps[k] == null) && !ps.words;
     // the look: battleatlas' own (Painterly) unless picked
     const dl = L && L.looks.find((x) => x.id === D.look);
     const dName = dl ? dl.name : D.look;
@@ -1414,6 +1501,25 @@
       `<span><b>Higher:</b> sharper when the battle camera comes close, but it takes more of the game's memory and a little ` +
       `longer to paint.</span><span><b>Lower:</b> lighter on memory, softer up close.</span></div>` +
       `<div class="help-rec">Recommended: ${D.size}.</div></div></div>`;
+    // variants: how many versions one Paint makes
+    const vn = ps.variants || 1;
+    const variants = `<div class="ctl ${ch("variants")}"><label class="lbl" for="mdlP2dVariants">Variants</label>` +
+      `<select id="mdlP2dVariants">` + (P.variant_choices || [1, 2, 3, 4]).map((n) =>
+        `<option value="${n === 1 ? "" : n}" ${vn === n ? "selected" : ""}>${n === 1 ? "1 (default)" : n} version${n === 1 ? "" : "s"} per paint</option>`).join("") +
+      `</select><div class="ctl-help"><div>How many versions one Paint makes. Each is painted from a different random ` +
+      `start, so they come out a little different, and you pick the one you like.</div><div class="help-range">` +
+      `<span><b>More:</b> more to choose from, and a better chance that one has nothing made up, but it takes that many ` +
+      `times longer.</span><span><b>Fewer:</b> quicker; 1 makes one version, as before.</span></div>` +
+      `<div class="help-rec">Recommended: 2 or 3.</div></div></div>`;
+    // the AI check's automatic repaint
+    const retry = `<label class="check ctl ${ch("retry")}"><input type="checkbox" id="mdlP2dRetry" ${ps.retry !== false ? "checked" : ""}>` +
+      `<span>Repaint automatically when the AI check fails<div class="ctl-help">${helpText("After each version is painted, " +
+        "the AI compares it with the model as the game draws it, from the same angles, and looks for things it made up (an " +
+        "extra shoulder pad, a tongue on a face, eyes or a mouth that aren't there) and parts that came out a different " +
+        `number (eyes, arms, shoulder pads). With this on, a version that fails is painted again from a new start, up to ` +
+        `${P.retries || 2} more times. The ones that failed stay in the list with the reason, so you can still use them: ` +
+        "the check can be wrong both ways, so look at the pictures yourself. Off: each version is painted once and only " +
+        "checked.", "on")}</div></span></label>`;
     // paint
     const painted = P.versions.some((v) => v.painted);
     const canPaint = P.can && !jobs.any;
@@ -1422,8 +1528,9 @@
     const paint = `<div class="ctl"><span class="lbl">Paint</span>` +
       `<div class="row-btns tight"><button class="small primary" id="mdlP2dPaint" ${canPaint ? "" : "disabled"} ` +
       `title="${esc(paintTip)}">${painted ? "Paint again" : "Paint"}</button></div>` +
-      (P.can ? `<div class="hint">Takes about ${fmtDuration(P.estimate)}: ${esc(lookName(E.look))}, strength ` +
-        `${Number(E.strength).toFixed(2)}, ${E.size} px${E.words ? ", your words" : ""}.</div>`
+      (P.can ? `<div class="hint">Takes about ${fmtDuration(P.estimate)}${E.variants > 1 ? ` for ${E.variants} versions` : ""}: ` +
+        `${esc(lookName(E.look))}, strength ${Number(E.strength).toFixed(2)}, ${E.size} px${E.words ? ", your words" : ""}` +
+        (E.retry ? `; a repaint after a failed AI check adds about ${fmtDuration(P.estimate_one || P.estimate)}` : "") + `.</div>`
         : `<div class="model-warn">${esc(P.why_not)}</div>`) +
       (P.game_running && P.can ? `<div class="model-warn">Your game is running. The AI shares the graphics card with it, so ` +
         `painting has to wait until the game is closed: close it, then press Paint.</div>` : "") +
@@ -1431,13 +1538,17 @@
       `<div class="mdl-line" id="mdlP2dProg"></div>` +
       `<div class="ctl-help">${helpText("The AI paints the model where a battle puts it: first from that battle's own cameras, " +
         "with the battle scene behind it, then all round and close up to its head. The paintings are put together into one " +
-        "painted texture over the whole model; a later view only repaints what the views before it saw less well. It goes " +
-        "in the Studio's queue with the other jobs and makes a new version below, marked ★. The AI needs the graphics " +
-        "card, so your game has to be closed: Paint tells you if it isn't. Cancel queue stops it after the view it's " +
-        "painting, and nothing is kept. Nothing in your game changes until you install.",
-        "the settings as they are, with the game closed")}</div></div>`;
+        "painted texture over the whole model; a later view only repaints what the views before it saw less well. Then the " +
+        "AI checks it (see Repaint automatically). It goes in the Studio's queue with the other jobs and makes a new " +
+        "version below (one per variant); the first that passed the check is marked ★. The AI needs the graphics card, " +
+        "so your game has to be closed: Paint tells you if it isn't. Cancel queue stops it after the view it's painting: " +
+        "the versions finished before that are kept, the one being painted isn't. Nothing in your game changes until you " +
+        "install.", "the settings as they are, with the game closed")}</div></div>`;
     // the versions, newest first, and the picked one's pictures
     const sel = P.versions.find((v) => v.id === M.p2dVer) || null;
+    const allJobs = p2dJobs(it.id, P2D_KINDS);
+    const busyFor = (kind, vid) => [allJobs.running, ...allJobs.queued].some((j) => j && j.kind === kind && j.version === vid);
+    const chkLine = (v) => { const c = p2dCheck(v); return c ? `<div class="mdl-p2d-chk ${c.cls}">${esc(c.text)}</div>` : ""; };
     let versions;
     if (!P.versions.length) {
       versions = `<div class="hint">No 2D versions yet: Paint makes one.</div>`;
@@ -1447,22 +1558,50 @@
         (v.pictures.includes("battle.jpg") ? `<img alt="" loading="lazy" src="${p2dPic(it.id, v.id, "battle.jpg", v.at)}">` : `<div class="noimg"></div>`) +
         `<div><div class="vl"><b>${esc(v.id)}</b>${v.current ? ` <span title="The version Install puts in the game">★</span>` : ""}` +
         `${v.installed ? ` · <span class="ok">in the game</span>` : ""}</div>` +
-        `<div class="vs">${esc(p2dLine(v))}${v.words ? ` · “${esc(v.words)}”` : ""}</div>` +
+        `<div class="vs">${esc(p2dLine(v))}${v.words ? ` · “${esc(v.words)}”` : ""}${p2dFrom(v) ? ` · ${esc(p2dFrom(v))}` : ""}</div>` +
+        chkLine(v) +
         `<div class="vt">${fmtWhen(v.at, true)}${v.seconds ? ` · ${fmtDuration(v.seconds)}` : ""}</div></div></div>`).join("") + `</div>`;
       if (sel) {
         const pics = sel.pictures.filter((n) => n !== "identity.png" || !sel.painted);
+        const c = sel.check, checking = busyFor("model_2d_check", sel.id), touching = busyFor("model_2d_touchup", sel.id);
         versions += (pics.length ? `<div class="mdl-p2d-prev">${pics.map((n) => `<figure data-p2d="${n}" title="${esc(P2D_PICS[n].text)}">` +
           `<img alt="" loading="lazy" src="${p2dPic(it.id, sel.id, n, sel.at)}"><figcaption>${esc(sel.id)}: ${esc(P2D_PICS[n].cap)}</figcaption></figure>`).join("")}</div>`
           : `<div class="hint">${esc(sel.id)} has no pictures.</div>`) +
+          (c && c.problems && c.problems.length ? `<div class="hint">What the AI check found in ${esc(sel.id)}` +
+            `${c.ok ? " (remarks: none of them fails it)" : ""}:</div><ul class="mdl-p2d-found">` +
+            c.problems.map((p) => `<li>${esc(p)}</li>`).join("") + `</ul>` : "") +
+          (c && c.ok === null && c.reason ? `<div class="hint">The AI check of ${esc(sel.id)} couldn't run: ${esc(c.reason)}</div>` : "") +
           `<div class="row-btns tight"><button class="small primary" id="mdlP2dUse" ${sel.current ? "disabled" : ""} ` +
           `title="${sel.current ? "This is the ★ version already" : "Make this the version Install puts in the game. It doesn't change the game by itself."}">Use this version</button>` +
+          `<button class="small" id="mdlP2dShow" title="Show ${esc(sel.id)} on the model in the viewer on the left, as the game draws it: turn it, move it, zoom in, pick a pose, and touch it up from any angle">Show on the model</button>` +
+          `<button class="small" id="mdlP2dTouch" ${sel.painted && !touching ? "" : "disabled"} title="${esc(!sel.painted ? "Only painted versions can be touched up" : touching ? "It's being touched up already (see the queue)" : "Open one of its views, brush over what's wrong, and the AI repaints just that: a new version")}">Touch up</button>` +
+          `<button class="small" id="mdlP2dAiCheck" ${sel.painted && !checking ? "" : "disabled"} title="${esc(!sel.painted ? "Only painted versions are checked" : checking ? "Its AI check is in the queue already" : "The AI compares it with the original from the same angles and says if it found something made up")}">${c && c.ok !== null && c.ok !== undefined ? "AI check again" : "AI check"}</button>` +
           `<button class="small" id="mdlP2dViews" ${sel.view_pictures.length ? "" : "disabled"} title="Every view the AI painted, what it was shown next to what it painted">Every view</button>` +
           (sel.painted && sel.pictures.includes("identity.png") ? `<button class="small ghost" id="mdlP2dCheck" title="${esc(P2D_PICS["identity.png"].text)}">Check</button>` : "") + `</div>`;
       }
     }
-    versions += `<div class="ctl-help">${helpText("Each paint makes a version here (the ones painted outside the Studio show too). " +
-      "Click one to see its pictures, and a picture to see it bigger. Use this version marks it ★: the one Install puts in " +
-      "the game (nothing changes in the game until you install). Every view shows each angle the AI painted.", "")}</div>`;
+    versions += `<div class="ctl-help">${helpText("Each paint makes a version here (the ones painted outside the Studio show too), " +
+      "with what the AI check found. Click one to see its pictures, and a picture to see it bigger. Use this version marks it " +
+      "★: the one Install puts in the game (nothing changes in the game until you install). Touch up opens one of its views " +
+      "to brush over what's wrong; the AI repaints just that, as a new version. AI check runs the check on a version made " +
+      "before it existed, or again. Every view shows each angle the AI painted.", "")}</div>`;
+    // the paint's variants side by side: the picked version's paint, when it made more than one
+    const batch = sel && sel.batch ? P.versions.filter((v) => v.batch === sel.batch) : [];
+    let variantsBox = "";
+    if (batch.length > 1) {
+      batch.sort((a, b) => (a.variant || 0) - (b.variant || 0) || (a.try || 0) - (b.try || 0));
+      variantsBox = `<div class="subhead mdl-sub-row"><span>This paint's ${batch.length} versions</span>` +
+        `<button class="linkish" id="mdlP2dCompare" title="Each of them bigger, one under the other">Compare bigger</button></div>` +
+        `<div class="mdl-p2d-var">` + batch.map((v) => `<div class="vc ${v.id === sel.id ? "viewing" : ""}" data-v="${esc(v.id)}" title="${esc(p2dTip(v))}">` +
+          (v.pictures.includes("battle.jpg") ? `<img class="b" alt="" loading="lazy" src="${p2dPic(it.id, v.id, "battle.jpg", v.at)}">` : "") +
+          (v.pictures.includes("turntable.jpg") ? `<img class="t" alt="" loading="lazy" src="${p2dPic(it.id, v.id, "turntable.jpg", v.at)}">` : "") +
+          `<div class="vl"><b>${esc(v.id)}</b>${v.current ? " ★" : ""}${v.installed ? ` · <span class="ok">in the game</span>` : ""}</div>` +
+          `<div class="vt hint">${esc(p2dFrom(v))}</div>` + chkLine(v) +
+          `<button class="small ${v.current ? "" : "primary"}" data-use="${esc(v.id)}" ${v.current ? "disabled" : ""}>${v.current ? "★ in use" : "Use this version"}</button></div>`).join("") +
+        `</div><div class="ctl-help">${helpText("One paint with Variants above 1 makes several versions, each from a different " +
+          "random start; a repaint is one painted again because the AI check failed the one before it. Each shows the " +
+          "battle's view and all round. Use this version marks the one you like ★: the one Install puts in the game.", "")}</div>`;
+    }
     // in the game
     const I = P.installed, cur = P.versions.find((v) => v.current) || null;
     const iv = I && P.versions.find((v) => v.id === I.version);
@@ -1496,9 +1635,9 @@
         "out exactly what Install put in, nothing else. Nothing goes in by itself.",
         "install a version you like; uninstall to compare with the original in a battle")}</div></div>`;
     const html = head + `<div class="subhead mdl-sub-row"><span>Settings for ${esc(it.title)}</span>` +
-      `<button class="linkish" id="mdlP2dReset" ${allDefault ? "disabled" : ""} title="Look, repaint strength, your words and ` +
-      `painting size back to their defaults">Back to defaults</button></div>` +
-      look + strength + words + size + paint + `<div class="subhead">Versions</div>` + versions +
+      `<button class="linkish" id="mdlP2dReset" ${allDefault ? "disabled" : ""} title="Look, repaint strength, your words, ` +
+      `painting size, variants and the automatic repaint back to their defaults">Back to defaults</button></div>` +
+      look + strength + words + size + variants + retry + paint + variantsBox + `<div class="subhead">Versions</div>` + versions +
       `<div class="subhead">In your game</div>` + inst;
     fill(box, html, (el) => {
       el.querySelector("#mdlP2dLook").onchange = (e) => {
@@ -1523,14 +1662,23 @@
         else if (M.p2dStale) renderP2d();
       };
       el.querySelector("#mdlP2dSize").onchange = (e) => saveP2d({ size: e.target.value ? Number(e.target.value) : null });
+      el.querySelector("#mdlP2dVariants").onchange = (e) => saveP2d({ variants: e.target.value ? Number(e.target.value) : 1 });
+      el.querySelector("#mdlP2dRetry").onchange = (e) => saveP2d({ retry: e.target.checked });
       el.querySelector("#mdlP2dReset").onclick = () => saveP2d({ reset: true });
       el.querySelector("#mdlP2dPaint").onclick = paintP2d;
       for (const r of el.querySelectorAll("[data-v]")) r.onclick = () => { M.p2dVer = r.dataset.v; renderP2d(); };
+      for (const b of el.querySelectorAll("[data-use]")) b.onclick = (e) => { e.stopPropagation(); useP2d(b.dataset.use); };
       for (const f of el.querySelectorAll("[data-p2d]")) f.onclick = () => showP2dPicture(f.dataset.p2d);
       const use = el.querySelector("#mdlP2dUse"), views = el.querySelector("#mdlP2dViews"), check = el.querySelector("#mdlP2dCheck");
-      if (use) use.onclick = useP2d;
+      if (use) use.onclick = () => useP2d();
       if (views) views.onclick = showP2dViews;
       if (check) check.onclick = () => showP2dPicture("identity.png");
+      const touch = el.querySelector("#mdlP2dTouch"), aiCheck = el.querySelector("#mdlP2dAiCheck"), cmp = el.querySelector("#mdlP2dCompare");
+      if (touch) touch.onclick = () => openTouch(M.p2dVer);
+      const show = el.querySelector("#mdlP2dShow");
+      if (show) show.onclick = () => showOnModel(M.p2dVer);
+      if (aiCheck) aiCheck.onclick = checkP2d;
+      if (cmp) cmp.onclick = compareP2d;
       el.querySelector("#mdlP2dInstall").onclick = installP2d;
       el.querySelector("#mdlP2dUninstall").onclick = uninstallP2d;
     });
@@ -1541,11 +1689,14 @@
   function p2dProgress() {
     const el = $("#mdlP2d #mdlP2dProg"), it = M.item;
     if (!el || !it) return;
-    const j = p2dJobs(it.id);
+    const j = p2dJobs(it.id, P2D_KINDS);
+    const what = { model_2d: "Painting", model_2d_check: "AI check", model_2d_touchup: "Touching up" };
+    const q = j.queued[0];
     const html = j.running
-      ? `Painting: ${esc(j.running.stage)}<div class="mdl-bar"><i style="width:${Math.round(j.running.progress * 100)}%"></i></div>`
-      : j.queued.length ? `<span class="hint">Queued: it starts when the jobs before it are done, then takes about ` +
-        `${fmtDuration(j.queued[0].est || 0)}.</span>` : "";
+      ? `${what[j.running.kind] || "Painting"}${j.running.version && j.running.kind !== "model_2d" ? ` ${esc(j.running.version)}` : ""}: ` +
+        `${esc(j.running.stage)}<div class="mdl-bar"><i style="width:${Math.round(j.running.progress * 100)}%"></i></div>`
+      : q ? `<span class="hint">Queued (${esc((what[q.kind] || "painting").toLowerCase())}${j.queued.length > 1 ? ` and ${j.queued.length - 1} more` : ""}): ` +
+        `it starts when the jobs before it are done, then takes about ${fmtDuration(q.est || 0)}.</span>` : "";
     if (el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; }
   }
 
@@ -1572,13 +1723,67 @@
       loadP2d();
       return;
     }
-    toast(r.added ? `${it.title}: painting in 2D style queued (about ${fmtDuration(r.est || 0)})` : "Already queued");
+    toast(r.added ? `${it.title}: painting in 2D style queued${r.variants > 1 ? `, ${r.variants} versions` : ""} ` +
+      `(about ${fmtDuration(r.est || 0)})` : "Already queued");
     renderP2d();
   }
 
-  async function useP2d() {
+  // a 2D version on the model in the viewer (Split: the original on the left)
+  function showOnModel(vid) {
+    if (!vid) return;
+    M.v2d = vid;
+    if (M.mode === "orig") M.mode = "split";
+    setPref("models.mode", M.mode);
+    renderModes();
+    if (!M.v2dList.some((v) => v.id === vid)) loadViewer2d(); else render2dBar();
+    draw();
+    requestRender(false);
+  }
+
+  // queue the AI check of the version shown
+  async function checkP2d() {
     const it = M.item, v = M.p2d && M.p2d.versions.find((x) => x.id === M.p2dVer);
     if (!it || !v) return;
+    let r;
+    try {
+      r = await api(`${API}/paint2d/check`, { body: { id: it.id, version: v.id } });
+    } catch (e) { await tell(e.message); return; }
+    toast(r.added ? `${it.title} ${v.id}: the AI check is queued (about ${fmtDuration(r.est || 0)})` : "Already queued");
+    renderP2d();
+  }
+
+  // the picked version's paint, each version bigger, one under the other
+  function compareP2d() {
+    const it = M.item, P = M.p2d, sel = P && P.versions.find((x) => x.id === M.p2dVer);
+    if (!it || !sel || !sel.batch) return;
+    const vs = P.versions.filter((v) => v.batch === sel.batch)
+      .sort((a, b) => (a.variant || 0) - (b.variant || 0) || (a.try || 0) - (b.try || 0));
+    openModal(`<div class="modal-head"><h2>${esc(it.title)} · one paint's ${vs.length} versions</h2>` +
+      `<button class="ghost small" data-a="close">Close</button></div><p class="hint">Each version all round (left) and ` +
+      `from the battle's camera, as the game draws it and painted (right), with what the AI check said. Click a picture ` +
+      `to open it on its own.</p>` + vs.map((v) => {
+        const c = p2dCheck(v);
+        return `<div class="mdl-cmp-row"><div class="mdl-cmp-head"><b>${esc(v.id)}</b>${v.current ? " ★" : ""}` +
+          `<span class="hint">${esc(p2dFrom(v))}</span>${c ? `<span class="mdl-p2d-chk ${c.cls}">${esc(c.text)}</span>` : ""}` +
+          `<button class="small ${v.current ? "" : "primary"}" data-cmp-use="${esc(v.id)}" ${v.current ? "disabled" : ""}>` +
+          `${v.current ? "★ in use" : "Use this version"}</button></div><div class="mdl-cmp-pics">` +
+          ["turntable.jpg", "battle.jpg"].filter((n) => v.pictures.includes(n)).map((n) =>
+            `<a href="${p2dPic(it.id, v.id, n, v.at)}" target="_blank" rel="noopener"><img alt="" loading="lazy" src="${p2dPic(it.id, v.id, n, v.at)}"></a>`).join("") +
+          `</div></div>`;
+      }).join(""));
+    for (const b of document.querySelectorAll(".mdl-sheet [data-cmp-use]")) {
+      b.onclick = async () => {
+        const sheet = b.closest(".mdl-sheet");
+        await useP2d(b.dataset.cmpUse);
+        sheet.querySelector('[data-a="close"]').click();
+      };
+    }
+  }
+
+  async function useP2d(vid = null) {
+    const it = M.item, v = M.p2d && M.p2d.versions.find((x) => x.id === (vid || M.p2dVer));
+    if (!it || !v) return;
+    if (vid) M.p2dVer = vid;
     try {
       setP2d(await api(`${API}/paint2d/use`, { body: { id: it.id, version: v.id } }));
       toast(M.p2d.installed && M.p2d.installed.version !== v.id
@@ -1655,6 +1860,238 @@
       `the left what the AI was shown, on the right what it painted. The first are from the battle's own cameras, the rest ` +
       `all round and close up; each later one only repaints what the views before it saw less well.</p>` +
       `<div class="mdl-p2d-views">${v.view_pictures.map((n) => `<img alt="" loading="lazy" src="${p2dPic(it.id, v.id, n, v.at)}">`).join("")}</div>`);
+  }
+
+  /* ---------------------------------------------------------- touch up (a 2D version) */
+
+  // The field page's Touch up for a 2D version: one of its views (the battle's camera, all round, the head) drawn from
+  // its painted texture, the user brushes over what's wrong (optionally saying what should be there), and the AI
+  // repaints just that; the repainted parts go back onto the painted texture as a new version (models.py
+  // run_p2d_touchup). Left-drag paints, right-drag or the Eraser rubs out, Shift+drag moves the picture, the wheel zooms.
+  const p2dViewPic = (id, vid, key, t) =>
+    `${API}/paint2d/${encodeURIComponent(id)}/${encodeURIComponent(vid)}/view/${key}.jpg?t=${Math.round(t || 0)}`;
+
+  async function openTouch(vid, startKey = null) {
+    const it = M.item, P = M.p2d, v = P && P.versions.find((x) => x.id === vid);
+    if (!it || !v || !v.painted) return;
+    let info;
+    try { info = await api(`${API}/paint2d/${encodeURIComponent(it.id)}/${encodeURIComponent(v.id)}/views`); } catch (e) { toast(e.message); return; }
+    const prefs = M.touchPrefs || {};
+    const T = { id: it.id, title: it.title, vid: v.id, at: v.at, views: info.views, view: null, img: null, mask: null,
+                mctx: null, size: prefs.size || 24, erase: false, strength: info.strength, hint: "", painted: false,
+                zoom: 1, panX: 0, panY: 0, stroke: null, drag: null, cursor: null };
+    const range = P.touch_strength_range || [0.2, 0.9];
+    const inGame = info.installed;
+    const wrap = document.createElement("div");
+    wrap.className = "modal dialog-modal mdl-sheet mdl-touch";
+    wrap.innerHTML = `<div class="modal-card"><div class="modal-head"><h2>${esc(it.title)} · 2D ${esc(v.id)}: touch up</h2>` +
+      `<button class="ghost small" data-a="close">Close</button></div>` +
+      `<p class="hint" style="margin:0">Pick a view, brush over what's wrong (an extra shoulder pad, a smear, a tongue on a ` +
+      `face), and say what should be there if you like. The AI repaints just the marked parts in this version's look and ` +
+      `words, starting from the model as the game colours it there, and they go back onto the painted model as a new ` +
+      `version; ${esc(v.id)} stays as it is.` +
+      (inGame === v.id ? ` <span class="warn">${esc(v.id)} is in your game: the new version isn't, until you install it.</span>`
+        : inGame ? ` (Your game has ${esc(inGame)}; the new version isn't in it until you install it.)` : "") + `</p>` +
+      `<div class="mdl-tu-views">${T.views.map((x) => `<button data-k="${esc(x.key)}" title="${esc(x.label)}">` +
+        `<img alt="" loading="lazy" src="${p2dViewPic(T.id, T.vid, x.key, T.at)}"><span>${esc(x.label)}</span></button>`).join("")}</div>` +
+      `<div class="mdl-tu-stage"><canvas></canvas><div class="hint" id="mdlTuLoading">Drawing the view…</div></div>` +
+      `<div class="mdl-tu-bar"><b title="Paint over what doesn't look right and the AI repaints just that. Right-drag or the ` +
+      `Eraser rubs marks out; Shift+drag moves the picture and the wheel zooms; Esc closes.">Touch up</b>` +
+      `<span class="seg small"><button data-tool="brush">Brush</button><button data-tool="erase">Eraser</button></span>` +
+      `<label title="How wide the brush is. Bigger: quicker over large areas. Smaller: for fine details like an eye or a strap. Recommended: about 24.">` +
+      `Size <input type="range" data-k="size" min="4" max="128" step="1"></label>` +
+      `<input type="text" class="mdl-tu-hint" maxlength="200" placeholder="What should be there? (optional)" ` +
+      `title="Optional: what the marked parts should show, e.g. &quot;a bare shoulder&quot; or &quot;a closed mouth, green scales&quot;. ` +
+      `Leave it empty to just clean them up in this version's own style. The AI starts from the model as the game colours ` +
+      `it there, and the game's own colours are put back afterwards, as in the paint.">` +
+      `<label title="How much the AI may change the marked parts. Higher: it redraws them more freely (0.7–0.8 to replace ` +
+      `something with what you typed). Lower: it stays closer to what's there and only tidies it up. Recommended: ` +
+      `${Number(info.strength).toFixed(2)}, this version's own strength, to clean something up.">` +
+      `Change <input type="range" data-k="strength" min="${range[0]}" max="${range[1]}" step="0.05"> <b class="mdl-tu-pct"></b></label>` +
+      `<button class="small ghost" data-a="clear" title="Rub out all the marks">Clear</button>` +
+      `<button class="small primary" data-a="go" title="Repaint only the marked parts, with this version's look and words. ` +
+      `It goes in the Studio's queue (about ${fmtDuration(info.estimate || 90)}, the AI check included) and makes a new version; ` +
+      `the game isn't changed.">Repaint marked areas</button></div></div>`;
+    const stage = wrap.querySelector(".mdl-tu-stage"), canvas = stage.querySelector("canvas"), ctx = canvas.getContext("2d");
+    const bar = wrap.querySelector(".mdl-tu-bar");
+
+    function fit() {
+      if (!T.img) return;
+      const W = stage.clientWidth, H = stage.clientHeight;
+      T.zoom = Math.min(W / T.img.naturalWidth, H / T.img.naturalHeight);
+      T.panX = (W - T.img.naturalWidth * T.zoom) / 2;
+      T.panY = (H - T.img.naturalHeight * T.zoom) / 2;
+    }
+    function draw() {
+      const dpr = window.devicePixelRatio || 1, W = stage.clientWidth, H = stage.clientHeight;
+      if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
+        canvas.width = Math.round(W * dpr);
+        canvas.height = Math.round(H * dpr);
+      }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, W, H);
+      if (!T.img) return;
+      ctx.setTransform(dpr * T.zoom, 0, 0, dpr * T.zoom, dpr * T.panX, dpr * T.panY);
+      ctx.imageSmoothingEnabled = T.zoom < 2;
+      ctx.drawImage(T.img, 0, 0);
+      ctx.globalAlpha = 0.5;
+      ctx.drawImage(T.mask, 0, 0);
+      ctx.globalAlpha = 1;
+      if (T.cursor) {
+        ctx.beginPath();
+        ctx.arc(T.cursor.x, T.cursor.y, T.size / 2, 0, Math.PI * 2);
+        ctx.lineWidth = 1.5 / T.zoom;
+        ctx.strokeStyle = T.erase ? "#ffffff" : "#ff5050";
+        ctx.stroke();
+      }
+    }
+    function renderBar() {
+      for (const b of bar.querySelectorAll("[data-tool]")) b.classList.toggle("on", (b.dataset.tool === "erase") === T.erase);
+      for (const r of bar.querySelectorAll("input[type=range]")) if (document.activeElement !== r) r.value = T[r.dataset.k];
+      bar.querySelector(".mdl-tu-pct").textContent = Number(T.strength).toFixed(2);
+      bar.querySelector('[data-a="go"]').disabled = !T.painted || !T.img;
+      for (const b of wrap.querySelectorAll(".mdl-tu-views button")) b.classList.toggle("on", !!T.view && b.dataset.k === T.view.key);
+    }
+    function pick(view) {
+      T.view = view;
+      T.img = null;
+      T.painted = false;
+      wrap.querySelector("#mdlTuLoading").hidden = false;
+      renderBar();
+      draw();
+      const img = new Image();
+      img.onload = () => {
+        if (T.view !== view) return;
+        T.img = img;
+        T.mask = document.createElement("canvas");
+        T.mask.width = img.naturalWidth;
+        T.mask.height = img.naturalHeight;
+        T.mctx = T.mask.getContext("2d");
+        wrap.querySelector("#mdlTuLoading").hidden = true;
+        fit();
+        renderBar();
+        draw();
+      };
+      img.onerror = () => { wrap.querySelector("#mdlTuLoading").textContent = "This view couldn't be drawn."; };
+      img.src = p2dViewPic(T.id, T.vid, view.key, T.at);
+    }
+    const point = (e) => {
+      const r = canvas.getBoundingClientRect();
+      return { x: (e.clientX - r.left - T.panX) / T.zoom, y: (e.clientY - r.top - T.panY) / T.zoom };
+    };
+    function stroke(a, b) {
+      const c = T.mctx;
+      c.save();
+      c.globalCompositeOperation = T.stroke && T.stroke.erase ? "destination-out" : "source-over";
+      c.strokeStyle = "#ff3c3c";
+      c.lineWidth = T.size;
+      c.lineCap = c.lineJoin = "round";
+      c.beginPath();
+      c.moveTo(a.x, a.y);
+      c.lineTo(b.x + 0.01, b.y);
+      c.stroke();
+      c.restore();
+      if (!(T.stroke && T.stroke.erase)) T.painted = true;
+      draw();
+    }
+    canvas.addEventListener("mousedown", (e) => {
+      if (!T.img) return;
+      e.preventDefault();
+      if (e.shiftKey || e.button === 1) { T.drag = { x: e.clientX, y: e.clientY, px: T.panX, py: T.panY }; return; }
+      if (e.button !== 0 && e.button !== 2) return;
+      const p = point(e);
+      T.stroke = { last: p, erase: T.erase || e.altKey || e.button === 2 };
+      stroke(p, p);
+    });
+    const move = (e) => {
+      if (T.drag) {
+        T.panX = T.drag.px + (e.clientX - T.drag.x);
+        T.panY = T.drag.py + (e.clientY - T.drag.y);
+        draw();
+        return;
+      }
+      if (!T.img) return;
+      const p = point(e);
+      T.cursor = e.target === canvas || T.stroke ? p : null;
+      if (T.stroke) { stroke(T.stroke.last, p); T.stroke.last = p; return; }
+      draw();
+    };
+    const up = () => {
+      if (T.stroke) { T.stroke = null; renderBar(); }
+      T.drag = null;
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    canvas.addEventListener("mouseleave", () => { if (!T.stroke) { T.cursor = null; draw(); } });
+    canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+    canvas.addEventListener("wheel", (e) => {
+      if (!T.img) return;
+      e.preventDefault();
+      const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+      const base = Math.min(stage.clientWidth / T.img.naturalWidth, stage.clientHeight / T.img.naturalHeight);
+      const z = Math.max(base * 0.5, Math.min(base * 12, T.zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+      T.panX = mx - (mx - T.panX) * (z / T.zoom);
+      T.panY = my - (my - T.panY) * (z / T.zoom);
+      T.zoom = z;
+      draw();
+    }, { passive: false });
+    const onResize = () => draw();
+    window.addEventListener("resize", onResize);
+
+    for (const b of bar.querySelectorAll("[data-tool]")) b.onclick = () => { T.erase = b.dataset.tool === "erase"; renderBar(); };
+    for (const r of bar.querySelectorAll("input[type=range]")) {
+      r.oninput = () => { T[r.dataset.k] = Number(r.value); renderBar(); draw(); };
+    }
+    bar.querySelector(".mdl-tu-hint").oninput = (e) => { T.hint = e.target.value; };
+    bar.querySelector('[data-a="clear"]').onclick = () => {
+      if (T.mctx) T.mctx.clearRect(0, 0, T.mask.width, T.mask.height);
+      T.painted = false;
+      renderBar();
+      draw();
+    };
+    for (const b of wrap.querySelectorAll(".mdl-tu-views button")) {
+      b.onclick = async () => {
+        const view = T.views.find((x) => x.key === b.dataset.k);
+        if (!view || view === T.view) return;
+        if (T.painted && !await ask(`Switch to ${view.label}? The marks on ${T.view.label} are rubbed out (one view is touched up at a time).`, "Switch")) return;
+        pick(view);
+      };
+    }
+    const close = () => {
+      M.touchPrefs = { size: T.size };
+      window.removeEventListener("keydown", keys, true);
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      window.removeEventListener("resize", onResize);
+      wrap.remove();
+    };
+    const keys = (e) => {
+      if (e.key !== "Escape" || document.querySelector(".dialog-modal:not(.mdl-touch)")) return;
+      e.stopPropagation();
+      e.preventDefault();
+      close();
+    };
+    wrap.querySelector('[data-a="close"]').onclick = close;
+    bar.querySelector('[data-a="go"]').onclick = async () => {
+      if (!T.painted || !T.img) return;
+      const go = bar.querySelector('[data-a="go"]');
+      go.disabled = true;
+      try {
+        const r = await api(`${API}/paint2d/touchup`, { body: { id: T.id, version: T.vid, view: T.view.key,
+          mask: T.mask.toDataURL("image/png"), hint: T.hint.trim(), strength: T.strength } });
+        if (!r.added) { toast(`${T.vid} is already being touched up in this view. When that's done, touch up the new version it makes.`); go.disabled = false; return; }
+        toast(`${T.title} ${T.vid}: touching up ${T.view.label}, in the queue (about ${fmtDuration(r.est || 0)}). The result is a new version.`, 7000);
+        close();
+        renderP2d();
+      } catch (e) {
+        await tell(e.message);
+        go.disabled = false;
+      }
+    };
+    window.addEventListener("keydown", keys, true);
+    document.body.appendChild(wrap);
+    renderBar();
+    pick(T.views.find((x) => x.key === startKey) || T.views.find((x) => x.key === "yaw000") || T.views[0]);
   }
 
   // is the game running (every 4 s while a battle model is shown): the card's warning, the Paint button's tip
@@ -1816,6 +2253,7 @@
 
   function pickVersion(id) {
     M.ver = id;
+    if (M.v2d) { M.v2d = null; render2dBar(); }
     if (M.mode === "orig") M.mode = "new";
     setPref("models.mode", M.mode);
     renderModes();
@@ -1884,6 +2322,74 @@
 
   const R = { busy: false, want: null, shown: {} };  // shown: {orig|new: {url, bmp}}
 
+  // what the viewer's Painted side shows: a 2D version ("2d:v10") or the Paint card's version
+  const shownVer = () => (M.v2d ? `2d:${M.v2d}` : M.ver);
+
+  // the model's 2D versions (battle: Paint in 2D style's; field: its 2D builds) and a battle model's poses
+  async function loadViewer2d() {
+    const it = M.item;
+    if (!it || (it.kind !== "battle" && it.kind !== "field")) { M.v2dList = []; M.poses = []; render2dBar(); return; }
+    const seq = ++M.v2dSeq;
+    let r;
+    try { r = await api(`${API}/viewer2d/${it.kind}/${encodeURIComponent(it.id)}`); } catch (e) { r = { versions: [], poses: [] }; }
+    if (seq !== M.v2dSeq || !M.item || M.item.id !== it.id) return;
+    M.v2dList = r.versions || [];
+    M.poses = r.poses || [];
+    if (M.v2d && !M.v2dList.some((v) => v.id === M.v2d)) M.v2d = null;
+    if (M.pose && !M.poses.some((p) => p.animation === M.pose)) M.pose = 0;
+    render2dBar();
+  }
+
+  // the viewer's 2D picker: a 2D version on the model, the pose, and touching up from this angle
+  function render2dBar() {
+    const box = $("#mdl2dBox"), it = M.item;
+    if (!box) return;
+    if (!it || !M.v2dList.length) { box.innerHTML = ""; box.dataset.html = ""; return; }
+    const opts = [`<option value="">2D: none${it.kind === "battle" ? " (the Paint card's)" : ""}</option>`]
+      .concat([...M.v2dList].reverse().map((v) => `<option value="${esc(v.id)}" ${M.v2d === v.id ? "selected" : ""}>` +
+        `2D ${esc(v.id)}${v.painted ? "" : " (not painted)"}</option>`));
+    const poses = it.kind === "battle" && M.poses.length
+      ? `<select id="mdlPose" title="The model's pose: the first frame of one of its animations. Parts that move on their own (Midgar Zolom's tongue) show in some.">` +
+        `<option value="0">pose: as painted</option>` + M.poses.map((p) => `<option value="${p.animation}" ${M.pose === p.animation ? "selected" : ""}>` +
+          `pose: ${esc(p.label)}</option>`).join("") + `</select>` : "";
+    const round = it.kind === "field" && M.v2d
+      ? `<label class="check" title="Field models drawn rounded, as the game rounds them: each triangle split in four and curved along the surface (sharp edges stay sharp). Off: the model's own flat triangles."><input type="checkbox" id="mdlRound2d" ${M.round2d ? "checked" : ""}> Rounded</label>` : "";
+    const touch = it.kind === "battle" && M.v2d
+      ? `<button class="small" id="mdlTouchHere" title="Open the touch-up on ${esc(M.v2d)} from this angle, zoom and pose: brush over what's wrong and the AI repaints just that, as a new version">Touch up this view</button>` : "";
+    const html = `<select id="mdl2dPick" title="Show a version painted in 2D style on the model, as the game draws it: flat light, the painting's see-through parts cut out. Painted and Split then show it.">${opts.join("")}</select>${poses}${round}${touch}`;
+    fill(box, html, (el) => {
+      el.querySelector("#mdl2dPick").onchange = (e) => {
+        M.v2d = e.target.value || null;
+        if (M.v2d && M.mode === "orig") { M.mode = "split"; setPref("models.mode", M.mode); renderModes(); }
+        render2dBar();
+        draw();
+        requestRender(false);
+      };
+      const ps = el.querySelector("#mdlPose");
+      if (ps) ps.onchange = (e) => { M.pose = Number(e.target.value) || 0; R.shown = {}; draw(); requestRender(false); };
+      const rd = el.querySelector("#mdlRound2d");
+      if (rd) rd.onchange = (e) => { M.round2d = e.target.checked; setPref("models.round2d", M.round2d ? "1" : "0"); requestRender(false); };
+      const t = el.querySelector("#mdlTouchHere");
+      if (t) t.onclick = touchFromViewer;
+    });
+  }
+
+  // the touch-up from the viewer's angle: the camera goes to the server, which stores it with the version's views
+  async function touchFromViewer() {
+    const it = M.item, vid = M.v2d;
+    if (!it || it.kind !== "battle" || !vid) return;
+    if (!M.p2d || M.p2d.id !== it.id) await loadP2d();
+    const v = M.p2d && M.p2d.versions.find((x) => x.id === vid);
+    if (!v || !v.painted) { toast("Only painted 2D versions can be touched up."); return; }
+    let r;
+    try {
+      r = await api(`${API}/paint2d/${encodeURIComponent(it.id)}/${encodeURIComponent(vid)}/views/custom`, { body: {
+        yaw: M.yaw, pitch: M.pitch, zoom: M.zoom, panx: M.panX, pany: M.panY, pose: M.pose,
+        aspect: canvas.width / Math.max(1, canvas.height) } });
+    } catch (e) { toast(e.message); return; }
+    openTouch(vid, r.key);
+  }
+
   function needed() {
     return M.mode === "split" ? ["orig", "new"] : [M.mode];
   }
@@ -1919,10 +2425,12 @@
     R.busy = true;
     try {
       const size = renderSize(fast);
-      const params = { cam: M.cam, yaw: M.yaw.toFixed(1), pitch: M.pitch.toFixed(1), zoom: M.zoom.toFixed(3), w: size.w, h: size.h };
+      const params = { cam: M.cam, yaw: M.yaw.toFixed(1), pitch: M.pitch.toFixed(1), zoom: M.zoom.toFixed(3), w: size.w, h: size.h,
+        panx: M.panX.toFixed(4), pany: M.panY.toFixed(4), ...(it.kind === "battle" && M.pose ? { pose: M.pose } : {}),
+        ...(it.kind === "field" && M.v2d ? { round: M.round2d ? "1" : "0" } : {}) };
       const tasks = [];
       for (const which of needed()) {
-        const ver = which === "orig" ? "orig" : which === "syw" ? "syw" : M.ver;
+        const ver = which === "orig" ? "orig" : which === "syw" ? "syw" : shownVer();
         if (!ver) continue;
         const url = `${API}/view/${it.kind}/${encodeURIComponent(it.id)}.jpg?` + new URLSearchParams({ ver, ...params });
         if (R.shown[which] && R.shown[which].url === url) continue;
@@ -1943,7 +2451,7 @@
   function shownFor(which) {
     const s = R.shown[which], it = M.item;
     if (!s || !it || s.key !== `${it.kind}/${it.id}`) return null;
-    if (which === "new" && s.ver !== M.ver) return null;
+    if (which === "new" && s.ver !== shownVer()) return null;
     return s.bmp;
   }
 
@@ -1955,7 +2463,7 @@
     const bL = $("#mdlBadgeL"), bR = $("#mdlBadgeR"), b = $("#mdlBadge");
     bL.hidden = bR.hidden = b.hidden = true;
     if (!it) { empty.textContent = M.id ? "Loading…" : "Pick a model on the left."; return; }
-    const v = viewed();
+    const v = M.v2d ? { v2d: M.v2d } : viewed();
     const orig = shownFor("orig"), neu = shownFor("new");
     let msg = "";
     if ((M.mode === "new" || M.mode === "split") && !v) {
@@ -1978,7 +2486,7 @@
     } else if (M.mode === "new") {
       if (neu) ctx.drawImage(neu, 0, 0, W, H);
       b.hidden = false;
-      b.innerHTML = `Painted · <b>${esc(verLabel(v))}</b>`;
+      b.innerHTML = v.v2d ? `2D · <b>${esc(v.v2d)}</b> · as the game draws it` : `Painted · <b>${esc(verLabel(v))}</b>`;
     } else {
       const x = Math.round(W * M.split);
       if (orig) ctx.drawImage(orig, 0, 0, W, H);
@@ -1994,7 +2502,7 @@
       ctx.fillRect(x - 1, 0, 2, H);
       bL.hidden = bR.hidden = false;
       bL.innerHTML = "<b>Original</b>";
-      bR.innerHTML = `<b>Painted</b> · ${esc(verLabel(v))}`;
+      bR.innerHTML = v.v2d ? `<b>2D</b> · ${esc(v.v2d)}` : `<b>Painted</b> · ${esc(verLabel(v))}`;
     }
     const note = $("#mdlNote");
     note.hidden = !msg;
@@ -2020,19 +2528,24 @@
     M.yaw = 0;
     M.pitch = 0;
     M.zoom = 1;
+    M.panX = 0;
+    M.panY = 0;
     if (render) requestRender(false);
   }
 
   // drag: turn (or move Split's line when grabbed near it); wheel: zoom
   let drag = null;
   const nearSplit = (e) => {
-    if (M.mode !== "split" || !viewed()) return false;
+    if (M.mode !== "split" || !(M.v2d || viewed())) return false;
     const r = vp.getBoundingClientRect();
     return Math.abs(e.clientX - r.left - r.width * M.split) < 8;
   };
+  vp.addEventListener("contextmenu", (e) => e.preventDefault());  // right-drag moves the model
   vp.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0 || !M.item) return;
-    drag = { x: e.clientX, y: e.clientY, split: nearSplit(e), yaw: M.yaw, pitch: M.pitch };
+    if ((e.button !== 0 && e.button !== 2) || !M.item) return;
+    const pan = e.button === 2 || e.shiftKey;
+    drag = { x: e.clientX, y: e.clientY, split: !pan && nearSplit(e), yaw: M.yaw, pitch: M.pitch, pan,
+             px: M.panX, py: M.panY, h: vp.getBoundingClientRect().height || 1 };
     vp.setPointerCapture(e.pointerId);
     vp.classList.add("dragging");
   });
@@ -2042,6 +2555,12 @@
       const r = vp.getBoundingClientRect();
       M.split = Math.min(0.98, Math.max(0.02, (e.clientX - r.left) / r.width));
       draw();
+      return;
+    }
+    if (drag.pan) {
+      M.panX = drag.px - (e.clientX - drag.x) / drag.h;
+      M.panY = drag.py - (e.clientY - drag.y) / drag.h;
+      requestRender(true);
       return;
     }
     M.yaw = drag.yaw - (e.clientX - drag.x) * 0.3;
@@ -2109,20 +2628,26 @@
     renderBattleLook();
     renderP2d();
   }, 1000);
-  // a 2D paint finished: say so, and show the version it made
+  // a 2D paint, AI check or touch-up finished: say so, and show the version it made (or checked)
   document.addEventListener("studio:jobs", (e) => {
-    const ours = e.detail.filter((r) => r.kind === "model_2d");
+    const ours = e.detail.filter((r) => P2D_KINDS.includes(r.kind));
     if (!ours.length) return;
+    const failed = { model_2d: "the 2D painting wasn't made.", model_2d_check: "the AI check didn't run.",
+                     model_2d_touchup: "the touch-up wasn't made." };
     for (const r of ours) {
-      if (r.ok) toast(`${r.name}: ${r.message || "painted in 2D style"}`, 6000);
-      else if (r.message && r.message !== "cancelled") toast(`${r.name}: the 2D painting wasn't made. ${r.message}`, 10000);
+      if (r.ok) toast(`${r.name}: ${r.message || "done"}`, 8000);
+      else if (r.message && r.message !== "cancelled") toast(`${r.name}: ${failed[r.kind]} ${r.message}`, 10000);
+      else if (r.message === "cancelled" && r.kind === "model_2d") toast(`${r.name}: cancelled; the versions finished before it are kept`, 6000);
     }
     reloadListSoon();
     const it = M.item;
     if (it && it.kind === "battle" && ours.some((r) => r.name === it.job_name)) {
       const made = ours.filter((r) => r.name === it.job_name && r.ok && r.version).pop();
       if (made) M.p2dVer = made.version;
+      if (made && M.v2d && made.kind !== "model_2d_check") M.v2d = made.version;  // the viewer follows the new one
       loadP2d();
+      loadViewer2d();
+      if (M.v2d) requestRender(false);
     }
   });
   // a battle look build finished: say so, and show what it made
