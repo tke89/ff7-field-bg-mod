@@ -42,12 +42,15 @@ function toast(msg, ms = 4500) {
 // Dialogs in the page itself: some browsers block the native confirm, prompt and alert boxes (the Claude app's
 // built-in browser answers every confirm box with Cancel). ask -> true/false, askText -> the text or null, tell ->
 // when closed.
-function dialog(message, { input = null, ok = "OK", cancel = "Cancel" } = {}) {
+// checks: [{key, label, checked}] adds checkboxes; OK then resolves to {key: checked} instead of true.
+function dialog(message, { input = null, ok = "OK", cancel = "Cancel", checks = null } = {}) {
   return new Promise((resolve) => {
     const wrap = document.createElement("div");
     wrap.className = "modal dialog-modal";
     wrap.innerHTML = `<div class="modal-card dialog"><p class="dialog-msg"></p>` +
       (input !== null ? `<input type="text" class="dialog-input">` : "") +
+      (checks ? `<div class="dialog-checks">${checks.map((c, i) => `<label class="check"><input type="checkbox" data-i="${i}"` +
+        `${c.checked ? " checked" : ""}> ${esc(c.label)}</label>`).join("")}</div>` : "") +
       `<div class="row-btns tight">${cancel ? `<button class="ghost" data-r="no">${esc(cancel)}</button>` : ""}` +
       `<button class="primary" data-r="yes">${esc(ok)}</button></div></div>`;
     wrap.querySelector(".dialog-msg").textContent = message;
@@ -55,7 +58,8 @@ function dialog(message, { input = null, ok = "OK", cancel = "Cancel" } = {}) {
     if (field) field.value = input;
     const no = input !== null ? null : false;
     const done = (value) => { window.removeEventListener("keydown", keys, true); wrap.remove(); resolve(value); };
-    const yes = () => done(field ? field.value : true);
+    const yes = () => done(field ? field.value : checks
+      ? Object.fromEntries(checks.map((c, i) => [c.key, wrap.querySelector(`[data-i="${i}"]`).checked])) : true);
     const keys = (e) => {
       if (e.key === "Escape") { e.stopPropagation(); e.preventDefault(); done(no); }
       else if (e.key === "Enter") { e.stopPropagation(); e.preventDefault(); yes(); }
@@ -179,10 +183,11 @@ const SL = {
     by: Object.fromEntries(["qwen21", "flux3k", "mageflow", "fibo2"].map((f) => [f, {
       what: "How much your selected style images shape the look. This model tends to copy things out of them, not just their style (Qwen once painted a different town into a field), so it's off by default.",
       rec: "0", recValue: 0 }])) },
-  out_scale: { label: "Output scale", min: 2, max: 10, step: 1, fmt: (v) => `${v}×`,
-    what: "How big the final game textures are, compared to the original art.",
+  out_scale: { label: "Output scale", min: 1, max: 10, step: 1, fmt: (v) => `${v}×`,
+    what: "How big the final game textures are, compared to the original art. At 1× they're the original's own " +
+      "size: the new art at the game's resolution, with no enlarging and no detail pass.",
     up: "sharper on big screens, but bigger files and slower",
-    down: "smaller and faster",
+    down: "smaller and faster; at 1× as small as the original",
     rec: "4× for a 1080p screen, 6× for 1440p, 8× for 4K" },
   detail_denoise: { label: "Detail strength", min: 0.1, max: 0.5, step: 0.01,
     what: "How much the detail pass repaints while it adds fine texture at full size.",
@@ -223,8 +228,21 @@ const SL = {
     what: "Holds outlines in place during the detail pass too.",
     up: "outlines stay exactly put", down: "0 is off",
     rec: "0 (it made no visible difference in testing)", recValue: 0 },
+  flat_repaint: { label: "Dark areas repaint", min: 0, max: 0.6, step: 0.01, fmt: (x) => x.toFixed(2),
+    what: "How much the dark, empty parts of the picture are repainted: plain walls in shadow, murky backdrops, the black " +
+      "around a room. It fades smoothly into the rest, which keeps the full Repaint strength.",
+    up: "those areas take on more of the new style, and the model starts inventing things there again",
+    down: "closer to the original there; 0 keeps them as they are",
+    rec: "0.3 with a Repaint strength of 0.55", recValue: 0.3 },
+  anim_repaint: { label: "Moving parts repaint", min: 0, max: 0.5, step: 0.01, fmt: (x) => x.toFixed(2),
+    what: "How much the parts that animate by themselves (fans, gauges, flickering screens) are repainted, in the " +
+      "main image and in each of their animation frames. Every frame starts from the same painted part with only " +
+      "what moves added, so they stay one design.",
+    up: "they take on more of the new style, but can turn into something else and stop matching between frames",
+    down: "closer to the original's design; 0 keeps them as they are",
+    rec: "0.2", recValue: 0.2 },
   state_denoise: { label: "States repaint", min: 0.1, max: 1, step: 0.05,
-    what: "How much doors, lights and animation frames are repainted to match the new style. Each one starts from the new scene with only what moves or changes painted in, so it only needs a light touch.",
+    what: "How much doors, lights and other parts that switch (by events) are repainted to match the new style. Each one starts from the new scene with only what changes painted in, so it only needs a light touch. Parts that animate by themselves use Moving parts repaint.",
     up: "they take on more of the new style, but frames can turn into made-up objects and stop matching each other",
     down: "frames match each other and the scene, but the moving bits keep more of the original art",
     rec: "0.5", recValue: 0.5,
@@ -274,7 +292,7 @@ const LOOK_SLIDERS = {
 };
 const KEY_LABELS = {
   family: "workflow", prompt: "prompt", style_refs: "style images", seed: "seed", upscaler: "upscaler",
-  describe_scene: "scene description", retry: "retry", protect_text: "sign protection",
+  describe_scene: "scene description", retry: "retry", protect_text: "sign protection", protect_flat: "dark area protection",
   seedvr2_input: "SeedVR2 input", detail_pass: "detail pass", states_pass: "states pass", align: "auto-align",
   model_source: "model source", checkpoint: "checkpoint", unet: "diffusion model", clip1: "text encoder",
   clip2: "text encoder 2", clip_type: "encoder type", vae: "VAE", controlnet: "ControlNet", lora: "LoRA",
@@ -300,6 +318,7 @@ const S = {
   overlay: false, pixel: true,
   imgs: { orig: null, new: null, left: null, overlay: null },
   animate: true, strips: [],   // strips: [{group, rect, frames, wait, orig, new, left}]
+  palStrips: [], palKey: "", palAnim: {},  // palette effects: [{rect, tiles, frames, times, length, orig, new, left}]
   view: null, left: "orig",    // version shown as New / on the left of Split
   sel: new Set(), anchor: null,  // fields picked in the list for a batch
   target: pref("target", "look"), tab: pref("tab", "style"),
@@ -320,6 +339,8 @@ function defaultParams(d) {
 
 function modeLabel(v) {
   if (v.mode === "imported") return /^earlier/.test(v.note || "") ? "earlier render" : "imported";
+  if (v.mode === "signs") return "signs lettered";
+  if (v.mode === "touchup") return "touched up";
   return v.try ? "try" : v.mode;
 }
 // "Krea 2 final", "Qwen 2.1 try", "earlier render" (workflow not recorded)
@@ -346,6 +367,7 @@ function shortUp(u, s = {}) {
   if (!u) return "plain";
   if (u === "seedvr2") return /7b/i.test(s.seedvr2_unet || "") ? "SeedVR2 7B" : "SeedVR2";
   if (u === "magick") return "Lanczos";
+  if (u === "syw") return "SYW";
   if (u.startsWith("upscayl:")) return UPSCAYL_NAMES[u.slice(8)] || u.slice(8);
   return u.replace(/\.(safetensors|pth|pt)$/i, "").replace(/^\dx[-_]?/i, "");
 }
@@ -377,12 +399,16 @@ function verBits(v) {
   if (s.detail_pass) out.push(["detail", `detail pass ${s.detail_denoise}`, `detail ${s.detail_denoise}`]);
   if (s.describe_scene) out.push(["scene", "scene description", "scene text"]);
   if (s.protect_text && !(f === "qwen21" && !(s.depth_lock > 0))) out.push(["signs", `signs protected at ${s.text_repaint}`, `signs ${s.text_repaint}`]);
+  if (s.protect_anim && f !== "upscale" && !(f === "qwen21" && !(s.depth_lock > 0)) && s.anim_repaint !== undefined)
+    out.push(["moving", `moving parts protected at ${s.anim_repaint}`, `moving ${s.anim_repaint}`]);
+  if (s.protect_flat && usesRepaint(f) && s.flat_repaint !== undefined)
+    out.push(["flat", `dark areas protected at ${s.flat_repaint}`, `dark ${s.flat_repaint}`]);
   return out;
 }
 
 // Said on a card that lacks a setting the viewed version has
 const VER_OFF = { depth: "no depth lock", colours: "colours off", detail: "no detail pass", scene: "no scene text",
-                  signs: "signs not protected" };
+                  signs: "signs not protected", moving: "moving parts not protected" };
 
 // The card's summary; what differs from the version being viewed stands out
 function verBitsHtml(v, viewed) {
@@ -430,8 +456,9 @@ function renderSplitPick() {
   $("#viewHint").hidden = !!show;
   if (!show) return;
   const opt = (v) => `<option value="${v.id}">${esc(verName(v))}</option>`;
-  $("#leftSel").innerHTML = `<option value="orig">Original</option>` + d.versions.map(opt).join("");
-  $("#leftSel").value = leftVersion() ? S.left : "orig";
+  $("#leftSel").innerHTML = `<option value="orig">Original</option>` +
+    (d.syw ? `<option value="syw">SYW Unified (4×)</option>` : "") + d.versions.map(opt).join("");
+  $("#leftSel").value = leftVersion() || (S.left === "syw" && d.syw) ? S.left : "orig";
   $("#rightSel").innerHTML = d.versions.map(opt).join("");
   $("#rightSel").value = viewedVersion().id;
 }
@@ -477,9 +504,28 @@ function renderVersions() {
   renderVersionHead();
 }
 
+// The picture a render starts from: the original art (""), or one of the field's versions
+const startFrom = () => (S.startFrom && S.detail && S.detail.versions.some((v) => v.id === S.startFrom) ? S.startFrom : "");
+
+function renderStartFrom() {
+  const d = S.detail, sel = $("#startFrom");
+  const cur = startFrom();
+  sel.innerHTML = `<option value="">Original art</option>` +
+    (d ? d.versions.map((v) => `<option value="${v.id}">${esc(verName(v))}</option>`).join("") : "");
+  sel.value = cur;
+  const hint = $("#startHint");
+  hint.hidden = !cur;
+  hint.textContent = cur ? "Preview and Generate final render from this version with the current settings, and it stays " +
+    "lined up with the original. A lower repaint keeps more of it (MOSS, Flux.1, Krea 2); Qwen, FLUX 3, Mage-Flow and " +
+    "FIBO 2 redraw all of it." : "";
+}
+
 function renderVersionHead() {
   const d = S.detail, v = viewedVersion();
-  const btns = ["#btnUse", "#btnRebuild", "#btnRedoStates", "#btnReview", "#btnDeleteVer"];
+  const btns = ["#btnUse", "#btnStartFrom", "#btnTouchUp", "#btnVerMore", "#btnRebuild", "#btnRedoStates", "#btnReview", "#btnDeleteVer"];
+  renderStartFrom();
+  if (S.touch && (!d || !v || S.touch.field !== d.name || S.touch.vid !== v.id)) setTouch(false);  // another field or version
+  $("#btnTouchUp").classList.toggle("primary", !!S.touch);
   if (!d || !v) {
     $("#verTitle").innerHTML = d ? "No versions yet: <b>Preview</b> or <b>Generate final</b> makes one." : "";
     $("#verInfo").innerHTML = "";
@@ -488,7 +534,7 @@ function renderVersionHead() {
     return;
   }
   btns.forEach((b) => { $(b).hidden = false; });
-  $("#verTitle").innerHTML = `${S.mode === "orig" ? "Selected" : "Viewing"}: <b>${fmtWhen(v.created, true)}</b> · ${esc(verKind(v))}` +
+  $("#verTitle").innerHTML = `${S.mode === "orig" || S.mode === "syw" ? "Selected" : "Viewing"}: <b>${fmtWhen(v.created, true)}</b> · ${esc(verKind(v))}` +
     (v.look ? ` · look "${esc(v.look)}"` : "") + (v.current ? ` · <span class="ok">★ in game</span>` : "");
   const r = v.result, s = v.settings || {}, parts = [];
   if (!v.built) parts.push(`<span class="warn">raw render, not cut into game textures yet (Use this version or Rebuild)</span>`);
@@ -501,7 +547,13 @@ function renderVersionHead() {
       parts.push(r.state_panels ? `${r.state_panels} state panels ${v.family === "upscale" ? "upscaled" : "restyled"}`
         : `<span class="warn">states not ${v.family === "upscale" ? "upscaled" : "restyled"} (original art, color-matched)</span>`);
     }
+    if (r.animated_frames) parts.push(`${r.animated_frames} animation frame${r.animated_frames === 1 ? "" : "s"} (palette effects)`);
+    if (r.animation_left_still) parts.push(`palette effects left still (${r.animation_left_still} states: too many to load smoothly)`);
     if (r.flag) parts.push(`<span class="warn">check: ${esc(r.flag)}</span>`);
+  }
+  if (v.source) {
+    const from = d.versions.find((x) => x.id === v.source);
+    parts.push(`started from ${from ? esc(verName(from)) : "a deleted version"}`);
   }
   parts.push(...verBits(v).map(([, t]) => esc(t)));
   if (s.seed !== undefined) parts.push(`seed ${s.seed}`);
@@ -510,6 +562,7 @@ function renderVersionHead() {
   $("#verInfo").innerHTML = parts.join(" · ");
   $("#btnUse").disabled = v.current;
   $("#btnUse").textContent = v.current ? "★ In game" : "Use this version";
+  $("#btnStartFrom").disabled = startFrom() === v.id;
   $("#btnReview").disabled = !v.review;
   $("#btnRedoStates").hidden = !d.state_panels;
   $("#btnRedoStates").disabled = !v.built;
@@ -687,7 +740,7 @@ async function queuePicked(mode) {
   const label = mode === "final" ? "final renders" : "previews";
   if (names.length > 3 && !await ask(`Queue ${label} of ${names.length} fields, each with its own look?\n\n` +
     `Estimated time: about ${fmtDuration(e.seconds)}. You can keep browsing while they run; Cancel queue stops them.`)) return;
-  const r = await api("/api/generate", { body: { names, mode, fresh: true } });
+  const r = await api("/api/generate", { body: { names, mode, fresh: true, options: batchOptions() } });
   const skipped = names.length - r.added;
   toast(`${r.added} ${label} queued` + (skipped ? ` (${skipped} already queued)` : ""));
   clearPicks();
@@ -711,6 +764,7 @@ async function selectField(name, keepView = false) {
   if (!d || S.current !== name) return;
   const first = !keepView || !S.detail || S.detail.name !== name;
   if (first) {
+    S.startFrom = "";
     S.view = null;
     S.left = "orig";
     S.layers = new Set(d.layers);
@@ -820,16 +874,21 @@ async function loadImages(fit) {
   const name = d.name;
   const nv = viewedVersion(), lv = leftVersion();
   const verSrc = (v) => `/api/render/${name}?v=new&ver=${v.id}&${q}&t=${verStamp(v)}`;
-  const strip = (p, v) => loadImg(`/api/strip/${name}?group=${p}&${q}` + (v ? `&v=new&ver=${v.id}&t=${verStamp(v)}` : "&v=orig"));
-  const [orig, neu, left, overlay, ...strips] = await Promise.all([
+  // v: a version, "syw" (the SYW pack's pages) or null (the original)
+  const strip = (p, v) => loadImg(`/api/strip/${name}?group=${p}&${q}` +
+    (v === "syw" ? "&v=syw" : v ? `&v=new&ver=${v.id}&t=${verStamp(v)}` : "&v=orig"));
+  const wantSyw = d.syw && (S.mode === "syw" || (S.mode === "split" && S.left === "syw"));
+  const [orig, syw, neu, left, overlay, ...strips] = await Promise.all([
     loadImg(`/api/render/${name}?v=orig&${q}`),
+    wantSyw ? loadImg(`/api/render/${name}?v=syw&${q}`) : null,
     nv ? loadImg(verSrc(nv)) : null,
     lv ? loadImg(verSrc(lv)) : null,
     S.overlay ? (S.imgs.overlayFor === name && S.imgs.overlay ? S.imgs.overlay : loadImg(`/api/overlay/${name}.png`)) : null,
-    ...playing.flatMap((p) => [strip(p, null), nv && nv.built ? strip(p, nv) : null, lv && lv.built ? strip(p, lv) : null]),
+    ...playing.flatMap((p) => [strip(p, null), nv && nv.built ? strip(p, nv) : null, lv && lv.built ? strip(p, lv) : null,
+      wantSyw ? strip(p, "syw") : null]),
   ]);
   if (S.current !== name) return;
-  S.imgs = { orig, new: neu, left, overlay, overlayFor: name };
+  S.imgs = { orig, syw, new: neu, left, overlay, overlayFor: name };
   // Each frame as its own bitmap: drawing a slice of the strip image with smoothing pulls in a
   // sliver of the neighbouring frame along the edges, which showed as lines through the scene.
   const split = (img, n) => img ? Promise.all([...Array(n).keys()].map((k) => {
@@ -840,15 +899,75 @@ async function loadImages(fit) {
   for (const [i, p] of playing.entries()) {
     const a = d.animations[p];
     const frames = a.order.length > 1 ? a.order.length : 2;
-    if (!strips[3 * i]) continue;
-    const [o, n, l] = await Promise.all([split(strips[3 * i], frames), split(strips[3 * i + 1], frames), split(strips[3 * i + 2], frames)]);
-    built.push({ group: p, rect: d.group_rects[p], tiles: (d.group_tiles || {})[p], frames, wait: a.wait, orig: o, new: n, left: l });
+    if (!strips[4 * i]) continue;
+    const [o, n, l, y] = await Promise.all([0, 1, 2, 3].map((k) => split(strips[4 * i + k], frames)));
+    built.push({ group: p, rect: d.group_rects[p], tiles: (d.group_tiles || {})[p], frames, wait: a.wait, orig: o, new: n, left: l, syw: y });
   }
   if (S.current !== name) return;
   S.strips = built;
   if (fit) fitView();
+  const palKey = S.animate ? [name, q, nv ? nv.id + verStamp(nv) : "", lv ? lv.id + verStamp(lv) : "", wantSyw ? "syw" : ""].join("|") : "";
+  if (palKey !== S.palKey) {
+    S.palKey = palKey;
+    S.palStrips = [];
+    if (palKey) loadPaletteStrips(palKey, name, q, nv, lv, wantSyw);
+  }
   draw();
   if (S.strips.length) startAnimation();
+}
+
+// A strip image laid out as a grid (X-Grid: cols, rows, count), cut into one bitmap per frame.
+async function loadGrid(url) {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    const { cols, rows, count } = JSON.parse(r.headers.get("X-Grid"));
+    const img = await createImageBitmap(await r.blob());
+    const fw = img.width / cols, fh = img.height / rows;
+    const frames = await Promise.all([...Array(count).keys()].map((k) =>
+      createImageBitmap(img, (k % cols) * fw, Math.floor(k / cols) * fh, fw, fh)));
+    img.close();
+    return frames;
+  } catch {
+    return null;
+  }
+}
+
+// Palette effects (water, fire, lights that cycle colour) play from strips of their own, fetched after the
+// still images: a version's take a few seconds to make the first time.
+async function loadPaletteStrips(key, name, q, nv, lv, withSyw = false) {
+  if (!S.palAnim[name]) {
+    S.palAnim[name] = await fetch(`/api/palette_anim/${name}`).then((r) => (r.ok ? r.json() : [])).catch(() => []);
+  }
+  // the SYW view plays the pack's own frames of the effect (none for a field without: it shows still)
+  const strip = (i, v) => loadGrid(`/api/palette_strip/${name}?group=${i}&${q}` +
+    (v === "syw" ? "&v=syw" : v ? `&v=new&ver=${v.id}&t=${verStamp(v)}` : "&v=orig"));
+  const built = await Promise.all(S.palAnim[name].map(async (g, i) => {
+    const [o, n, l, y] = await Promise.all([strip(i, null), nv && nv.built ? strip(i, nv) : null,
+      lv && lv.built ? strip(i, lv) : null, withSyw ? strip(i, "syw") : null]);
+    return o && { ...g, frames: g.count, orig: o, new: n, left: l, syw: y };
+  }));
+  if (key !== S.palKey) return;
+  S.palStrips = built.filter(Boolean);
+  draw();
+  if (S.palStrips.length) startAnimation();
+}
+
+// Which frame of a strip shows at `now` (ms). FF7 fields run at 30 fps: a door or switch animation steps every
+// `wait` game frames; a palette effect follows its timeline, [frame, state] changes in a loop `length` frames long.
+function stripFrame(st, now) {
+  if (!st.times) return Math.floor(now / (st.wait * 1000 / 30)) % st.frames;
+  const f = Math.floor(now * 30 / 1000) % st.length;
+  let lo = 0, hi = st.times.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (st.times[mid][0] <= f) lo = mid; else hi = mid - 1;
+  }
+  return st.times[lo][1];
+}
+
+function playingStrips() {
+  return [...S.palStrips, ...S.strips];
 }
 
 // Timer-driven (not requestAnimationFrame, which some embedded/unfocused windows throttle to a
@@ -859,9 +978,10 @@ function startAnimation() {
   animating = true;
   let last = "";
   const tick = () => {
-    if (!S.animate || !S.strips.length) { animating = false; return; }
+    const strips = playingStrips();
+    if (!S.animate || !strips.length) { animating = false; return; }
     const now = performance.now();
-    const key = S.strips.map((st) => Math.floor(now / (st.wait * 1000 / 30)) % st.frames).join(",");
+    const key = strips.map((st) => stripFrame(st, now)).join(",");
     if (key !== last) { last = key; draw(); }
     setTimeout(tick, 15);
   };
@@ -1075,6 +1195,8 @@ function renderStyle() {
   $('label[for="prompt"]').className = `lbl ${mark("prompt")}`;
   renderScene(v);
   renderSigns(v);
+  renderMoving(v);
+  renderFlat(v);
 
   $("#refsLbl").className = `lbl ${mark("style_refs")}`;
   $("#refsLbl").textContent = fam === "moss" ? "Style reference images (MOSS doesn't use them)" : "Style reference images";
@@ -1158,6 +1280,41 @@ function renderScene(v) {
   box.appendChild(w);
 }
 
+// Parts that animate by themselves, repainted lightly (server: Project.moving_boxes, ff7bg/states.py)
+function renderMoving(v) {
+  const box = $("#movingBox"), d = S.detail, fam = v.family;
+  box.innerHTML = "";
+  if (fam === "upscale" || !d || !Object.keys(d.animations || {}).length) return;
+  box.appendChild(check("protect_anim", "Protect moving parts", v, helpText(
+    "Fans, gauges, flickering screens and other parts that animate by themselves are repainted only lightly, so the AI " +
+    "keeps them what they are, and every animation frame is made from that same painted part. Without it the AI can " +
+    "redraw them as something else (Kalm's wall fans became a heart, and a window in some frames).", "on")));
+  if (!v.protect_anim) return;
+  if (fam === "qwen21" && !(v.depth_lock > 0)) {
+    const n = document.createElement("div");
+    n.className = "model-warn";
+    n.textContent = "Turn on Qwen's Depth lock to use this. Without it Qwen shifts the picture by a few pixels, and the protected parts wouldn't line up with the rest. Until then, only their animation frames are kept to one design.";
+    box.appendChild(n);
+  }
+  box.appendChild(slider("anim_repaint", v));
+}
+
+// Dark, empty areas, repainted lightly (server: ff7bg/protect.py). Only the repainting workflows: the edit
+// models redraw everything from the picture and don't invent there the same way.
+function renderFlat(v) {
+  const box = $("#flatBox"), fam = v.family;
+  box.innerHTML = "";
+  if (!usesRepaint(fam)) return;
+  box.appendChild(check("protect_flat", "Protect dark empty areas", v, helpText(
+    "Repaints the dark, empty parts of the picture more lightly: plain walls in shadow, murky backdrops, the black " +
+    "around a room. At a high Repaint strength the model tends to invent things there (it painted a cloudy night sky " +
+    "over Sector 1 station's dark wall). Found automatically from the original art: dark, smooth and without edges, " +
+    "so brick walls, wood floors and cave rock are left to the full strength.",
+    "on when Repaint strength is above about 0.45")));
+  if (!v.protect_flat) return;
+  box.appendChild(slider("flat_repaint", v));
+}
+
 // Signs and lettering, repainted lightly (server: ff7bg/signs.py); their areas are drawn on the image
 function renderSigns(v) {
   const box = $("#signBox"), d = S.detail;
@@ -1192,6 +1349,7 @@ function renderSigns(v) {
     `<button class="small ghost" title="Look for signs again; areas you drew stay">${boxes == null ? "Find signs" : "Find again"}</button></div>`;
   const [edit, find] = row.querySelectorAll("button");
   edit.onclick = () => setSignEdit(!S.signEdit);
+  if (S.signEdit && n) row.appendChild(signWords(d, boxes));
   find.onclick = async () => {
     find.disabled = true;
     find.textContent = "Looking…";
@@ -1201,19 +1359,219 @@ function renderSigns(v) {
   box.appendChild(row);
 }
 
+// What each sign should say: the numbers match the ones on the image. Painting them in makes a new version
+// (Qwen-Image 2.1 letters each sign; the rest of the picture stays as it is).
+function signWords(d, boxes) {
+  const wrap = document.createElement("div");
+  wrap.className = "sign-words";
+  const said = boxes.filter((b) => (b.say || "").trim()).length;
+  const v = viewedVersion();
+  wrap.innerHTML = `<div class="ctl-help">${helpText("Type what a sign should say and the AI letters it in, in the " +
+    "sign's own style, on the version you're looking at, without changing the rest of the picture. The sign then says " +
+    "only your words: any other made-up lettering on it goes. For two lines put a slash between them " +
+    "(KALM / MINES). Leave a sign empty to keep it as it is. The result is a new version; if the one you start from " +
+    "is in the game, the new one replaces it.",
+    "the real words for shop signs and notices; names in the original's spelling")}</div>` +
+    boxes.map((b, i) => `<label class="sign-word${S.signSel === i ? " sel" : ""}" data-i="${i}"><span class="num">${i + 1}</span>` +
+      `<input type="text" maxlength="60" value="${esc(b.say || "")}" placeholder="${esc(b.text && !/too small/i.test(b.text) ? b.text : "what it should say")}">` +
+      `<button class="sign-del" title="Remove this sign area: it's no longer protected or painted">×</button></label>`).join("") +
+    `<div class="row-btns tight"><button class="small primary" ${said && v ? "" : "disabled"} ` +
+    `title="${v ? esc(`Letters the signs on the version you're viewing: ${verName(v)}`) : "Render the field first"}">` +
+    `Paint ${said ? `${said} sign${said === 1 ? "" : "s"}` : "the words"} on this version</button></div>`;
+  for (const lab of wrap.querySelectorAll(".sign-word")) {
+    const i = Number(lab.dataset.i), inp = lab.querySelector("input");
+    lab.onmouseenter = () => { S.signHover = i; draw(); };
+    lab.onmouseleave = () => { S.signHover = null; draw(); };
+    inp.onchange = () => {
+      const next = (S.detail.text_boxes || []).slice();
+      next[i] = { ...next[i], say: inp.value.trim() };
+      saveSigns(next);
+    };
+    const del = lab.querySelector(".sign-del");
+    del.onmousedown = (e) => e.preventDefault();  // keep the focus where it is: no half-typed save re-drawing the list first
+    del.onclick = (e) => {
+      e.preventDefault();  // (inside a label: don't focus its input)
+      S.signHover = null;
+      S.signSel = null;
+      saveSigns((S.detail.text_boxes || []).filter((_, j) => j !== i));
+    };
+  }
+  const go = wrap.querySelector("button.primary");
+  go.onclick = async () => {
+    go.disabled = true;
+    try {
+      const shown = viewedVersion();  // the one on screen now (the list may have been drawn for another)
+      const r = await api(`/api/field/${d.name}/signs`, { body: { paint: true, version: shown && shown.id } });
+      toast(r.added ? "Painting the signs: it's in the queue. The result shows here as a new version." : "Already in the queue");
+      applyDetail(r);
+    } catch (e) { toast(`Couldn't paint the signs: ${e.message}`); go.disabled = false; }
+  };
+  return wrap;
+}
+
+// A sign area's corners (top-left, top-right, bottom-right, bottom-left): its own when moved onto an angled sign
+// (`quad`, server: signs.quad_of), else its box's
+function signQuad(b) {
+  return b.quad ? b.quad.map((p) => p.slice()) : [[b.x1, b.y1], [b.x2, b.y1], [b.x2, b.y2], [b.x1, b.y2]];
+}
+
+// The area with these corners, its box their bounds; `boxOnly`: a plain box moved stays a box
+function withQuad(b, q, boxOnly = false) {
+  const xs = q.map((c) => c[0]), ys = q.map((c) => c[1]);
+  const box = { ...b, x1: Math.min(...xs), y1: Math.min(...ys), x2: Math.max(...xs), y2: Math.max(...ys) };
+  if (boxOnly) delete box.quad;
+  else box.quad = q;
+  return box;
+}
+
+// What's under the pointer: a corner of an area (the picked one's first; within 8 screen pixels), else the smallest
+// area it's inside, else null
+function signHit(boxes, p) {
+  const near = 8 / S.zoom;
+  const order = boxes.map((b, i) => i).sort((a, b) => (b === S.signSel) - (a === S.signSel));
+  for (const i of order) {
+    const q = signQuad(boxes[i]);
+    const c = q.findIndex(([x, y]) => Math.hypot(x - p.x, y - p.y) <= near);
+    if (c >= 0) return { i, corner: c };
+  }
+  const inside = (q) => {  // even-odd rule
+    let hit = false;
+    for (let a = 0, b = q.length - 1; a < q.length; b = a++) {
+      const [xa, ya] = q[a], [xb, yb] = q[b];
+      if ((ya > p.y) !== (yb > p.y) && p.x < ((xb - xa) * (p.y - ya)) / (yb - ya) + xa) hit = !hit;
+    }
+    return hit;
+  };
+  const area = (q) => Math.abs(q.reduce((s, [x, y], j) => s + x * q[(j + 1) % q.length][1] - y * q[(j + 1) % q.length][0], 0)) / 2;
+  const hits = boxes.map((b, i) => [signQuad(b), i]).filter(([q]) => inside(q)).sort((a, b) => area(a[0]) - area(b[0]));
+  return hits.length ? { i: hits[0][1] } : null;
+}
+
+function selectSign(i) {
+  S.signSel = i;
+  for (const lab of document.querySelectorAll(".sign-word")) lab.classList.toggle("sel", Number(lab.dataset.i) === i);
+  draw();
+}
+
 function setSignEdit(on, rerender = true) {
   S.signEdit = on;
+  S.signSel = null;
   S.signEditField = on && S.detail ? S.detail.name : null;
   S.signDrag = null;
   vp.classList.toggle("sign-edit", on);
   const hint = $("#signHint");
   hint.hidden = !on;
   if (on) {
-    hint.innerHTML = `<b>Sign areas</b> · drag to add one · click one to remove it · Shift+drag moves the picture` +
-      `<button class="small primary">Done</button>`;
+    hint.innerHTML = `<b>Sign areas</b> · drag to add one · drag its corners onto an angled sign · drag inside to move it · ` +
+      `click one, then Delete, to remove it · Shift+drag moves the picture<button class="small primary">Done</button>`;
     hint.querySelector("button").onclick = () => setSignEdit(false);
   }
   if (rerender) { renderStyle(); draw(); }
+}
+
+// Touch up: paint over what doesn't look right on the version shown; the AI repaints just that (a new version)
+function setTouch(on) {
+  const d = S.detail, v = viewedVersion();
+  if (on && (!d || !v)) return;
+  if (on) {
+    if (S.signEdit) setSignEdit(false);
+    const k = Math.max(1, Math.min(4, Math.floor(2048 / Math.max(d.w, d.h))));  // the marks a little finer than 1x
+    const mask = document.createElement("canvas");
+    mask.width = d.w * k;
+    mask.height = d.h * k;
+    S.touch = { field: d.name, vid: v.id, k, mask, mctx: mask.getContext("2d"), size: (S.touchPrefs || {}).size || 10,
+                erase: false, strength: (S.touchPrefs || {}).strength || 0.6, hint: "", painted: false, stroke: null, cursor: null };
+    if (S.mode !== "new") setMode("new");
+  } else if (S.touch) {
+    S.touchPrefs = { size: S.touch.size, strength: S.touch.strength };
+    S.touch = null;
+  }
+  vp.classList.toggle("touch-edit", !!S.touch);
+  $("#btnTouchUp").classList.toggle("primary", !!S.touch);
+  renderTouchBar();
+  draw();
+}
+
+function touchPaint(a, b) {
+  const t = S.touch, c = t.mctx, k = t.k;
+  c.save();
+  c.globalCompositeOperation = t.stroke && t.stroke.erase ? "destination-out" : "source-over";
+  c.strokeStyle = c.fillStyle = "#ff3c3c";
+  c.lineWidth = t.size * k;
+  c.lineCap = c.lineJoin = "round";
+  c.beginPath();
+  c.moveTo(a.x * k, a.y * k);
+  c.lineTo(b.x * k + 0.01, b.y * k);
+  c.stroke();
+  c.restore();
+  if (!(t.stroke && t.stroke.erase)) t.painted = true;
+  draw();
+}
+
+function renderTouchBar() {
+  const bar = $("#touchBar"), t = S.touch;
+  bar.hidden = !t;
+  if (!t) { bar.innerHTML = ""; bar.dataset.built = ""; return; }
+  if (bar.dataset.built !== `${t.field}/${t.vid}`) {
+    bar.dataset.built = `${t.field}/${t.vid}`;
+    bar.innerHTML = `<div class="touch-row">` +
+      `<b title="Paint over what doesn't look right and the AI repaints just that. Right-drag or the Eraser rubs marks ` +
+      `out; Shift+drag moves the picture and the wheel zooms; Esc cancels.">Touch up</b>` +
+      `<span class="hint">paint over what to fix</span>` +
+      `<span class="seg small"><button data-tool="brush">Brush</button><button data-tool="erase">Eraser</button></span>` +
+      `<label title="How wide the brush is. Bigger: quicker over large areas. Smaller: for fine details like a face or the edge of a sign.">` +
+      `Size <input type="range" data-k="size" min="2" max="64" step="1"></label>` +
+      `<input type="text" class="touch-hint" maxlength="200" placeholder="What should be there? (optional)" ` +
+      `title="Optional: what the marked parts should show, e.g. &quot;a wooden barrel&quot; or &quot;a clean stone wall&quot;. ` +
+      `Leave it empty to just clean them up in the scene's own style.">` +
+      `<label title="How much the AI may change the marked parts. Higher: it redraws them more freely (80–100% to replace ` +
+      `something with what you typed). Lower: it stays closer to what's there and only tidies it up. Recommended: 60%.">` +
+      `Change <input type="range" data-k="strength" min="0.3" max="1" step="0.05"> <b class="touch-pct"></b></label>` +
+      `<button class="small ghost" data-a="clear" title="Rub out all the marks">Clear</button>` +
+      `<button class="small ghost" data-a="cancel" title="Close the touch-up without repainting (Esc)">Cancel</button>` +
+      `<button class="small primary" data-a="go" title="Repaint only the marked parts, with the settings this version was ` +
+      `rendered with. The result is a new version; if this one is in the game, the new one replaces it.">Repaint marked areas</button>` +
+      `</div>`;
+    for (const b of bar.querySelectorAll("[data-tool]")) b.onclick = () => { S.touch.erase = b.dataset.tool === "erase"; renderTouchBar(); };
+    for (const r of bar.querySelectorAll("input[type=range]")) {
+      r.oninput = () => { S.touch[r.dataset.k] = Number(r.value); renderTouchBar(); draw(); };
+    }
+    bar.querySelector(".touch-hint").oninput = (e) => { S.touch.hint = e.target.value; };
+    bar.querySelector('[data-a="clear"]').onclick = () => {
+      S.touch.mctx.clearRect(0, 0, S.touch.mask.width, S.touch.mask.height);
+      S.touch.painted = false;
+      renderTouchBar();
+      draw();
+    };
+    bar.querySelector('[data-a="cancel"]').onclick = () => setTouch(false);
+    bar.querySelector('[data-a="go"]').onclick = submitTouch;
+  }
+  for (const b of bar.querySelectorAll("[data-tool]")) b.classList.toggle("on", (b.dataset.tool === "erase") === t.erase);
+  for (const r of bar.querySelectorAll("input[type=range]")) if (document.activeElement !== r) r.value = t[r.dataset.k];
+  bar.querySelector(".touch-pct").textContent = `${Math.round(t.strength * 100)}%`;
+  bar.querySelector('[data-a="go"]').disabled = !t.painted;
+}
+
+async function submitTouch() {
+  const t = S.touch;
+  if (!t || !t.painted) return;
+  const go = $('#touchBar [data-a="go"]');
+  go.disabled = true;
+  try {
+    const r = await api(`/api/field/${t.field}/touchup`, { body: {
+      version: t.vid, mask: t.mask.toDataURL("image/png"), hint: t.hint.trim(), strength: t.strength } });
+    if (!r.added) {
+      toast("This version is already being touched up. When that's done, touch up the new version it makes.");
+      go.disabled = false;
+      return;
+    }
+    toast("Touching up: it's in the queue. The result is a new version.");
+    setTouch(false);
+    applyDetail(r);
+  } catch (e) {
+    toast(`Couldn't touch up: ${e.message}`);
+    go.disabled = false;
+  }
 }
 
 const imagePoint = (e) => {
@@ -1261,20 +1619,33 @@ const UPSCAYL_NAMES = {
 };
 function upName(u) {
   if (u === "magick") return "Lanczos (ImageMagick)";
+  if (u === "syw") return "SYW Unified (ready-made 4×)";
   if (u.startsWith("upscayl:")) return `Upscayl ${UPSCAYL_NAMES[u.slice(8)] || u.slice(8)}`;
   return u.replace(/\.safetensors$|\.pth$/, "");
 }
 
-// Every upscaler there is to pick: ComfyUI's ESRGAN models, SeedVR2, ImageMagick and Upscayl
-function upscalerChoices(cur, { seedvr2 = true } = {}) {
+// Every upscaler there is to pick: ComfyUI's ESRGAN models, SeedVR2, ImageMagick and Upscayl; for the original
+// art also the SYW Unified pack's ready-made 4× (syw: true)
+function upscalerChoices(cur, { seedvr2 = true, syw = false } = {}) {
   const m = S.models, online = m && m.online, local = (m && m.local) || null;  // null: an older Studio
   const svrReady = online && (m.unets || []).some((u) => /seedvr2/i.test(u)) && (m.vaes || []).some((u) => /seedvr2/i.test(u));
   const ups = online ? m.upscalers.slice() : [];
   if (seedvr2 && (svrReady || cur === "seedvr2")) ups.unshift("seedvr2");
+  if (syw && ((local && local.syw) || cur === "syw")) ups.unshift("syw");
   if (local) ups.push("magick", ...local.upscayl_models.map((x) => `upscayl:${x}`));
   const labels = { seedvr2: "SeedVR2 (most natural detail)" };
   for (const u of [...ups, cur]) if (u) labels[u] = labels[u] || upName(u);
   return { ups, labels, local };
+}
+
+// What the SYW choice does, in words (the original art upscaler's help)
+function sywHint(local) {
+  const p = local && local.syw;
+  return "Starts from the SYW Unified Field Textures pack in your 7th Heaven library instead of enlarging the " +
+    "original art here: a ready-made, faithful 4× of every field, cleaner than an upscaling model and with readable " +
+    "signs, so the AI has better to work from. Fields the pack doesn't have use 4x-UltraSharp. It's Square Enix's art " +
+    "upscaled by the SYW team: fine to use on this PC, not to share." +
+    (p ? ` (Found: ${p.fields} fields.)` : " The pack wasn't found in 7th Heaven's library, so 4x-UltraSharp is used instead.");
 }
 
 function outsideHint(u, local) {
@@ -1369,10 +1740,11 @@ function renderAdvanced(v) {
       add(selectRow("seedvr2_color", "Color correction", ["lab", "wavelet", "adain", "none"], v,
         { hint: helpText("Keeps SeedVR2's colours matched to the picture it enlarges.", "lab") }));
       if (!v.seedvr2_input) {
-        const { ups, labels, local } = upscalerChoices(v.input_upscaler, { seedvr2: false });
+        const { ups, labels, local } = upscalerChoices(v.input_upscaler, { seedvr2: false, syw: true });
         add(selectRow("input_upscaler", "Upscaler before SeedVR2", ups, v, { none: "(none: plain, soft resize)", labels,
           hint: helpText("Enlarges the original first; SeedVR2 then cleans it up." +
-            (isOutside(v.input_upscaler) ? " " + outsideHint(v.input_upscaler, local) : ""), "4x-UltraSharp") }));
+            (v.input_upscaler === "syw" ? " " + sywHint(local) : isOutside(v.input_upscaler) ? " " + outsideHint(v.input_upscaler, local) : ""),
+            "4x-UltraSharp") }));
       }
     } else {
       const n = document.createElement("div");
@@ -1410,11 +1782,11 @@ function renderAdvanced(v) {
 
   sub("Original art");
   {
-    const { ups, labels, local } = upscalerChoices(v.input_upscaler);
+    const { ups, labels, local } = upscalerChoices(v.input_upscaler, { syw: true });
     const hint = helpText("Enlarges the original art before the AI paints over it. A sharper start gives the AI more to work with." +
-      (isOutside(v.input_upscaler) ? " " + outsideHint(v.input_upscaler, local)
+      (v.input_upscaler === "syw" ? " " + sywHint(local) : isOutside(v.input_upscaler) ? " " + outsideHint(v.input_upscaler, local)
         : v.input_upscaler === "seedvr2" ? " SeedVR2 adds detail of its own, but can invent texture (Kalm's cracked plaza became cobblestones)." : ""),
-      "4x-UltraSharp");
+      local && local.syw ? "SYW Unified (kept md1_1's hazard stripes and the Shin-Ra logo that 4x-UltraSharp lost)" : "4x-UltraSharp");
     add(selectRow("input_upscaler", "Upscaler", ups, v, { none: "(none: plain, soft resize)", labels, hint }));
     add(slider("input_scale", v));
     // what that comes to for this field
@@ -1654,6 +2026,20 @@ function resizeCanvas() {
   draw();
 }
 
+// The canvas's pixels the viewport's size again if it changed (a ResizeObserver, and before every press and
+// scroll on it, so the pointer always lands on what's drawn)
+function syncCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  if (canvas.width !== Math.round(vp.clientWidth * dpr) || canvas.height !== Math.round(vp.clientHeight * dpr)) resizeCanvas();
+}
+
+// How tall the game's picture is, in screen pixels: FF7 shows 240 rows of the background over it, so this decides
+// how big the game draws each pixel. FFNx's window, or the screen when it runs fullscreen.
+function gameHeight() {
+  const g = S.gameWindow;
+  return g && g.height && !g.fullscreen ? g.height : Math.round(screen.height * (window.devicePixelRatio || 1));
+}
+
 function fitView() {
   const d = S.detail;
   if (!d) return;
@@ -1675,6 +2061,7 @@ function setZoom(z, center = false, cx = vp.clientWidth / 2, cy = vp.clientHeigh
   draw();
 }
 
+let drawnMode = null;
 function draw() {
   const dpr = window.devicePixelRatio || 1;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1682,6 +2069,14 @@ function draw() {
   const d = S.detail;
   const empty = $("#emptyMsg");
   for (const b of $("#modeSeg").children) b.classList.toggle("on", b.dataset.mode === S.mode);
+  if (S.mode !== drawnMode) { drawnMode = S.mode; emit("studio:mode", S.mode); }
+  $('#modeSeg [data-mode="syw"]').hidden = !(d && d.syw);
+  if (S.mode === "syw" && d && !d.syw) S.mode = "orig";  // a field the pack doesn't have
+  if (!["orig", "syw", "new", "split"].includes(S.mode)) {  // a plug-in's view (the 3D scene) covers the canvas
+    $("#modeBadge").textContent = "";
+    $("#badgeL").hidden = $("#badgeR").hidden = true;
+    return;
+  }
   if (!d || !S.imgs.orig) {
     empty.style.display = "flex";
     empty.textContent = S.ready ? "Pick a field on the left." : "Preparing field images…";
@@ -1693,14 +2088,13 @@ function draw() {
   const W = d.w, H = d.h;
   ctx.setTransform(dpr * S.zoom, 0, 0, dpr * S.zoom, dpr * S.panX, dpr * S.panY);
   // Current frame of each playing animation, from its strip, over the group's area.
-  // FF7 fields run at 30 fps; `wait` is how many game frames each animation frame lasts.
   const now = performance.now();
   const drawFrames = (side) => {
-    for (const st of S.strips) {
+    for (const st of playingStrips()) {
       const frames = st[side];
       if (!frames) continue;
       const [x, y, w, h] = st.rect;
-      const i = Math.floor(now / (st.wait * 1000 / 30)) % st.frames;
+      const i = stripFrame(st, now);
       // only on the group's own tiles, so a group spread over the scene doesn't paint a big
       // rectangle over everything else (or over another group's animation)
       ctx.save();
@@ -1728,9 +2122,13 @@ function draw() {
   const label = (v, img) => `${verKind(v)} ${fmtWhen(v.created)}` +
     (img ? ` · ${Math.round(img.naturalWidth / W)}×` : "") + (v.built ? "" : " · raw render, not built");
   let badge;
+  const sywLeft = S.left === "syw" && d.syw;
   if (S.mode === "orig") {
     paint("orig");
     badge = "Original";
+  } else if (S.mode === "syw") {
+    paint("syw");
+    badge = S.imgs.syw ? "SYW Unified · 4×" : "SYW Unified · loading…";
   } else if (S.mode === "new") {
     paint("new");
     badge = S.imgs.new ? label(nv, S.imgs.new) : "No versions yet (showing original)";
@@ -1738,14 +2136,14 @@ function draw() {
     paint("new");
     ctx.save();
     ctx.beginPath(); ctx.rect(0, 0, W * S.split, H); ctx.clip();
-    paint(lv ? "left" : "orig");
+    paint(lv ? "left" : sywLeft ? "syw" : "orig");
     ctx.restore();
     // outline each side in its colour from the version strip: the divider shows as a yellow | blue edge
     const css = getComputedStyle(document.documentElement), lw = 2 / S.zoom, x = W * S.split;
     ctx.lineWidth = lw;
     if (x > lw) { ctx.strokeStyle = css.getPropertyValue("--warn").trim(); ctx.strokeRect(lw / 2, lw / 2, x - lw, H - lw); }
     if (W - x > lw) { ctx.strokeStyle = css.getPropertyValue("--accent").trim(); ctx.strokeRect(x + lw / 2, lw / 2, W - x - lw, H - lw); }
-    $("#badgeL").innerHTML = `<b>Left</b> · ${esc(lv ? label(lv, S.imgs.left) : "Original")}`;
+    $("#badgeL").innerHTML = `<b>Left</b> · ${esc(lv ? label(lv, S.imgs.left) : sywLeft ? "SYW Unified · 4×" : "Original")}`;
     $("#badgeR").innerHTML = `<b>Right</b> · ${esc(S.imgs.new ? label(nv, S.imgs.new) : "no version yet")}`;
     badge = "";
   }
@@ -1756,18 +2154,61 @@ function draw() {
     ctx.drawImage(S.imgs.overlay, 0, 0, W, H);
     ctx.globalAlpha = 1;
   }
+  if (S.touch && S.touch.field === d.name) {
+    const t = S.touch;
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(t.mask, 0, 0, W, H);
+    ctx.globalAlpha = 1;
+    if (t.cursor) {
+      ctx.beginPath();
+      ctx.arc(t.cursor.x, t.cursor.y, t.size / 2, 0, Math.PI * 2);
+      ctx.lineWidth = 1.5 / S.zoom;
+      ctx.strokeStyle = t.erase ? "#ffffff" : "#ff5050";
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
   if (S.signEdit && S.signEditField === d.name) {
     ctx.save();
     ctx.lineWidth = 2 / S.zoom;
-    for (const b of d.text_boxes || []) {
-      ctx.fillStyle = "rgba(255, 60, 200, 0.15)";
-      ctx.fillRect(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1);
-      ctx.strokeStyle = "#ff3cc8";
-      ctx.setLineDash(b.auto ? [] : [6 / S.zoom, 4 / S.zoom]);  // dashed: drawn by you
-      ctx.strokeRect(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1);
-    }
     const g = S.signDrag;
-    if (g && g.moved) {
+    (d.text_boxes || []).forEach((b0, i) => {
+      const b = g && g.moved && g.hit && g.hit.i === i && g.box ? g.box : b0;  // the one being reshaped or moved
+      const hot = S.signHover === i || S.signSel === i;
+      const q = signQuad(b);
+      ctx.beginPath();
+      q.forEach(([x, y], j) => (j ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+      ctx.closePath();
+      ctx.fillStyle = hot ? "rgba(255, 220, 60, 0.3)" : "rgba(255, 60, 200, 0.15)";
+      ctx.fill();
+      ctx.strokeStyle = hot ? "#ffdc3c" : "#ff3cc8";
+      ctx.setLineDash(b.auto ? [] : [6 / S.zoom, 4 / S.zoom]);  // dashed: drawn by you
+      ctx.stroke();
+      // its corners, to drag onto a sign at an angle
+      ctx.setLineDash([]);
+      const hs = 7 / S.zoom;
+      for (const [x, y] of q) {
+        ctx.fillStyle = hot ? "#ffdc3c" : "#ff3cc8";
+        ctx.fillRect(x - hs / 2, y - hs / 2, hs, hs);
+        ctx.strokeStyle = "#1a1020";
+        ctx.lineWidth = 1 / S.zoom;
+        ctx.strokeRect(x - hs / 2, y - hs / 2, hs, hs);
+      }
+      ctx.lineWidth = 2 / S.zoom;
+      // its number (the list beside the image), and a tick when it has words to paint
+      const fs = 11 / S.zoom;
+      const [lx, ly] = q.reduce((a, p) => (p[1] < a[1] || (p[1] === a[1] && p[0] < a[0]) ? p : a));  // its top corner
+      ctx.font = `bold ${fs}px system-ui, sans-serif`;
+      const label = `${i + 1}${(b.say || "").trim() ? " ✓" : ""}`;
+      const tw = ctx.measureText(label).width + 4 / S.zoom;
+      ctx.fillStyle = hot ? "#ffdc3c" : "#ff3cc8";
+      ctx.fillRect(lx, ly - fs - 2 / S.zoom - hs / 2, tw, fs + 2 / S.zoom);
+      ctx.fillStyle = "#1a1020";
+      ctx.fillText(label, lx + 2 / S.zoom, ly - 3 / S.zoom - hs / 2);
+    });
+    if (g && g.moved && !g.hit) {
       ctx.strokeStyle = "#fff";
       ctx.setLineDash([4 / S.zoom, 4 / S.zoom]);
       ctx.strokeRect(Math.min(g.x0, g.x1), Math.min(g.y0, g.y1), Math.abs(g.x1 - g.x0), Math.abs(g.y1 - g.y0));
@@ -1779,18 +2220,28 @@ function draw() {
 }
 
 function setMode(m) {
+  if (m === "syw" && !(S.detail && S.detail.syw)) return;
   S.mode = m;
   S.userMode = m;
   renderSplitPick();
   renderVersionHead();
   draw();
+  if (m === "syw" && (!S.imgs.syw || S.animate)) loadImages(false);  // its picture, and its animations
 }
 
 let drag = null;
 vp.addEventListener("mousedown", (e) => {
-  if (S.signEdit && S.detail && !e.shiftKey && e.button === 0) {
+  syncCanvas();
+  if (S.touch && S.detail && !e.shiftKey && (e.button === 0 || e.button === 2) && !e.target.closest("#touchBar")) {
     const p = imagePoint(e);
-    S.signDrag = { x0: p.x, y0: p.y, x1: p.x, y1: p.y, sx: e.clientX, sy: e.clientY, moved: false };
+    S.touch.stroke = { last: p, erase: S.touch.erase || e.altKey || e.button === 2 };
+    touchPaint(p, p);
+    return;
+  }
+  if (S.signEdit && S.detail && !e.shiftKey && e.button === 0 && !e.target.closest("#signHint")) {
+    const p = imagePoint(e);
+    S.signDrag = { x0: p.x, y0: p.y, x1: p.x, y1: p.y, sx: e.clientX, sy: e.clientY, moved: false,
+                   hit: signHit(S.detail.text_boxes || [], p) };
     return;
   }
   const r = vp.getBoundingClientRect();
@@ -1802,11 +2253,35 @@ vp.addEventListener("mousedown", (e) => {
   vp.classList.add("dragging");
 });
 window.addEventListener("mousemove", (e) => {
+  if (S.touch) {
+    const p = imagePoint(e), t = S.touch;
+    t.cursor = e.target === canvas || t.stroke ? p : null;
+    if (t.stroke) {
+      touchPaint(t.stroke.last, p);
+      t.stroke.last = p;
+      return;
+    }
+    draw();
+  }
   if (S.signDrag) {
-    const p = imagePoint(e), g = S.signDrag;
+    const p = imagePoint(e), g = S.signDrag, d = S.detail;
     g.x1 = p.x;
     g.y1 = p.y;
     g.moved = g.moved || Math.hypot(e.clientX - g.sx, e.clientY - g.sy) > 4;
+    if (g.moved && g.hit && d) {
+      const b = (d.text_boxes || [])[g.hit.i];
+      const cx = (v) => Math.max(0, Math.min(d.w, v)), cy = (v) => Math.max(0, Math.min(d.h, v));
+      if (b && g.hit.corner !== undefined) {  // a corner onto the sign's own
+        const q = signQuad(b).map((c) => c.slice());
+        q[g.hit.corner] = [cx(p.x), cy(p.y)];
+        g.box = withQuad(b, q);
+      } else if (b) {  // the whole area, kept on the picture
+        const q = signQuad(b), xs = q.map((c) => c[0]), ys = q.map((c) => c[1]);
+        const dx = Math.max(-Math.min(...xs), Math.min(d.w - Math.max(...xs), p.x - g.x0));
+        const dy = Math.max(-Math.min(...ys), Math.min(d.h - Math.max(...ys), p.y - g.y0));
+        g.box = withQuad(b, q.map(([x, y]) => [x + dx, y + dy]), !b.quad);
+      }
+    }
     draw();
     return;
   }
@@ -1828,24 +2303,30 @@ window.addEventListener("mousemove", (e) => {
   draw();
 });
 window.addEventListener("mouseup", () => {
+  if (S.touch && S.touch.stroke) {
+    S.touch.stroke = null;
+    renderTouchBar();
+    return;
+  }
   const g = S.signDrag, d = S.detail;
   if (g && d) {
     S.signDrag = null;
     const boxes = (d.text_boxes || []).slice();
     const clampX = (v) => Math.max(0, Math.min(d.w, v)), clampY = (v) => Math.max(0, Math.min(d.h, v));
+    if (g.moved && g.hit) {  // a corner or the whole area moved
+      if (g.box) { boxes[g.hit.i] = g.box; S.signSel = g.hit.i; saveSigns(boxes); } else draw();
+      return;
+    }
     if (g.moved) {  // a new area
       const b = { x1: clampX(Math.min(g.x0, g.x1)), y1: clampY(Math.min(g.y0, g.y1)),
                   x2: clampX(Math.max(g.x0, g.x1)), y2: clampY(Math.max(g.y0, g.y1)), text: "", auto: false };
       if (b.x2 - b.x1 < 1 || b.y2 - b.y1 < 1) { draw(); return; }
       boxes.push(b);
-    } else {  // a click removes the smallest area under it
-      const area = (b) => (b.x2 - b.x1) * (b.y2 - b.y1);
-      const hits = boxes.map((b, i) => [b, i]).filter(([b]) => g.x0 >= b.x1 && g.x0 <= b.x2 && g.y0 >= b.y1 && g.y0 <= b.y2);
-      if (!hits.length) { draw(); return; }
-      hits.sort((a, b) => area(a[0]) - area(b[0]));
-      boxes.splice(hits[0][1], 1);
+      S.signSel = boxes.length - 1;
+      saveSigns(boxes);
+      return;
     }
-    saveSigns(boxes);
+    selectSign(g.hit ? g.hit.i : null);  // a click picks an area (Delete removes it), or none
     return;
   }
   drag = null;
@@ -1853,6 +2334,7 @@ window.addEventListener("mouseup", () => {
 });
 vp.addEventListener("wheel", (e) => {
   e.preventDefault();
+  syncCanvas();
   const r = vp.getBoundingClientRect();
   setZoom(S.zoom * Math.pow(1.0015, -e.deltaY), false, e.clientX - r.left, e.clientY - r.top);
 }, { passive: false });
@@ -1860,9 +2342,20 @@ vp.addEventListener("wheel", (e) => {
 window.addEventListener("keydown", (e) => {
   if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) return;
   if (!$("#looksModal").hidden) { if (e.key === "Escape") $("#looksModal").hidden = true; return; }
+  if ((e.key === "Delete" || e.key === "Backspace") && S.signEdit && S.signSel != null && S.detail) {
+    e.preventDefault();
+    const boxes = (S.detail.text_boxes || []).filter((_, j) => j !== S.signSel);
+    S.signSel = null;
+    S.signHover = null;
+    saveSigns(boxes);
+    return;
+  }
   if (e.key === "Escape") {
-    if (S.signEdit) setSignEdit(false);
+    if (S.touch) setTouch(false);
+    else if (S.signEdit) setSignEdit(false);
     else if (!$("#queuePop").hidden) $("#queuePop").hidden = true;
+    else if (!$("#settingsPop").hidden) $("#settingsPop").hidden = true;
+    else if (!$("#verMore").hidden) $("#verMore").hidden = true;
     else if (S.sel.size) clearPicks();
     return;
   }
@@ -1870,6 +2363,7 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "1") setMode("orig");
   else if (e.key === "2") setMode("new");
   else if (e.key === "3") setMode("split");
+  else if (e.key === "5") setMode("syw");
   else if (e.key === "f" || e.key === "F") fitView();
   else if (e.key === "o" || e.key === "O") $("#optOverlay").click();
   else if (e.key === "a" || e.key === "A") $("#optAnimate").click();
@@ -1921,33 +2415,41 @@ function renderEstimate() {
 }
 
 // Plug-ins (studio/plugins) name their own job kinds here, and hear the Studio through document events:
-// studio:field (a field's details shown), studio:jobs (jobs finished), studio:list (the field list redrawn)
-const JOB_LABELS = {};
+// studio:field (a field's details shown), studio:jobs (jobs finished), studio:list (the field list redrawn),
+// studio:mode (the viewer's mode changed; a plug-in can add a #modeSeg button with its own data-mode and cover
+// the viewport while S.mode is that)
+const JOB_LABELS = { cleanup: () => "deleting versions not in use", touchup: () => "touch-up" };
+const ALL_FIELDS = "all fields";  // the name of jobs for every field (studio.py ALL_FIELDS)
 // ...and add field list filters: an option in #filter plus LIST_FILTERS[its value] = (field summary) => shown?
 const LIST_FILTERS = {};
+// ...and send options with every batch (Generate final / Preview of a selection, Generate all missing):
+// BATCH_OPTIONS[key] = () => value; the server hands them to its ON_CURRENT hooks as each field's render lands
+const BATCH_OPTIONS = {};
+const batchOptions = () => Object.fromEntries(Object.entries(BATCH_OPTIONS).map(([k, f]) => [k, f()]));
 const emit = (type, detail) => document.dispatchEvent(new CustomEvent(type, { detail }));
 
 function jobLabel(j) {
   if (JOB_LABELS[j.kind]) return JOB_LABELS[j.kind](j);
   if (j.kind === "build") return "building textures";
-  return `${j.try ? "try" : j.kind} ${famShort(j.family)}`;
+  return `${j.try ? "try" : j.kind} ${famShort(j.family)}` + (j.source ? ", from a version" : "");
 }
 
 function renderQueuePop() {
   const q = S.queue || { queued: [], recent: [] };
   const items = [];
+  const go = (n) => (S.byName[n] ? `<b class="go" data-go="${n}">${n}</b>` : `<b>${esc(n)}</b>`);
   if (q.current) {
-    items.push(`<li class="now"><span class="what"><b class="go" data-go="${q.current.name}">${q.current.name}</b> · ${jobLabel(q.current)} · ${esc(q.current.stage)}</span>` +
+    items.push(`<li class="now"><span class="what">${go(q.current.name)} · ${jobLabel(q.current)} · ${esc(q.current.stage)}</span>` +
       `<span>${Math.round(q.current.progress * 100)}%</span></li>`);
   }
   for (const j of q.queued) {
-    items.push(`<li><span class="what"><b class="go" data-go="${j.name}">${j.name}</b> · ${jobLabel(j)}</span>` +
+    items.push(`<li><span class="what">${go(j.name)} · ${jobLabel(j)}</span>` +
       `<span>~${fmtDuration(j.est || 0)}</span><span class="x" data-rm="${j.id}" title="Remove from the queue">×</span></li>`);
   }
   $("#queueList").innerHTML = items.join("") || "<li>Nothing queued.</li>";
   $("#recentList").innerHTML = q.recent.slice().reverse().map((r) =>
-    `<li class="${r.ok ? "" : "bad"}"><span class="what">${r.ok ? "✓" : "✗"} <b class="go" data-go="${r.name}">${r.name}</b> · ${jobLabel(r)} · ${r.seconds}s` +
-    `${r.ok ? "" : " · " + esc(r.message)}</span></li>`).join("") || "<li>None yet.</li>";
+    `<li class="${r.ok ? "" : "bad"}"><span class="what">${r.ok ? "✓" : "✗"} ${go(r.name)} · ${jobLabel(r)} · ${r.seconds}s` +
+    `${r.message ? " · " + esc(r.message) : ""}</span></li>`).join("") || "<li>None yet.</li>";
   for (const el of $("#queuePop").querySelectorAll("[data-rm]")) {
     el.onclick = async () => { S.queue = await api("/api/queue/remove", { body: { id: Number(el.dataset.rm) } }); renderQueuePop(); renderVersions(); };
   }
@@ -1997,7 +2499,8 @@ async function pollQueue() {
       emit("studio:jobs", fresh);
       await loadFields();
       loadLooks();
-      const mine = fresh.filter((r) => r.name === S.current);
+      for (const r of fresh.filter((x) => x.kind === "cleanup")) toast(`Cleanup: ${r.message || (r.ok ? "done" : "failed")}`, 8000);
+      const mine = fresh.filter((r) => r.name === S.current || r.name === ALL_FIELDS);
       if (mine.length) {
         const made = mine.filter((r) => r.ok && r.kind !== "build" && r.version).pop();
         if (made) {  // show what just finished
@@ -2019,6 +2522,11 @@ async function pollStatus() {
     $("#comfyStatus").classList.toggle("online", s.comfy_online);
     $("#comfyStatus").title = `ComfyUI at ${s.comfy_url}: ${s.comfy_online ? "connected" : "not reachable; start ComfyUI"}`;
     $("#btnInstall").title = `Copy the current versions' textures into ${s.game_mods}`;
+    S.gameWindow = s.game_window;
+    const gh = gameHeight();
+    $("#btnGame").title = `The size the game shows it: ${gh} pixels high, so each original pixel is ` +
+      `${+(gh / 240).toFixed(2)} pixels wide` + (S.gameWindow && !S.gameWindow.fullscreen && S.gameWindow.height
+        ? " (your FFNx window)" : " (your screen)");
     if (s.ready && !S.ready) {
       S.ready = true;
       await loadLooks();
@@ -2061,6 +2569,10 @@ async function init() {
   $("#advanced").addEventListener("toggle", () => setPref("advanced", $("#advanced").open ? "1" : "0"));
   resizeCanvas();
   window.addEventListener("resize", () => { resizeCanvas(); fitView(); });
+  // the viewport also changes size without the window (the version bar under it wraps differently from one version
+  // to the next): the canvas kept its old pixel size, stretched to the new one, and the pointer landed off what it
+  // showed (a sign's corner was grabbed 50 px from where it was drawn)
+  new ResizeObserver(syncCanvas).observe(vp);
 
   for (const b of $("#modeSeg").children) b.onclick = () => setMode(b.dataset.mode);
   for (const b of $("#panelTabs").children) b.onclick = () => setTab(b.dataset.tab);
@@ -2077,10 +2589,11 @@ async function init() {
   $("#lookFilter").onchange = renderList;
   $("#familyFilter").onchange = renderList;
   $("#optOverlay").onchange = (e) => { S.overlay = e.target.checked; loadImages(false); };
-  $("#optAnimate").onchange = (e) => { S.animate = e.target.checked; S.strips = []; if (S.detail) renderLayers(); loadImages(false); };
+  $("#optAnimate").onchange = (e) => { S.animate = e.target.checked; S.strips = []; S.palStrips = []; if (S.detail) renderLayers(); loadImages(false); };
   $("#optPixel").onchange = (e) => { S.pixel = e.target.checked; draw(); };
   $("#btnFit").onclick = fitView;
   $("#btn1x").onclick = () => setZoom(1);
+  $("#btnGame").onclick = () => setZoom(gameHeight() / 240 / (window.devicePixelRatio || 1));
   $("#btnNative").onclick = () => setZoom((S.imgs.new ? S.imgs.new.naturalWidth / S.detail.w : 4) / (window.devicePixelRatio || 1));
   $("#leftSel").onchange = (e) => { S.left = e.target.value; renderVersions(); loadImages(false); };
   $("#rightSel").onchange = (e) => { S.view = e.target.value; renderVersions(); loadImages(false); };
@@ -2131,10 +2644,19 @@ async function init() {
   };
 
   // generate
-  $("#btnGenerate").onclick = () => queue({ names: [S.current], mode: "final" }, "Final");
-  $("#btnPreview").onclick = () => queue({ names: [S.current], mode: "preview" }, "Preview");
-  $("#btnTryAll").onclick = () => queue({ names: [S.current], mode: "preview", families: Object.keys(FAMILIES) },
+  const source = () => startFrom() || undefined;
+  $("#btnGenerate").onclick = () => queue({ names: [S.current], mode: "final", source: source() }, "Final");
+  $("#btnPreview").onclick = () => queue({ names: [S.current], mode: "preview", source: source() }, "Preview");
+  $("#btnTryAll").onclick = () => queue({ names: [S.current], mode: "preview", families: Object.keys(FAMILIES), source: source() },
     "A preview with each workflow");
+  $("#startFrom").onchange = (e) => { S.startFrom = e.target.value; renderVersionHead(); };
+  $("#btnTouchUp").onclick = () => setTouch(!S.touch);
+  vp.addEventListener("contextmenu", (e) => { if (S.touch) e.preventDefault(); });  // right-drag rubs out
+  $("#btnStartFrom").onclick = () => {
+    S.startFrom = viewedVersion().id;
+    renderVersionHead();
+    toast("Preview and Generate final now start from this version.");
+  };
   $("#btnCancel").onclick = () => api("/api/queue/cancel", { body: {} });
   $("#btnCancel2").onclick = () => api("/api/queue/cancel", { body: {} });
   $("#queueSummary").onclick = () => { const p = $("#queuePop"); p.hidden = !p.hidden; if (!p.hidden) renderQueuePop(); };
@@ -2152,6 +2674,9 @@ async function init() {
     if (r.queued) toast(r.switched ? "In game now; its doors, lights and frames are being restyled in the queue." : "Cutting it into game textures in the queue; it goes in game when done.");
   };
   $("#btnUseWorkflow").onclick = () => saveSetting({ family: viewedVersion().family });
+  // the version bar's More menu: closes after a choice or a click elsewhere
+  $("#btnVerMore").onclick = () => { $("#verMore").hidden = !$("#verMore").hidden; };
+  $("#verMore").addEventListener("click", (e) => { if (e.target.closest("button")) $("#verMore").hidden = true; });
   $("#btnRebuild").onclick = () => queue({ names: [S.current], mode: "build", version: viewedVersion().id }, "Rebuild");
   $("#btnRedoStates").onclick = () => queue({ names: [S.current], mode: "build", version: viewedVersion().id, states: true }, "Redo states");
   $("#btnReview").onclick = () => window.open(`/api/review/${S.current}.jpg?ver=${viewedVersion().id}&t=${Date.now()}`, "_blank");
@@ -2199,9 +2724,52 @@ async function init() {
     const looks = Object.entries(e.by_look).sort((a, b) => b[1] - a[1]).map(([id, n]) => `  ${lookName(id)}: ${n}`).join("\n");
     if (!await ask(`Queue ${e.count} fields for final-quality generation, each with its own look?\n\n${looks}\n\n` +
       `Estimated time: about ${fmtDuration(e.seconds)}. You can keep browsing while it runs; Cancel queue stops it.`)) return;
-    const r = await api("/api/generate", { body: { scope: "missing", fresh: true } });
+    const r = await api("/api/generate", { body: { scope: "missing", fresh: true, options: batchOptions() } });
     toast(`${r.added} fields queued`);
   };
+  $("#btnCleanup").onclick = async () => {
+    toast("Counting the versions not in the game…");
+    let r;
+    try { r = await api("/api/cleanup"); } catch (e) { return; }
+    const g = r.groups, size = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`);
+    const lines = [["final", "older final", "older finals"], ["preview", "preview", "previews"], ["try", "try", "tries"],
+      ["imported", "imported image", "imported images"],
+      ["held_back", "held-back render", "held-back renders, on fields with nothing in the game yet"]]
+      .filter(([k]) => g[k].count)
+      .map(([k, one, many]) => `${g[k].count} ${g[k].count === 1 ? one : many} · ${size(g[k].bytes)}`);
+    if (!lines.length) { await tell("Every version is the one its field uses in the game: nothing to delete."); return; }
+    const checks = [];
+    if (g.imported.count) checks.push({ key: "imported", label: `Keep the imported images (${g.imported.count}): they can't be made again` });
+    if (g.held_back.count) checks.push({ key: "held_back", label: `Keep the held-back renders (${g.held_back.count}): the only render those fields have` });
+    const res = await dialog(`Delete every version that isn't the one its field uses in the game?\n\n${lines.join("\n")}\n\n` +
+      `The ${r.in_game} versions in the game stay, and so do any a queued job needs. Deleted versions can't be brought back.`,
+      { ok: "Delete", checks });
+    if (!res) return;
+    const keep = Object.entries(res).filter(([, on]) => on).map(([k]) => k);
+    const q = await api("/api/cleanup", { body: { keep } });
+    toast(q.added ? "Cleanup queued: it runs between renders, and the queue shows how far it got" : "A cleanup is already queued");
+  };
+  // Settings: explanations, keeping the game up to date, plug-ins' settings, batch tools
+  $("#btnSettings").onclick = () => { $("#settingsPop").hidden = !$("#settingsPop").hidden; };
+  document.addEventListener("mousedown", (e) => {
+    const p = $("#settingsPop");
+    if (!p.hidden && !p.contains(e.target) && e.target !== $("#btnSettings")) p.hidden = true;
+    const m = $("#verMore");
+    if (!m.hidden && !m.contains(e.target) && e.target !== $("#btnVerMore")) m.hidden = true;
+  });
+  const explain = pref("explain", "0") === "1";
+  $("#prefExplain").checked = explain;
+  document.body.classList.toggle("compact-help", !explain);
+  $("#prefExplain").onchange = (e) => {
+    setPref("explain", e.target.checked ? "1" : "0");
+    document.body.classList.toggle("compact-help", !e.target.checked);
+  };
+  api("/api/prefs").then((p) => { $("#prefAutoInstall").checked = p.auto_install; }).catch(() => {});
+  $("#prefAutoInstall").onchange = async (e) => {
+    const p = await api("/api/prefs", { body: { auto_install: e.target.checked } });
+    toast(p.auto_install ? "Fields' new versions go into the game straight away" : "Install all to game copies new versions in");
+  };
+  watchHelp();
   $("#btnInstall").onclick = async () => {
     if (!await ask(`Copy every field's current version into the game's FFNx folder?\n${$("#btnInstall").title.replace("Copy the current versions' textures into ", "")}\n\nThey are only used when the game runs through FFNx.`)) return;
     const r = await api("/api/install", { body: {} });
@@ -2215,6 +2783,70 @@ async function init() {
     el.src = src;
     document.body.appendChild(el);
   }
+}
+
+/* ------------------------------------------------------------ compact help */
+
+// Each option with an explanation gets an info button: hovering shows that explanation (what it does, higher and
+// lower), clicking opens it under the option. The recommended value stays visible. Settings > Show every
+// explanation shows them all.
+function helpTip(h) {
+  const lines = [];
+  for (const c of h.children) {
+    if (c.matches(".help-rec, .help-note, .info")) continue;
+    if (c.matches(".help-range")) lines.push(...[...c.children].map((s) => s.textContent.trim()));
+    else lines.push(c.textContent.trim());
+  }
+  return lines.filter(Boolean).join("\n") + "\n\n(Click to keep it open below.)";
+}
+
+function addInfoButtons(root) {
+  const mk = (solo, h) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = `info${solo ? " solo" : ""}`;
+    b.textContent = solo ? "ⓘ more" : "ⓘ";
+    b.title = helpTip(h);
+    return b;
+  };
+  const hideable = (h) => h && [...h.children].some((c) => !c.matches(".help-rec, .help-note, .info"));
+  for (const h of root.querySelectorAll(".help:not([data-info]), .ctl-help:not([data-info])")) {
+    h.dataset.info = "1";
+    if (!hideable(h)) continue;
+    const host = h.closest(".slider, .ctl");
+    if (host && host.dataset.info) continue;
+    if (host) {
+      host.dataset.info = "1";
+      const at = host.querySelector(".top span") || host.querySelector(":scope > label.lbl, :scope > .lbl") ||
+        host.querySelector(":scope > span");
+      if (at && at.matches(".slider .top span, .lbl")) at.appendChild(mk(false, h));
+      else if (at) at.insertBefore(mk(false, h), at.querySelector(".ctl-help"));
+      else h.before(mk(true, h));
+    } else {
+      h.before(mk(true, h));
+    }
+  }
+}
+
+function watchHelp() {
+  const panel = document.body;
+  let pending = false;
+  new MutationObserver(() => {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(() => { pending = false; addInfoButtons(panel); });
+  }).observe(panel, { childList: true, subtree: true });
+  addInfoButtons(panel);
+  // a click opens or closes that option's explanation (a button inside a checkbox's label mustn't tick it)
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest("button.info");
+    if (!b) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const host = b.classList.contains("solo") ? b.nextElementSibling : b.closest(".slider, .ctl");
+    if (host) host.classList.toggle("explain");
+    b.classList.toggle("on", !!host && host.classList.contains("explain"));
+  }, true);
 }
 
 init();

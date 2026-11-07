@@ -48,6 +48,13 @@ DEFAULT_SETTINGS = {
     # Signs and lettering (ff7bg/signs.py): repainted only this much, fading into the rest of the scene
     "protect_text": False,
     "text_repaint": 0.15,
+    # Looping animations' moving parts (fans, gauges): repainted only this much in the main render (protect_anim)
+    # and in their frames, so every frame is the same part (ff7bg/states.py)
+    "protect_anim": True,
+    "anim_repaint": 0.2,
+    # Dark, empty areas (ff7bg/protect.py): repainted only this much by the repainting models, which invent there
+    "protect_flat": False,
+    "flat_repaint": 0.3,
     "out_scale": 4,
     "work_mp": 1.4,           # megapixels Flux renders at before the final upscale
     # Detail pass: upscale the render to the output size, then re-run Flux over 1024px tiles at low
@@ -495,8 +502,11 @@ def _seedvr2(wf, key, s, image, w, h):
     return [f"{key}_svr_post", 0]
 
 
-def _resize(wf, key, s, image, w, h, outside=True):
-    """Enlarge with the chosen upscaler (if any), then resize exactly to w x h.
+def _resize(wf, key, s, image, w, h, outside=True, src=None):
+    """Enlarge with the chosen upscaler (if any), then resize exactly to w x h. src: the image's size, when
+    known; at an output scale of 1x no upscaler runs to shrink it (enlarging, then shrinking it five-fold or more,
+    keeps nothing of the upscaler's work). At bigger scales the render is enlarged first as before, even when it
+    ends up smaller (small fields at 2-4x).
 
     The first enlargement of the original low-res art ("work", "orig_gen") uses input_upscaler, every
     later one (the render) the output upscaler.
@@ -507,7 +517,9 @@ def _resize(wf, key, s, image, w, h, outside=True):
     at full size (outside=False: the detail pass), it gets a plain Lanczos resize."""
     first = key in ("work", "orig_gen")
     upscaler = s["input_upscaler"] if first else s["upscaler"]
-    if is_local(upscaler):
+    if src is not None and s["out_scale"] <= 1 and w <= src[0] and h <= src[1]:
+        upscaler = ""
+    elif is_local(upscaler):
         if outside and not first:
             return image
         upscaler = ""
@@ -528,7 +540,7 @@ def _upscale_chain(wf, s, image, w, h):
     and SeedVR2 restores that, unless seedvr2_input is set (then SeedVR2 works from the original)."""
     if s["upscaler"] == SEEDVR2 and not s["seedvr2_input"] and s["input_upscaler"]:
         image = _resize(wf, "work", s, image, w, h)
-    return _resize(wf, "final", s, image, w, h)
+    return _resize(wf, "final", s, image, w, h, src=(w, h) if s["out_scale"] <= 1 else None)
 
 
 def _control_chain(wf, s, model, image, latent, vae):
@@ -639,7 +651,7 @@ def _build_edit_workflow(s, input_name, canvas_w, canvas_h, prefix, style_ref_na
     fw, fh = canvas_w + kl + kr, canvas_h + kt + kb
     wf["crop"] = {"class_type": "ImageCrop", "inputs": {
         "image": ["back", 0], "width": fw * k, "height": fh * k, "x": (l - kl) * k, "y": (t - kt) * k}}
-    result = _resize(wf, "final", s, ["crop", 0], fw * s["out_scale"], fh * s["out_scale"])
+    result = _resize(wf, "final", s, ["crop", 0], fw * s["out_scale"], fh * s["out_scale"], src=(fw * k, fh * k))
     wf["save"] = {"class_type": "SaveImage", "inputs": {"images": result, "filename_prefix": prefix}}
     return wf
 
@@ -670,7 +682,7 @@ def build_workflow(s, input_name, canvas_w, canvas_h, prefix, style_ref_names=()
         model, latent = ["tdd", 0], ["tnoise", 0]
     wf["sample"] = _sampler(s, model, positive, negative, latent, s["steps"], s["denoise"])
     wf["dec"] = {"class_type": "VAEDecode", "inputs": {"samples": ["sample", 0], "vae": vae}}
-    result = _resize(wf, "final", s, ["dec", 0], ow, oh, outside=not s["detail_pass"])
+    result = _resize(wf, "final", s, ["dec", 0], ow, oh, outside=not s["detail_pass"], src=(ww, wh))
     before_detail = result
     if s["detail_pass"]:
         # Tiles are processed as a list: every node below runs once per tile.
@@ -742,7 +754,7 @@ def build_states_workflow(s, ctx_name, orig_name, mask_name, gen_w, gen_h, out_w
         wf["sample"] = _sampler(s, styled, positive, negative, ["noise_mask", 0], s["steps"],
                                 min(0.95, s["denoise"] + s["state_denoise_boost"]) if denoise is None else denoise)
     wf["dec"] = {"class_type": "VAEDecode", "inputs": {"samples": ["sample", 0], "vae": vae}}
-    result = _resize(wf, "final", s, ["dec", 0], out_w, out_h)
+    result = _resize(wf, "final", s, ["dec", 0], out_w, out_h, src=(gen_w, gen_h))
     wf["save"] = {"class_type": "SaveImage", "inputs": {"images": result, "filename_prefix": prefix}}
     return wf
 

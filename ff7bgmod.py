@@ -166,16 +166,24 @@ def cmd_palettes(lgp, args):
 
     names = args.maps or field_names(lgp)
     rows = []
-    for name in names:
+    for i, name in enumerate(names):
         raw = decompress(lgp.read(name))
         bg = parse_background(name.lower(), raw)
-        rows += palettes.report(bg.name, raw, bg, canvas_rect(bg))
+        found = palettes.report(bg.name, raw, bg, canvas_rect(bg))
+        if found:  # how many palette states the scripts go through (each one an FFNx animated texture)
+            states, unknown = palettes.replay(raw)
+            for r in found:
+                r["states"] = len(states.get(r["palette"], ())) if r["palette"] != "var" else ""
+                r["not_emulated"] = sorted(unknown)
+        rows += found
+        if (i + 1) % 50 == 0:
+            print(f"  {i + 1}/{len(names)} fields", file=sys.stderr)
     order = {"always": 0, "entry": 1, "event": 2}
     rows.sort(key=lambda r: (order[r["kind"]], -r["area"], r["field"]))
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    cols = ["field", "palette", "kind", "looped", "random", "area", "tiles", "blended", "layers", "pages",
-            "groups", "scripts", "opcodes"]
+    cols = ["field", "palette", "kind", "states", "looped", "random", "area", "tiles", "blended", "layers", "pages",
+            "groups", "scripts", "opcodes", "not_emulated"]
     with out.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, cols)
         w.writeheader()

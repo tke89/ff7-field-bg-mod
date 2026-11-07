@@ -57,7 +57,8 @@ code { background: #12151a; border: 1px solid var(--line); border-radius: 4px; p
 .comfy { display: flex; align-items: center; gap: 6px; color: var(--muted); }
 .comfy .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--bad); }
 .comfy.online .dot { background: var(--ok); }
-.queue-summary { color: var(--muted); border-color: transparent; max-width: 520px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-summary { color: var(--muted); border-color: transparent; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topbar-slot { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .queue-summary.busy { color: var(--text); }
 
 .pop {
@@ -66,6 +67,26 @@ code { background: #12151a; border: 1px solid var(--line); border-radius: 4px; p
   box-shadow: 0 10px 30px rgba(0,0,0,.5);
 }
 .pop-head { display: flex; justify-content: space-between; align-items: center; margin: 4px 0 6px; }
+.pop.right { left: auto; right: 14px; width: 380px; }
+.pop .check.ctl { margin: 6px 0 10px; }
+.tool-row { display: grid; grid-template-columns: 150px 1fr; gap: 8px; align-items: center; margin: 6px 0; }
+.tool-row .hint { font-size: 11px; }
+/* small menus (the version bar's More) */
+.menu-wrap { position: relative; }
+.menu { position: absolute; right: 0; bottom: calc(100% + 4px); z-index: 25; min-width: 260px; padding: 4px;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 10px 30px rgba(0,0,0,.5); }
+.menu button { display: block; width: 100%; text-align: left; border: 0; background: transparent; padding: 6px 8px; }
+.menu button:hover:not(:disabled) { background: #2f3541; }
+.menu button .hint { display: block; font-size: 11px; }
+/* compact help: the recommended value stays, the explanation opens with the info button (or Settings) */
+button.info { border: 0; background: none; padding: 0 3px; color: var(--faint); font-size: 12px; line-height: 1; cursor: pointer; }
+button.info:hover, .explain button.info, button.info.on { color: var(--accent); background: none; }
+button.info.solo { display: block; margin-top: 2px; font-size: 11px; padding: 0; }
+body.compact-help .help > :not(.help-rec):not(.help-note),
+body.compact-help .ctl-help > :not(.help-rec) { display: none; }
+body.compact-help .explain .help > :not(.info), body.compact-help .explain .ctl-help > :not(.info),
+body.compact-help .help.explain > :not(.info), body.compact-help .ctl-help.explain > :not(.info) { display: block; }
+body:not(.compact-help) button.info { display: none; }
 .qlist { list-style: none; margin: 0 0 8px; padding: 0; font-size: 12px; color: var(--muted); }
 .qlist li { display: flex; gap: 8px; align-items: center; padding: 3px 0; border-bottom: 1px solid #232831; }
 .qlist li .what { flex: 1; }
@@ -83,6 +104,10 @@ code { background: #12151a; border: 1px solid var(--line); border-radius: 4px; p
 .sidebar-tools { padding: 10px; display: grid; gap: 6px; border-bottom: 1px solid var(--line); }
 .sidebar-tools .two { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .sidebar-tools .two .span2 { grid-column: 1 / -1; }
+.start-from { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.start-from .lbl { margin: 0; white-space: nowrap; }
+.start-from select { flex: 1; min-width: 0; }
+.start-hint { margin-top: 4px; }
 .count { color: var(--muted); font-size: 12px; }
 .field-list { list-style: none; margin: 0; padding: 4px; overflow-y: auto; flex: 1; }
 .field-list li {
@@ -143,9 +168,20 @@ code { background: #12151a; border: 1px solid var(--line); border-radius: 4px; p
 #leftSel { border: 1px solid var(--warn); }
 /* drawing sign areas on the image */
 .viewport.sign-edit { cursor: crosshair; }
+.sign-word.sel .num { background: #ffdc3c; color: #1a1020; }
 .badge.sign-hint { top: auto; bottom: 10px; pointer-events: auto; border: 2px solid #ff3cc8; font-weight: 400; }
 .badge.sign-hint b { color: #ff3cc8; }
 .badge.sign-hint button { margin-left: 8px; }
+.viewport.touch-edit { cursor: none; }
+.badge.touch-bar { top: auto; bottom: 8px; left: 8px; right: 8px; margin: 0 auto; width: max-content; pointer-events: auto;
+                   cursor: default; border: 2px solid #ff5050; font-weight: 400; max-width: calc(100% - 16px); white-space: normal;
+                   user-select: none; padding: 4px 8px; }
+.touch-bar .touch-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.touch-bar .touch-row > b { color: #ff5050; cursor: help; }
+.touch-bar label { display: flex; align-items: center; gap: 4px; color: var(--muted); }
+.touch-bar input[type=range] { width: 70px; }
+.touch-bar .touch-hint { width: 200px; user-select: text; }
+.touch-bar .seg button { padding: 2px 8px; }
 .signs { margin: 2px 0 8px; }
 #rightSel { border: 1px solid var(--accent); }
 .empty { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; color: var(--muted); text-align: center; padding: 30px; }
@@ -332,4 +368,16 @@ details.adv[open] summary { margin-bottom: 4px; }
 .modal-card.dialog { width: min(460px, 94vw); }
 .dialog-msg { white-space: pre-line; line-height: 1.5; margin: 2px 0 12px; }
 .dialog-input { width: 100%; margin-bottom: 12px; }
+.dialog-checks { display: flex; flex-direction: column; gap: 6px; margin: 0 0 14px; }
 .dialog .row-btns { justify-content: flex-end; }
+
+/* sign wording (signWords in app.js) */
+.sign-words { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.sign-word { display: flex; align-items: center; gap: 6px; }
+.sign-word .num { min-width: 1.6em; text-align: center; font-size: 11px; font-weight: 700; border-radius: 3px;
+  background: #ff3cc8; color: #1a1020; }
+.sign-word:hover .num { background: #ffdc3c; }
+.sign-word input { flex: 1; min-width: 0; }
+.sign-word .sign-del { flex: none; width: 26px; height: 26px; padding: 0; border-radius: 4px; border: 1px solid transparent;
+  background: none; color: var(--muted, #8a8f9a); font-size: 16px; line-height: 1; cursor: pointer; }
+.sign-word .sign-del:hover { color: #fff; background: #b8323a; }

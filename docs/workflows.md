@@ -198,6 +198,33 @@ Every workflow ends with an upscaler (Output → **Upscaler**) that takes the re
   - **Upscayl** uses Upscayl's models through its `upscayl-bin` (Vulkan): Upscayl Standard and Lite, High
     Fidelity, Digital Art, Remacri, UltraMix Balanced and UltraSharp. They enlarge 4×; other output scales get a
     Lanczos resize after them. To set it up, see [Getting started](getting-started.md#optional-imagemagick-and-upscayl).
+
+### SYW Unified as the original art
+
+The original art's own enlargement (Advanced → Original art → **Upscaler**) can also be **SYW Unified (ready-made
+4×)**: the SYW Unified Field Textures pack (Tsunamods, for 7th Heaven), a faithful 4× of every
+field's background pages, cleaner than an upscaling model on the 1× art and with readable signs. The Studio finds
+the pack in 7th Heaven's library (`~/7th Heaven/*SYW_Unified_Fields_Textures*.iro`, or `"syw_pack"` in
+`ai/prefs.json` for another place), reads its pages straight from the archive and puts each field's view together
+from them, from the same tiles as the original input (`ff7bg/syw.py`, cached in `ai/input_syw`). Fields it doesn't
+have (the three black backgrounds) use 4x-UltraSharp. The states pass takes its doors, lights and moving parts
+from the same pages: each state's art starts from SYW's 4× (colour-matched to the new look, as the original's is)
+instead of the original's pixels enlarged, while the original still says which pixels a state changes. On Kalm's
+doors that gave planked doors with hinges where the original's enlarged pixels gave streaks. Renders that start
+from a version are enlarged as before.
+
+The pack is read as 7th Heaven layers it with its Advanced Texture Animations on: its pages (`FF7 SYW V5`), pages
+redone to go with the animations that replace those (`V5AAF`: blin68_2, datiao_8, jtempl, lastmap, trnad_1), and
+palette animation frames (`V5AA`, 14,715 for 207 fields) named by the palette state's hash, the same hash the
+Studio's own animated textures use. Those frames are SYW's picture, so they don't go into renders (a version's
+frames come from replaying the effects on its own art); the viewer's SYW view plays them.
+
+MOSS previews with one seed, 4x-UltraSharp (Upscayl) against SYW: md1_1 kept the reactor arch's hazard stripes (they
+became brick) and crisper grating; Kalm got cleaner cobbles, stair edges and a gable window (a smudge before); the
+Shin-Ra lobby's logo came out as the logo (a scribble before) and the car on show as a car. About 2 s faster too.
+
+The pack is Square Enix's art upscaled by the SYW team, with no reuse terms given: fine to use on your PC, but
+renders made from it aren't yours to share without asking them.
     It isn't tested on real Upscayl yet; the wiring was tested with a stand-in tool.
   - In the **Upscale** workflow they're the whole job, and ComfyUI doesn't need to run.
   - In the other workflows, ComfyUI returns the render at its working size and the Studio enlarges it, the
@@ -235,8 +262,14 @@ scene gets the full Repaint strength.
   itself (fewer signs, but it caught blin1's pink logo, which the plain answer missed). The plain answer can get
   stuck, repeating one box until it runs out of room (blin1) or walking a made-up box down a wall (Kalm). The
   signs before that are still read, and the repeats are dropped. It finds most signs but not all. **Show and edit on the
-  image** draws the areas over the picture: drag to add one, click one to remove it (Shift+drag moves the
-  picture). **Find again** looks again and keeps the areas you drew.
+  image** draws the areas over the picture: drag to add one; drag its corners onto a sign at an angle or in
+  perspective (they can go anywhere: the area follows); drag inside one to move it; click one and press Delete to
+  remove it (Shift+drag moves the picture). **Find again** looks again and keeps the areas you drew, gave words to
+  or reshaped. (Fitting the corners automatically was tried, GrabCut and a polygon in each box: right on two of
+  Kalm's six signs, so it's left to you.)
+- **Lettering an angled sign.** A sign whose corners were moved is straightened first: the picture around it is
+  warped so the sign faces Qwen square on (it letters best that way), and its lettering is warped back onto the
+  sign; only the sign itself goes back.
 - **No visible edge.** The repaint strength rises from the signs' to the scene's over about 18 original pixels
   (with smoothstep easing), around boxes padded by 10%. A short fade left a hard line beside "Shin-Ra".
 - Flux.1, Krea 2 and MOSS get a per-pixel repaint strength (ComfyUI's Differential Diffusion), so it costs no

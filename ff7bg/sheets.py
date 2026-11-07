@@ -27,6 +27,10 @@ class PageCache:
             block = padded
         return block
 
+    def set_page(self, tex, palette, rgba):
+        """Use this RGBA page for the page's tiles with this palette (a palette effect's state, say)."""
+        self._pages[(tex, palette)] = rgba
+
 
 def canvas_rect(bg):
     min_x = min(t.dst_x for t in bg.tiles)

@@ -75,6 +75,9 @@ def analyze(raw_field):
     WAITs (frames at 30 fps) between them. Groups only switched by event scripts (talking,
     touching: doors, switches) are not animations.
 
+    A loop that waits with its group all off shows the art underneath as a frame (Kalm's wall fans: off,
+    frame 1, frame 2): 0 is in the order there.
+
     Returns (defaults {param: bitmask}, animations {param: {"order": [state masks], "wait": frames}})."""
     (off,) = struct.unpack_from("<I", raw_field, 6)
     (length,) = struct.unpack_from("<I", raw_field, off)
@@ -84,15 +87,32 @@ def analyze(raw_field):
         in_loop = False
         waited = 0
         last_on = {}
+        # the groups this loop switches on, and their state as it runs
+        loop_params, after_ret = set(), False
+        for pos, op in _ops(code):
+            if op == RET and not after_ret:
+                after_ret = True
+            elif after_ret and op == BGON and pos + 3 < len(code) and code[pos + 1] == 0 and code[pos + 3] < 8:
+                loop_params.add(code[pos + 2])
+        cur = {}
         for pos, op in _ops(code):
             if op == RET and not in_loop:
                 in_loop = True
+                cur = {p: on.get(p, 0) for p in loop_params}
                 continue
             bank0 = pos + 1 < len(code) and code[pos + 1] == 0
             if op == WAIT and pos + 2 < len(code):
-                waited += struct.unpack_from("<H", code, pos + 1)[0]
+                n = struct.unpack_from("<H", code, pos + 1)[0]
+                waited += n
+                for p in loop_params if in_loop and n else ():
+                    if not cur.get(p, 0):  # a step with the group all off
+                        a = anims.setdefault(p, {"order": [], "waits": []})
+                        if 0 not in a["order"]:
+                            a["order"].append(0)
             elif op in (BGON, BGOFF) and bank0 and pos + 3 < len(code) and code[pos + 3] < 8:
                 param, bit = code[pos + 2], 1 << code[pos + 3]
+                if in_loop and param in cur:
+                    cur[param] = (cur[param] | bit) if op == BGON else (cur[param] & ~bit)
                 if not in_loop:
                     on[param] = (on.get(param, 0) | bit) if op == BGON else (on.get(param, 0) & ~bit)
                 elif op == BGON:
@@ -111,7 +131,84 @@ def analyze(raw_field):
     for p, a in anims.items():
         waits = sorted(a["waits"])
         animations[p] = {"order": a["order"], "wait": waits[len(waits) // 2] if waits else 4}
+    for p, a in _loops(sec, _tile_states(raw_field)).items():  # loops script 0's frame loop doesn't hold
+        animations.setdefault(p, a)
     return defaults, animations
+
+
+JMPB, JMPBL = 0x12, 0x13
+
+
+def _scripts(sec):
+    """Yield the bytes of every script of every entity (each from its start to the next script's)."""
+    entities = sec[2]
+    (pos_texts,) = struct.unpack_from("<H", sec, 4)
+    (n_akao,) = struct.unpack_from("<H", sec, 6)
+    pos_scripts = 32 + 8 * entities + 4 * n_akao
+    end_all = min(struct.unpack_from("<I", sec, 32 + 8 * entities)[0] if n_akao else len(sec), pos_texts)
+    table = [struct.unpack_from("<32H", sec, pos_scripts + 64 * e) for e in range(entities)]
+    starts = sorted({p for row in table for p in row} | {end_all})
+    for start in starts[:-1]:
+        yield sec[start:next((p for p in starts if p > start), end_all)]
+
+
+def _tile_states(raw_field):
+    """{param: set of state masks its tiles have}, or None when the background can't be read."""
+    try:
+        from .field import parse_background
+        bg = parse_background("field", raw_field)
+    except Exception:
+        return None
+    out = {}
+    for t in bg.tiles:
+        if t.param:
+            out.setdefault(t.param, set()).add(t.state)
+    return out
+
+
+def _loops(sec, tile_states=None):
+    """{param: {"order", "wait"}} for groups a field script keeps switching (bank 0) in a loop that waits, in
+    whichever script it runs: a backward jump (JMPB/JMPBL) over a WAIT and over two or more states of a group switched
+    on, or one switched on and off (a blink). analyze's frame loop only reads script 0's part after its init, so it
+    missed Junon's sea (jundoc1a/1b, junone7: the wave entity's script 1 cycles its group through 7 states). A BGON
+    whose state comes from a variable (its banks byte's low nibble set) switches whichever state the variable holds:
+    in a loop, that's every state the group's tiles have, in order (colne_6's spinning ball and rkt_w's fire count
+    one up each turn, mrkt3's dancing dolls on the Honey Bee sign); analyze skipped those BGONs (bank 0 only), so
+    these fields showed no animation. The wait: the loop's WAIT frames per state switched on."""
+    out = {}
+    for code in _scripts(sec):
+        ops = list(_ops(code))
+        for pos, op in ops:
+            if op == JMPB and pos + 1 < len(code):
+                target = pos - code[pos + 1]
+            elif op == JMPBL and pos + 2 < len(code):
+                target = pos - struct.unpack_from("<H", code, pos + 1)[0]
+            else:
+                continue
+            body = [(q, o) for q, o in ops if target <= q < pos]
+            waits = sum(struct.unpack_from("<H", code, q + 1)[0] for q, o in body if o == WAIT and q + 2 < len(code))
+            if not waits:
+                continue
+            switched = {}
+            for q, o in body:
+                if o not in (BGON, BGOFF) or q + 3 >= len(code) or code[q + 1] >> 4:  # the group from a variable
+                    continue
+                p = code[q + 2]
+                if code[q + 1] & 0xF:  # the state from a variable: any of the group's
+                    if o == BGON:
+                        mine = sorted((tile_states or {}).get(p, ())) or [1 << i for i in range(8)]
+                        switched.setdefault(p, []).extend((BGON, b, 1) for b in mine)
+                elif code[q + 3] < 8:
+                    switched.setdefault(p, []).append((o, 1 << code[q + 3], 0))
+            for p, events in switched.items():
+                ons = [b for o, b, _ in events if o == BGON]
+                if len(set(ons)) < 2 and not set(ons) & {b for o, b, _ in events if o == BGOFF}:
+                    continue
+                a = out.setdefault(p, {"order": [], "wait": 4})
+                a["order"] += [b for b in ons if b not in a["order"]]
+                steps = sum(1 for o, _, v in events if o == BGON and not v) + any(v for _, _, v in events)
+                a["wait"] = max(1, round(waits / max(steps, 1)))
+    return out
 
 
 def default_states(raw_field):

@@ -42,7 +42,8 @@ python -m venv .venv
 2. Start ComfyUI Desktop, then double-click **`Start Studio.bat`**. The Studio opens at http://127.0.0.1:8765.
    The first start takes about a minute to prepare all 670 fields.
 3. Pick a field, press **Preview**, compare, adjust the look, then **Generate final**.
-4. Set up FFNx once ([Getting started](docs/getting-started.md#4-ffnx)), then press **Install to game**.
+4. Set up FFNx once ([Getting started](docs/getting-started.md#4-ffnx)), then press **Settings ▾ → Install all to
+   game**. From then on, each field's new version goes into the game as soon as it's made.
 
 ## Documentation
 

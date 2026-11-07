@@ -22,6 +22,7 @@ from PIL import Image
 
 MAGICK = "magick"
 UPSCAYL = "upscayl:"
+SYW = "syw"  # the SYW Unified pack's ready-made 4x of the original art (ff7bg/syw.py); the Studio puts it together
 ROOT = Path(__file__).resolve().parent.parent
 EXE = ".exe" if os.name == "nt" else ""
 TIMEOUT = 900  # seconds
@@ -33,7 +34,7 @@ class UpscalerError(RuntimeError):
 
 def is_local(name):
     """Whether this upscaler runs outside ComfyUI."""
-    return bool(name) and (name == MAGICK or name.startswith(UPSCAYL))
+    return bool(name) and (name in (MAGICK, SYW) or name.startswith(UPSCAYL))
 
 
 def find_magick():
@@ -80,13 +81,19 @@ def seconds(name, in_px, out_px):
     """Rough time for one image (pixel counts in and out); not measured on Upscayl yet."""
     if name == MAGICK:
         return 0.4 + 0.08 * out_px / 1e6
+    if name == SYW:  # pages read and put together once per field, then a resize
+        return 0.3 + 0.05 * out_px / 1e6
     return 1.5 + 0.15 * out_px / 1e6 + 0.1 * 16 * in_px / 1e6  # 4x models: the GPU works on 16x the input
 
 
 def upscale(img, name, w, h, cancelled=lambda: False):
-    """img (RGB uint8 array) enlarged by the upscaler `name` to exactly w x h."""
+    """img (RGB uint8 array) enlarged by the upscaler `name` to exactly w x h (already that size: unchanged)."""
     src = Image.fromarray(np.ascontiguousarray(img))
-    if name == MAGICK:
+    if (w, h) == src.size:
+        return np.asarray(src)
+    if name == SYW:  # where the field isn't known (a state's art, a version's): a plain resize, as Lanczos
+        out = src.resize((w, h), Image.LANCZOS)
+    elif name == MAGICK:
         exe = find_magick()
         if not exe:
             out = src.resize((w, h), Image.LANCZOS)
@@ -117,6 +124,8 @@ def finish(img, s, w, h, cancelled=lambda: False):
     upscaler runs inside ComfyUI, or when the graph already made it that size (the detail pass)."""
     if not is_local(s["upscaler"]) or img.shape[:2] == (h, w):
         return img
+    if s["out_scale"] <= 1 and w <= img.shape[1] and h <= img.shape[0]:  # 1x: shrinking, nothing to enlarge
+        return np.asarray(Image.fromarray(np.ascontiguousarray(img)).resize((w, h), Image.LANCZOS))
     return upscale(img, s["upscaler"], w, h, cancelled)
 
 

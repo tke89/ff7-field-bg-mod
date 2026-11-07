@@ -27,13 +27,15 @@ from PIL import Image
 from . import upscalers
 from .ai import apply_color
 from .comfy import FAMILIES, SEEDVR2, build_states_workflow, work_size
-from .sheets import PageCache, render_composite
+from .sheets import PageCache, canvas_rect, render_composite
 
 MARGIN = 32           # context around a cluster's tiles, in original pixels (>= the 32px big tiles)
 MAX_SHEET_MP = 2.2    # Flux works well up to about this size
 MAX_SHEET_SIDE = 1792
 MIN_SHEET_SIDE = 768  # tiny sheets are rendered larger so Flux has room to paint
 KEY_MIN_CHANGE = 0.3  # share of a spot a state must change to get its own painted key frame
+MOVING_FADE = 6       # moving parts' light repaint fades into the scene's over this many original pixels
+MOVING_PAD = 2        # around what changes between their frames
 
 
 @dataclass
@@ -98,6 +100,11 @@ def plan(bg, rect, rendered_defaults):
 
 def _panel_original(bg, rect, cache, cluster, state, rendered_defaults):
     """Original art of the cluster's area with only `state` of its group on (0 = all off)."""
+    return _panel(bg, rect, cache.tile, 1, cluster, state, rendered_defaults)
+
+
+def _panel(bg, rect, tile, scale, cluster, state, rendered_defaults):
+    """The cluster's area from `tile` (a tile source at `scale`) with only `state` of its group on."""
     others = {p: m for p, m in rendered_defaults.items() if p != cluster.param}
 
     def inc(t):
@@ -108,7 +115,7 @@ def _panel_original(bg, rect, cache, cluster, state, rendered_defaults):
         return bool(others.get(t.param, 0) & t.state)
 
     x, y, w, h = cluster.rect
-    return np.asarray(render_composite(bg, rect, cache.tile, 1, inc))[y : y + h, x : x + w]
+    return np.asarray(render_composite(bg, rect, tile, scale, inc))[y * scale : (y + h) * scale, x * scale : (x + w) * scale]
 
 
 def _color(img, M):
@@ -189,22 +196,52 @@ def _soft(mask1, w, h, scale, grow=1):
 
 def _merge(base, art, change1x, scale):
     """`art` in `base` where the 1x mask says, with the edges matched to the surroundings (Poisson
-    blending), so a repainted spot can't show as a lighter or darker patch."""
+    blending), so a repainted spot can't show as a lighter or darker patch. Where the change runs off the
+    panel (a ship cut by the picture's edge) there are no surroundings: the edge is matched to the art
+    itself. Matched to the render there, del1's dark hull took the bright sky and boat behind it as a haze."""
     h, w = change1x.shape
     m = cv2.dilate(change1x, np.ones((5, 5), np.uint8))  # edge in unchanged territory
     if not m.any():
         return base.copy()
     mh = cv2.resize(m * 255, (w * scale, h * scale), interpolation=cv2.INTER_NEAREST)
-    mh[:2, :] = mh[-2:, :] = 0
-    mh[:, :2] = mh[:, -2:] = 0
+    edge = np.zeros(mh.shape, bool)
+    edge[:2, :] = edge[-2:, :] = edge[:, :2] = edge[:, -2:] = True
+    base = base.copy()
+    base[edge & (mh > 0)] = art[edge & (mh > 0)]
+    mh[edge] = 0
     x0, y0, bw, bh = cv2.boundingRect(mh)
     if bw < 3 or bh < 3:
-        return base.copy()
+        return base
     return cv2.seamlessClone(np.ascontiguousarray(art), np.ascontiguousarray(base), mh,
                              (x0 + bw // 2, y0 + bh // 2), cv2.NORMAL_CLONE)
 
 
-def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, cancelled=lambda: False):
+def animated_boxes(bg, rendered_defaults, params):
+    """Where looping animations' solid tiles change the picture between their states (a fan's blades, a gauge's
+    needle), as boxes in canvas pixels (signs.masks' format, with MOVING_FADE): their moving parts."""
+    rect = canvas_rect(bg)
+    cache = PageCache(bg)
+    out = []
+    for p in sorted(params):
+        states = sorted({t.state for t in bg.tiles if t.param == p and not t.blending})
+        if not states:
+            continue
+        c = Cluster(p, states, (0, 0, rect[2], rect[3]), [])
+        base = _panel_original(bg, rect, cache, c, 0, rendered_defaults)
+        changed = np.zeros(base.shape[:2], np.uint8)
+        for s in states:
+            changed |= np.any(_panel_original(bg, rect, cache, c, s, rendered_defaults) != base, axis=2).astype(np.uint8)
+        n, _, stats, _ = cv2.connectedComponentsWithStats(cv2.dilate(changed, np.ones((5, 5), np.uint8)))
+        for k in range(1, n):
+            x, y, w, h = (int(v) for v in stats[k, :4])
+            out.append({"x1": float(max(0, x - MOVING_PAD)), "y1": float(max(0, y - MOVING_PAD)),
+                        "x2": float(min(rect[2], x + w + MOVING_PAD)), "y2": float(min(rect[3], y + h + MOVING_PAD)),
+                        "fade": MOVING_FADE, "param": p})
+    return out
+
+
+def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, cancelled=lambda: False,
+        animated=None, hires=None):
     """Restyle every state; returns panels for ai.build_pages and saves them under work_dir.
 
     Round 1 paints a key frame for each spot the main render doesn't show (a fan that's always
@@ -212,7 +249,15 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
     models, the field's repaint plus state_denoise_boost for the others). Round 2 derives every other
     state from its key (the main render itself where it shows the spot): it starts from the key plus
     what changes in the original (a needle moving, a door opening) and repaints only those pixels, at
-    state_denoise, so frames stay one design. The Upscale workflow instead sends each state's original art through its upscaler (comfy
+    state_denoise, so frames stay one design. Looping animations (`animated`: {group: frame order}) are only
+    touched up, at anim_repaint: every frame of a fan or a gauge is the same painted part, moving as the original's
+    does (repainting them more turned Kalm's wall fan into a window in some frames and a heart in the main render).
+    One that rests on the art underneath (0 in its order) has the main render as its key, however much it changes;
+    one without gets its key painted at anim_repaint too.
+    hires: (tile source, its scale) of a cleaner enlargement of the same pages (the SYW Unified pack's 4x, when the
+    main render started from it): the states' art comes from there instead of the original enlarged; the original
+    still says which pixels a state changes.
+    The Upscale workflow instead sends each state's original art through its upscaler (comfy
     may be None when that runs outside ComfyUI)."""
     work_dir = Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -249,20 +294,42 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
     def changed_from_default(c, s):
         return _changed(view(c, s), default_crop(c))
 
+    views_hi = {}
+
+    def art_at(c, s, g):
+        """A state's art, colour-matched to the new look, at g x: from `hires` (shrunk or enlarged), else the
+        original's enlarged."""
+        w, h = c.rect[2], c.rect[3]
+        if hires is None:
+            view(c, s)
+            return cv2.resize(matched[(id(c), s)], (w * g, h * g), interpolation=cv2.INTER_CUBIC)
+        if (id(c), s) not in views_hi:
+            views_hi[(id(c), s)] = _color(_panel(bg, rect, hires[0], hires[1], c, s, defaults), M)
+        return cv2.resize(views_hi[(id(c), s)], (w * g, h * g),
+                          interpolation=cv2.INTER_AREA if g < hires[1] else cv2.INTER_CUBIC)
+
     if upscale_only:
         keys, derived = [], [(c, s) for c in clusters for s in c.states]
     else:
         keys, derived = _rounds(clusters, defaults)
         # Small changes to what the main render already shows (a needle on a gauge) are derived from it;
         # only states that replace most of a spot (a fan spinning in an empty window) get a key painted.
+        # Looping animations that rest on what the main render shows: always derived from it.
         painted_keys = []
         for c, key in keys:
             area = sum(t * t for _, _, t in c.footprint)
-            (painted_keys if changed_from_default(c, key).sum() >= KEY_MIN_CHANGE * area else derived).append((c, key))
+            rests = 0 in (animated.get(c.param) or ())
+            big = changed_from_default(c, key).sum() >= KEY_MIN_CHANGE * area
+            (painted_keys if big and not rests else derived).append((c, key))
         keys = painted_keys
     key_of = {id(c): s for c, s in keys}
     key_art = {}  # id(cluster) -> painted key at output scale (main crop where the main render is the key)
-    total = len(_pack_items(keys, k)) + len(_pack_items(derived, k))
+    animated = dict(animated or {})
+    looping = set(animated)
+    total = (len(_pack_items([cs for cs in keys if cs[0].param not in looping], k))
+             + len(_pack_items([cs for cs in keys if cs[0].param in looping], k))
+             + len(_pack_items([cs for cs in derived if cs[0].param not in looping], k))
+             + len(_pack_items([cs for cs in derived if cs[0].param in looping], k)))
     done = [0]
 
     def paint(items, start_fn, change_fn, denoise):
@@ -316,11 +383,17 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
         w, h = c.rect[2], c.rect[3]
         view(c, s)
         ctx = cv2.resize(main_crop(c), (w * g, h * g), interpolation=cv2.INTER_AREA).astype(np.float32)
-        art = cv2.resize(matched[(id(c), s)], (w * g, h * g), interpolation=cv2.INTER_CUBIC)
+        art = art_at(c, s, g)
         m = _soft(changed_from_default(c, s), w, h, g)
         return np.clip(ctx * (1 - m) + art * m, 0, 255).astype(np.uint8)
 
-    painted = paint(keys, key_start, changed_from_default, 0.85 if edit else None) if keys else {}
+    painted = {}
+    switched_keys = [cs for cs in keys if cs[0].param not in looping]
+    moving_keys = [cs for cs in keys if cs[0].param in looping]
+    if switched_keys:
+        painted.update(paint(switched_keys, key_start, changed_from_default, 0.85 if edit else None))
+    if moving_keys:
+        painted.update(paint(moving_keys, key_start, changed_from_default, settings["anim_repaint"]))
     for c in clusters:
         key = key_of.get(id(c))
         if key is None:
@@ -343,6 +416,10 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
         w, h = c.rect[2], c.rect[3]
         view(c, s)
         base = cv2.resize(key_art[id(c)], (w * g, h * g), interpolation=cv2.INTER_AREA).astype(np.float32)
+        if hires is not None:  # the change from the key, in the cleaner art
+            key = key_of.get(id(c))
+            delta = art_at(c, s, g) - art_at(c, key if key is not None else defaults.get(c.param, 0), g)
+            return np.clip(base + delta, 0, 255).astype(np.uint8)
         delta = matched[(id(c), s)] - key_matched(c)
         return np.clip(base + cv2.resize(delta, (w * g, h * g), interpolation=cv2.INTER_CUBIC), 0, 255).astype(np.uint8)
 
@@ -350,8 +427,14 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
         return _changed(view(c, s), key_view(c))
 
     todo = [(c, s) for c, s in derived if upscale_only or changed_from_key(c, s).any()]
-    painted2 = paint(todo, derived_start, changed_from_default if upscale_only else changed_from_key,
-                     settings["state_denoise"]) if todo else {}
+    change2 = changed_from_default if upscale_only else changed_from_key
+    painted2 = {}
+    switched = [cs for cs in todo if upscale_only or cs[0].param not in looping]
+    moving = [cs for cs in todo if not upscale_only and cs[0].param in looping]
+    if switched:
+        painted2.update(paint(switched, derived_start, change2, settings["state_denoise"]))
+    if moving:
+        painted2.update(paint(moving, derived_start, change2, settings["anim_repaint"]))
 
     panels = {"images": {}, "off": []}
     index = []

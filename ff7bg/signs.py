@@ -2,7 +2,8 @@
 
 At the repaint strengths that restyle a scene well (0.3-0.5), letters turn into made-up glyphs (Kalm's shop
 signs, Shin-Ra's lobby sign). Qwen3.5 (the scene describer, through ComfyUI's TextGenerate) points out the
-signs as boxes, once per field; the user can add the ones it misses and remove wrong ones. The render then
+signs as boxes, once per field; the user can add the ones it misses, remove wrong ones, and drag an area's corners
+onto a sign at an angle ("quad": its four corners; x1..y2 stay its bounds). The render then
 uses a per-pixel repaint strength (Differential Diffusion): `text_repaint` on the signs, rising smoothly to
 the scene's own over TEXT_FADE original pixels, so there's no visible edge. The edit models (Qwen, FLUX 3,
 Mage-Flow, FIBO 2) paint from scratch instead; they start from the original on the signs and blend it back
@@ -120,34 +121,103 @@ def _marching(a, b, c):
     return same(size(a), size(b)) and same(size(b), size(c)) and same(step(a, b), step(b, c))
 
 
+def quad_of(b):
+    """A sign area's four corners: top-left, top-right, bottom-right, bottom-left (its box's, without its own)."""
+    if b.get("quad"):
+        return [[float(x), float(y)] for x, y in b["quad"]]
+    return [[b["x1"], b["y1"]], [b["x2"], b["y1"]], [b["x2"], b["y2"]], [b["x1"], b["y2"]]]
+
+
+def slanted(b, tol=0.75):
+    """Whether an area's corners were moved off its box (by more than `tol` original pixels)."""
+    if not b.get("quad"):
+        return False
+    rect = quad_of({k: b[k] for k in ("x1", "y1", "x2", "y2")})
+    return max(abs(a - c) for p, r in zip(b["quad"], rect) for a, c in zip(p, r)) > tol
+
+
+def shifted(b, dx, dy):
+    """An area moved by (dx, dy), its corners too."""
+    out = dict(b, x1=b["x1"] + dx, x2=b["x2"] + dx, y1=b["y1"] + dy, y2=b["y2"] + dy)
+    if b.get("quad"):
+        out["quad"] = [[x + dx, y + dy] for x, y in b["quad"]]
+    return out
+
+
+def _corners(quad, w, h):
+    """Four points clamped to the canvas, in order around their middle starting top-left (dragging a corner past
+    another can't make a bow tie), or None."""
+    try:
+        pts = np.array([[float(x), float(y)] for x, y in quad], np.float64)
+    except (TypeError, ValueError):
+        return None
+    if pts.shape != (4, 2) or not np.isfinite(pts).all():
+        return None
+    pts[:, 0] = np.clip(pts[:, 0], 0, w)
+    pts[:, 1] = np.clip(pts[:, 1], 0, h)
+    c = pts.mean(0)
+    pts = pts[np.argsort(np.arctan2(pts[:, 1] - c[1], pts[:, 0] - c[0]))]  # clockwise on screen (y down)
+    pts = np.roll(pts, -int(np.argmin(pts.sum(1))), 0)
+    x, y = pts[:, 0], pts[:, 1]
+    if abs(float(x @ np.roll(y, -1) - y @ np.roll(x, -1))) / 2 < 1:  # no area
+        return None
+    return [[round(float(a), 1), round(float(b), 1)] for a, b in pts]
+
+
 def clean_boxes(boxes, w, h):
-    """Boxes from the Studio (the user's edits), checked and tidied."""
+    """Boxes from the Studio (the user's edits), checked and tidied; an area with corners keeps them, its box
+    their bounds."""
     out = []
     for b in boxes or []:
+        quad = _corners(b["quad"], w, h) if b.get("quad") else None
         try:
-            x1, x2 = sorted((float(b["x1"]), float(b["x2"])))
-            y1, y2 = sorted((float(b["y1"]), float(b["y2"])))
+            if quad:
+                xs, ys = [p[0] for p in quad], [p[1] for p in quad]
+                x1, x2, y1, y2 = min(xs), max(xs), min(ys), max(ys)
+            else:
+                x1, x2 = sorted((float(b["x1"]), float(b["x2"])))
+                y1, y2 = sorted((float(b["y1"]), float(b["y2"])))
         except (KeyError, TypeError, ValueError):
             continue
         x1, x2, y1, y2 = max(0.0, x1), min(float(w), x2), max(0.0, y1), min(float(h), y2)
         if x2 - x1 >= 1 and y2 - y1 >= 1:
-            out.append({"x1": round(x1, 1), "y1": round(y1, 1), "x2": round(x2, 1), "y2": round(y2, 1),
-                        "text": str(b.get("text", ""))[:60], "auto": bool(b.get("auto"))})
+            box = {"x1": round(x1, 1), "y1": round(y1, 1), "x2": round(x2, 1), "y2": round(y2, 1),
+                   "text": str(b.get("text", ""))[:60], "auto": bool(b.get("auto")),
+                   "say": " ".join(str(b.get("say") or "").split())[:60]}  # the user's words for it
+            if quad:
+                box["quad"] = quad
+            if quad and not slanted(box):
+                del box["quad"]  # its corners are its box's
+            out.append(box)
     return out
 
 
 def masks(boxes, w, h, scale, inside):
     """(repaint, keep) masks at w*scale x h*scale, 8-bit. repaint: `inside` (the signs' strength relative to
     the scene's) on the padded boxes, rising smoothly to 1 over TEXT_FADE original pixels; keep: how much
-    each pixel is a sign (1 on them, fading to 0), for keeping them through the detail pass."""
-    hard = np.zeros((h * scale, w * scale), np.uint8)
+    each pixel is a sign (1 on them, fading to 0), for keeping them through the detail pass. A box's own
+    "inside" and "fade" (original pixels) override them (moving parts: their own strength, a shorter fade)."""
+    repaint = np.ones((h * scale, w * scale), np.float32)
+    keep = np.zeros((h * scale, w * scale), np.float32)
+    groups = {}
     for b in boxes:
-        gx = (b["x2"] - b["x1"]) * TEXT_GROW / 2 + 1
-        gy = (b["y2"] - b["y1"]) * TEXT_GROW / 2 + 1
-        x1, y1 = max(0, round((b["x1"] - gx) * scale)), max(0, round((b["y1"] - gy) * scale))
-        x2, y2 = min(w * scale, round((b["x2"] + gx) * scale)), min(h * scale, round((b["y2"] + gy) * scale))
-        hard[y1:y2, x1:x2] = 1
-    r = np.clip(cv2.distanceTransform(1 - hard, cv2.DIST_L2, 5) / (TEXT_FADE * scale), 0, 1)
-    r = r * r * (3 - 2 * r)  # smoothstep: no line where the fade starts or ends
-    repaint = inside + (1 - inside) * r
-    return (repaint * 255).round().astype(np.uint8), ((1 - r) * 255).round().astype(np.uint8)
+        groups.setdefault((b.get("inside", inside), b.get("fade", TEXT_FADE)), []).append(b)
+    for (ins, fade), group in groups.items():
+        hard = np.zeros((h * scale, w * scale), np.uint8)
+        for b in group:
+            if b.get("quad"):  # its own shape, padded about its middle
+                q = np.array(quad_of(b), np.float32)
+                c = q.mean(0)
+                q = c + (q - c) * (1 + TEXT_GROW) + np.sign(q - c)
+                cv2.fillPoly(hard, [np.round(q * scale).astype(np.int32)], 1)
+                continue
+            gx = (b["x2"] - b["x1"]) * TEXT_GROW / 2 + 1
+            gy = (b["y2"] - b["y1"]) * TEXT_GROW / 2 + 1
+            x1, y1 = max(0, round((b["x1"] - gx) * scale)), max(0, round((b["y1"] - gy) * scale))
+            x2, y2 = min(w * scale, round((b["x2"] + gx) * scale)), min(h * scale, round((b["y2"] + gy) * scale))
+            hard[y1:y2, x1:x2] = 1
+        r = np.clip(cv2.distanceTransform(1 - hard, cv2.DIST_L2, 5) / (fade * scale), 0, 1)
+        r = r * r * (3 - 2 * r)  # smoothstep: no line where the fade starts or ends
+        repaint = np.minimum(repaint, ins + (1 - ins) * r)
+        keep = np.maximum(keep, 1 - r)
+    return (repaint * 255).round().astype(np.uint8), (keep * 255).round().astype(np.uint8)

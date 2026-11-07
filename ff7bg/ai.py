@@ -17,6 +17,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 
+from . import palettes
 from .align import drift_stats, find_drift, fit_global, residuals, warp_global
 from .field import parse_background
 from .scripts import analyze
@@ -237,8 +238,112 @@ def prepare_main(bg, ai_path, job, rendered_defaults=None, scale=None, do_align=
     }
 
 
-def build_pages(bg, main, job, mod_root, review_dir, panels=None):
-    """Cut the new art into FFNx pages for the map and its copies, and write the review sheet.
+ADD_BLEND = {1, 3}  # tile blends that add light: add, add a quarter
+# Palette effects with more states than this stay still: every state is a texture FFNx loads while the field plays.
+# 203 fields have under 300; five have 600 to 13,700 (bugin3, rootmap, ancnt2, whitein, crater_2), and SYW's
+# pack turns animation off in those too.
+MAX_ANIMATED_FRAMES = 300
+
+
+def carries_art(t):
+    """Does a blended tile's block hold the original's own art (build_pages block_for: original_tile)? Toggled ones
+    and the parallax layers' (2-3); static ones on layers 0-1 are glow_tile (the AI image, or blank)."""
+    return bool(t.param) or t.layer >= 2
+
+
+STATE_FLOOR = 4.0  # state_light: stored light this dim (0..255, smooth) can't be scaled: the state's light is added
+
+
+def state_light(rgb, stored, state):
+    """An additive tile's art in the stored colours (`rgb`, at the output scale) relit to a palette state: scaled by
+    the state's smooth light over the stored one (luma: per channel, its edges took colour fringes), so the art's own
+    detail (zz7's dithered glow) dims with it; where the stored light is too dim to scale, the state's light added."""
+    luma = np.array([0.2126, 0.7152, 0.0722], np.float32)
+    y0, y1 = stored @ luma, state @ luma
+    k = np.clip(y1 / np.maximum(y0, STATE_FLOOR), 0, 8)[..., None]
+    return np.where((y0 > STATE_FLOOR)[..., None], rgb * k, rgb + np.maximum(state - stored, 0))
+
+
+def animated_pages(bg, anim, stored, pages, scale, M):
+    """FFNx animated textures for a field's palette effects, from this version's own pages: yields
+    ((page, palette, hash), RGBA page) for every palette state the scripts set (palettes.animated_textures).
+
+    Each state is the version's tiles with the state's colour change on top, matched to the new look. The main
+    render has the colours as stored in the field file (`stored`) baked in: tiles that add light get the light a
+    state adds over those, solid tiles change colour both ways. Averaging and subtracting tiles stay as they are.
+    Additive tiles that carry the original's own art (toggled ones and the parallax layers': block_for's
+    original_tile) hold that art in the stored colours, which the game never shows once the scripts run (zz7's
+    crystal glow is stored at 75 and cycles 5-35; woa_2's mist is stored at 46 and set to 21 for good): they take
+    the state's light both ways (state_light). Adding only what a state adds above the stored colours left them at
+    the stored light all the time, 2-14x what the original shows, blown out white over the AI's own painted glow."""
+    lin = M[:3].astype(np.float32)
+    for (page, pal), by_hash in sorted(anim.items()):
+        tiles = [t for t in bg.tiles if t.tex == page and t.palette == pal]
+        if not tiles or page not in pages:
+            continue
+        transparent = bg.transparency[pal] if pal < len(bg.transparency) else True
+
+        def at_1x(colours):
+            return palettes.page_bgra(bg, page, colours, transparent)[..., [2, 1, 0, 3]].astype(np.float32)
+
+        def smooth(a):  # the change is light, not pixels: a soft enlargement, then a little blur
+            a = cv2.resize(a, (256 * scale, 256 * scale), interpolation=cv2.INTER_CUBIC)
+            return cv2.GaussianBlur(a, (0, 0), 0.35 * scale)
+
+        def light(colours):  # a state's light, smooth, in the new look's colours
+            return np.maximum(smooth(at_1x(colours)[..., :3] @ lin), 0)
+        base, src = at_1x(stored[pal]), pages[page]
+        base_alpha = cv2.resize(base[..., 3], (256 * scale, 256 * scale), interpolation=cv2.INTER_LINEAR)
+        base_light = light(stored[pal])
+        for h, colours in sorted(by_hash.items()):
+            delta = smooth((at_1x(colours)[..., :3] - base[..., :3]) @ lin)  # the change, in the new look's colours
+            lit = light(colours) if any(t.blending and carries_art(t) for t in tiles) else None
+            img = np.zeros_like(src)
+            for t in tiles:
+                ys = slice(t.src_y * scale, (t.src_y + t.size) * scale)
+                xs = slice(t.src_x * scale, (t.src_x + t.size) * scale)
+                block, d = src[ys, xs].astype(np.float32), delta[ys, xs]
+                if t.blending and t.type_trans in ADD_BLEND and carries_art(t):
+                    rgb, alpha = state_light(block[..., :3], base_light[ys, xs], lit[ys, xs]), block[..., 3]
+                elif t.blending and t.type_trans in ADD_BLEND:
+                    rgb, alpha = block[..., :3] + np.maximum(d, 0), np.maximum(block[..., 3], base_alpha[ys, xs])
+                elif t.blending:
+                    rgb, alpha = block[..., :3], block[..., 3]
+                else:
+                    rgb, alpha = block[..., :3] + d, block[..., 3]
+                img[ys, xs, :3] = np.clip(rgb, 0, 255)
+                img[ys, xs, 3] = alpha
+            yield (page, pal, h), img
+
+
+def still_light(bg, anim, stored, pages, scale, M):
+    """For a field whose palette effects stay still (over MAX_ANIMATED_FRAMES): the additive tiles that carry the
+    original's art (carries_art) in `pages` relit, in place, to the states' average light instead of the stored
+    colours, which the game never shows (whitein's searchlights: every beam lit at once at the stored colours, where
+    the game sweeps one at a time; ancnt2's light shafts at full where the game pulses them)."""
+    lin = M[:3].astype(np.float32)
+    for (page, pal), by_hash in sorted(anim.items()):
+        tiles = [t for t in bg.tiles if t.tex == page and t.palette == pal and t.blending
+                 and t.type_trans in ADD_BLEND and carries_art(t)]
+        if not tiles or page not in pages or not by_hash:
+            continue
+        transparent = bg.transparency[pal] if pal < len(bg.transparency) else True
+
+        def light(colours):
+            a = palettes.page_bgra(bg, page, colours, transparent)[..., [2, 1, 0]].astype(np.float32) @ lin
+            a = cv2.resize(a, (256 * scale, 256 * scale), interpolation=cv2.INTER_CUBIC)
+            return np.maximum(cv2.GaussianBlur(a, (0, 0), 0.35 * scale), 0)
+        base, mean = light(stored[pal]), np.mean([light(c) for c in by_hash.values()], 0)
+        for t in {(t.src_x, t.src_y): t for t in tiles}.values():  # a block several tiles use is relit once
+            ys = slice(t.src_y * scale, (t.src_y + t.size) * scale)
+            xs = slice(t.src_x * scale, (t.src_x + t.size) * scale)
+            block = pages[page][ys, xs]
+            block[..., :3] = np.clip(state_light(block[..., :3].astype(np.float32), base[ys, xs], mean[ys, xs]), 0, 255)
+
+
+def build_pages(bg, main, job, mod_root, review_dir, panels=None, raw=None, anim_cache=None):
+    """Cut the new art into FFNx pages for the map and its copies, and write the review sheet. With the field's
+    raw data, also its palette effects as animated textures (anim_cache: where the replayed states are kept).
 
     panels (from the states pass): {"images": {(param, state): (rect, RGB)},
     "off": [(rect, footprint, RGB)]}, each image covering its rect at the output scale."""
@@ -301,7 +406,7 @@ def build_pages(bg, main, job, mod_root, review_dir, panels=None):
     bare = 1 - solid
     # one glow per spot carries it: the last drawn, so averaging glows drawn after it can't halve it
     carrier = {}
-    for t in draw_order([t for t in bg.tiles if t.blending and not t.param]):
+    for t in draw_order([t for t in bg.tiles if t.blending and not t.param and t.layer < 2]):
         carrier[(t.dst_x, t.dst_y)] = id(t)
     GAIN = {1: 1, 3: 4, 0: 2}  # add, add a quarter, average (over black); subtract can't add light
 
@@ -336,8 +441,12 @@ def build_pages(bg, main, job, mod_root, review_dir, panels=None):
             return np.dstack([ai_hi[y : y + sz, x : x + sz], tile_alpha(cache.tile(t), scale)])
 
         if t.blending:
-            # static glows: see glow_tile; toggled ones stay additive overlays of the original art
-            return glow_tile(t) if not t.param else original_tile(t)
+            # static glows: see glow_tile; toggled ones stay additive overlays of the original art, and so do the
+            # parallax layers' (2-3): the game scrolls those apart from the scene (the Ancient Forest's light shafts
+            # were 374 and 205 px off the scene's place at the review's spots), so the AI image can't hold them
+            # where they're drawn. Blanked, anfrst_1's beam was gone wherever the game shows it; carried as the AI
+            # image (glow_tile over nothing solid), anfrst_3 got a bright copy of the picture with tile edges.
+            return glow_tile(t) if not t.param and t.layer < 2 else original_tile(t)
         if t.param:
             found = state_panel(t)
             if found:
@@ -356,9 +465,24 @@ def build_pages(bg, main, job, mod_root, review_dir, panels=None):
         return original_tile(t)
 
     pages = swizzle(bg, scale, block_for)
+    frames, too_many, anim = 0, 0, {}
+    if raw is not None:
+        anim = (palettes.animated_textures_cached(raw, bg, anim_cache) if anim_cache
+                else palettes.animated_textures(raw, bg))
+        if sum(len(v) for v in anim.values()) > MAX_ANIMATED_FRAMES:
+            still_light(bg, anim, palettes.file_palettes(raw), pages, scale, M)
+            too_many, anim = sum(len(v) for v in anim.values()), {}
     written = write_pages(bg.name, pages, mod_root)
     for copy in job["copies"]:
         write_pages(copy, pages, mod_root)
+    if anim:
+        for (page, pal, hsh), img in animated_pages(bg, anim, palettes.file_palettes(raw), pages, scale, M):
+            for n in (bg.name, *job["copies"]):
+                d = Path(mod_root) / "field" / n
+                d.mkdir(parents=True, exist_ok=True)
+                # FFNx's name for it: the hash as %llx prints it, no leading zeros
+                Image.fromarray(img, "RGBA").save(d / f"{n}_{page:02d}_{pal:02d}_{hsh:x}.png", compress_level=3)
+            frames += 1
 
     # Review sheet: original | AI as returned | what the game will draw, with checks overlaid.
     # Built at panel size; the checks don't need the full 8x resolution.
@@ -392,6 +516,7 @@ def build_pages(bg, main, job, mod_root, review_dir, panels=None):
         "drift_before": before, "drift_after": after, "missing": main["missing"],
         "aligned": after is not before, "edges_kept": edges_kept(orig, main["ai_1x"]),
         "state_panels": sum(len(v) for v in panels["images"].values()) + len(panels["off"]),
+        "animated_frames": frames, "animation_left_still": too_many,
     }
 
 
