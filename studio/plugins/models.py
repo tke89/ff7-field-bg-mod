@@ -33,6 +33,13 @@ the ★ painted version, the light (taken from the painting), haze and the chara
 swaying grass, particles) and surface relief, for FFNx-3d. Build is a queue job (JOB_LOOK; the AI parts, life and
 relief, wait for the game to be closed); Install and Uninstall are the user's clicks only, with the parts they tick.
 
+A battle model's "Paint in 2D style" (ff7bg/models/battleatlas.py; docs/models-plan.md, "Painted textures for
+untextured battle models"): one painted texture over every triangle of the model (FFNx-3d's battle atlas), so models
+without textures (most enemies) can be painted too, in the 2D anime style the user picked for battles. Its own settings
+(model.json "paint2d", P2D_DEFAULTS), a queue job (JOB_2D: battleatlas' build, paint and export into a new version
+folder, work/models/battle/atlas/<id>/<version>/), the versions there (the ★ one: model.json "current2d") and Install /
+Uninstall (battleatlas' manifest; the user's clicks only). The engine lights atlas-drawn parts flat by itself.
+
 SYW Unified Battle Textures (Tsunamods, in 7th Heaven's library; restyle.syw_battle_*): its ready-made 4x of a model's
 textures can be the upscaler before painting (battle scenes and battle models; the default upscaler for any it lacks),
 and the viewer's SYW mode shows it. Square Enix's art upscaled by the SYW team: for use on this PC.
@@ -45,6 +52,7 @@ Files (ai/models/):
 - thumbs/<kind>_<id>.jpg: the original's list thumbnail
 - installed.json: per installed model the files copied into the game and the backups of files they replaced
 - backup/<kind>_<id>/: those backups
+(a battle model's 2D paintings are battleatlas' own: work/models/battle/atlas/, its installed.json)
 
 kind: "scene" (battle scene, id "oq"), "battle" (battle character or enemy, "rt"), "field" (field model, "AAAA")."""
 import io
@@ -189,6 +197,39 @@ LIVE_PICKUP = 3.0    # s: how long the game gets to take a command file before i
 LIVE_ANSWER = 1.5    # s: ...and then to write its answer in log.txt
 SUMMARY = ("family", "denoise", "keep_colors", "depth_lock", "describe_scene", "steps", "cfg", "seed", "prompt",
            "work_mp", "style_refs", "style_ref_strength")
+
+# Paint in 2D style (battle models; battleatlas): the user's settings per model (model.json "paint2d"; None: battleatlas'
+# own, LOOK painterly, STRENGTH 0.55, ATLAS_SIZE 2048), the job, a version's pictures (its preview/ folder: battle.jpg
+# the resting battle camera, original | painted; turntable.jpg all round; vs_target.jpg against the 2D target, for the
+# models in it (Zolom, Cloud, Barret); moving.jpg its separately moving parts (Zolom's tongue); identity.png the game's
+# own colours on the new texture against the original) and each view the AI painted (view_NN.jpg, original | painted)
+JOB_2D = "model_2d"
+P2D_DEFAULTS = {"look": None, "strength": None, "words": "", "size": None}
+P2D_SIZES = (1024, 2048, 4096)  # the game is 32-bit: 4096 px is 64 MB decoded (85 with its smaller copies)
+P2D_PICTURES = ("battle.jpg", "turntable.jpg", "vs_target.jpg", "moving.jpg", "identity.png")
+P2D_VIEW = re.compile(r"view_\d{2}\.jpg")
+P2D_VIEW_SECONDS = 5.0     # a view painted and put on, before any 2D paint has run here (Zolom: 61 s for 12 views)
+P2D_VIEWS = 12             # ...and the views when the model's own can't be counted
+P2D_EXTRA_SECONDS = 15.0   # the rest at 2048 px: laying out the texture, the check, the pictures, saving
+P2D_SEARCH = {"painted": "2d painted", "game": "2d in game"}  # the list's search words per 2D status
+
+
+def clean_p2d(ps, looks=None):
+    """A model's 2D paint settings, checked, every key there (P2D_DEFAULTS for anything missing or wrong). looks: the
+    Studio's look ids (a look that's gone falls back to the default)."""
+    ps = ps if isinstance(ps, dict) else {}
+    out = dict(P2D_DEFAULTS)
+    v = ps.get("look")
+    if isinstance(v, str) and v and (looks is None or v in looks):
+        out["look"] = v
+    v = ps.get("strength")
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        out["strength"] = round(min(max(float(v), STRENGTH_RANGE[0]), STRENGTH_RANGE[1]) * 20) / 20
+    if isinstance(ps.get("words"), str):
+        out["words"] = " ".join(ps["words"].split())[:PROMPT_MAX]
+    if ps.get("size") in P2D_SIZES and not isinstance(ps.get("size"), bool):
+        out["size"] = int(ps["size"])
+    return out
 
 
 def _safe_name(s):
@@ -363,8 +404,9 @@ def register(studio):
         if empty_scene(kind, e):
             return False, "This battle scene is empty in the game's files (the game shows black there), so there's nothing to paint."
         if kind == "battle" and not e.get("textures"):
-            return False, ("This model has no textures: all its colour comes from the model itself, so there's "
-                           "nothing the game could take a painting on yet.")
+            return False, ("This model has no textures: all its colour comes from the model itself, so the Paint card "
+                           "has nothing to paint on. The Paint in 2D style card can: it gives the whole model a painted "
+                           "texture of its own.")
         return True, ""
 
     # ---------------------------------------------------------------- per model files
@@ -1232,6 +1274,7 @@ def register(studio):
                             "search": " ".join([hrc, e["name"], *names, *fields[:60]]).lower(), "textured": True})
             out.sort(key=lambda x: (-x["uses"], x["title"], x["id"]))
         else:
+            p2d_list = p2d_status() if kind == "battle" else {}
             for mid, e in cat["battle"].items():
                 if (e["kind"] == "scene") != (kind == "scene"):
                     continue
@@ -1249,8 +1292,9 @@ def register(studio):
                     tex = bool(e.get("textures"))
                     what = {"party": "party", "enemy": "enemy", "other": "not in any battle"}[e["kind"]]
                     sub = f"{what} · {mid}" + ("" if tex else " · no textures")
-                    out.append({"id": mid, "title": t, "sub": sub, "search": f"{mid} {t} {what}".lower(),
-                                "textured": tex,
+                    p2 = p2d_list.get(mid, "")
+                    out.append({"id": mid, "title": t, "sub": sub, "p2d": p2,
+                                "search": f"{mid} {t} {what} {P2D_SEARCH.get(p2, '')}".lower(), "textured": tex,
                                 "order": ({"party": 0, "enemy": 1, "other": 2}[e["kind"]] if tex else 3,
                                           t.lower() if e["kind"] != "party" else "", e["index"])})
             out.sort(key=lambda x: x["order"])
@@ -1746,6 +1790,353 @@ def register(studio):
         look_last[mid] = {"ok": True, "message": job["note"], "at": time.time(), "version": vid}
         w._stage("done", 1.0)
 
+    # ---------------------------------------------------------------- paint in 2D style (battle models)
+
+    P2D_GAME_RUNNING = ("Your game is running. Painting in 2D style is done by the AI, which shares the graphics card "
+                        "with the game, so it has to wait until the game is closed: close the game, then press Paint "
+                        "again.")
+    P2D_NO_COMFY = ("ComfyUI isn't running (or isn't reachable), and painting in 2D style needs it: start ComfyUI, then "
+                    "press Paint again.")
+    P2D_NO_NAME = ("The game's own name for this model isn't known here (it's one of the Galian Beast's forms), so the "
+                   "game couldn't find a painting for it: it can't be painted in 2D style.")
+    p2d_game = {"at": 0.0, "running": False}  # the game running, as last asked (tasklist), for the page
+    p2d_secs = {"at": 0.0, "paint": None}     # the AI's part of the 2D paints so far, on average
+
+    def batlas():
+        """ff7bg.models.battleatlas, imported when first needed (an error in it shows on the card, not here)."""
+        from ff7bg.models import battleatlas
+        return battleatlas
+
+    def p2d_settings(mid):
+        return clean_p2d(model_meta("battle", mid).get("paint2d"), project.looks.data["looks"])
+
+    def p2d_default_look(A):
+        """battleatlas' look (painterly) when it's one of the user's, else the Studio's default look."""
+        data = project.looks.data
+        return A.LOOK if A.LOOK in data["looks"] else data["default"]
+
+    def p2d_effective(A, ps):
+        """What a paint uses: the user's settings, and battleatlas' own where they're None."""
+        return {"look": ps["look"] or p2d_default_look(A),
+                "strength": ps["strength"] if ps["strength"] is not None else float(A.STRENGTH),
+                "size": ps["size"] or int(A.ATLAS_SIZE), "words": ps["words"]}
+
+    def p2d_game_running(fresh=False):
+        """Is the game running (battlelight.game_running: the task list)? Asked at most every 3 s for the page."""
+        if fresh or time.time() - p2d_game["at"] > 3:
+            p2d_game.update(running=bool(bl().game_running()), at=time.time())
+        return p2d_game["running"]
+
+    def p2d_time(text, fallback):
+        """battleatlas' "%Y-%m-%d %H:%M:%S" times as seconds since 1970 (the page's times)."""
+        try:
+            return time.mktime(time.strptime(str(text), "%Y-%m-%d %H:%M:%S"))
+        except (ValueError, OverflowError):
+            return fallback
+
+    def p2d_dirs(A, mid):
+        """The model's build folders (battleatlas' versions: an info.json in them; not one being made)."""
+        d = A.WORK / mid
+        if not d.is_dir():
+            return []
+        return [p for p in d.iterdir() if p.is_dir() and not p.name.endswith(".partial") and (p / "info.json").exists()]
+
+    def p2d_versions(A, mid):
+        """The model's 2D versions, oldest first: what each was painted with and its pictures."""
+        out = []
+        for p in p2d_dirs(A, mid):
+            try:
+                info = json.loads((p / "info.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            pt, st = info.get("painted") or {}, info.get("studio") or {}
+            prev = p / "preview"
+            out.append({"id": p.name, "at": p2d_time(info.get("at"), p.stat().st_mtime), "painted": bool(pt),
+                        "look": pt.get("look"), "strength": pt.get("strength"),
+                        "size": (info.get("atlas") or {}).get("size"), "seconds": pt.get("seconds"),
+                        "views": len(pt.get("views") or []),
+                        "studio": bool(st), "words": st.get("words") if st else None,
+                        "prompt": pt.get("words") or "", "described": pt.get("describer") or "",
+                        "graded": bool(info.get("graded")), "pictures": [n for n in P2D_PICTURES if (prev / n).exists()],
+                        "view_pictures": sorted(x.name for x in prev.glob("view_*.jpg") if P2D_VIEW.fullmatch(x.name))
+                        if prev.is_dir() else []})
+        out.sort(key=lambda v: (v["at"], v["id"]))
+        return out
+
+    def p2d_current(A, mid, versions):
+        """The ★ version: the one picked (model.json "current2d"), else the one in the game, else the newest painted."""
+        ids = [v["id"] for v in versions]
+        cur = model_meta("battle", mid).get("current2d")
+        if cur in ids:
+            return cur
+        inst = (A.installed().get(mid) or {}).get("version")
+        if inst in ids:
+            return inst
+        return ([v["id"] for v in versions if v["painted"]] or ids or [None])[-1]
+
+    def p2d_status():
+        """Per battle model with 2D versions: "game" (in the game), "painted" (a painted version) or "built" (only the
+        game's own colours on the new texture): the list's status."""
+        try:
+            A = batlas()
+            out = {}
+            if A.WORK.is_dir():
+                for d in A.WORK.iterdir():
+                    if not d.is_dir():
+                        continue
+                    found = ""
+                    for p in p2d_dirs(A, d.name):
+                        found = found or "built"
+                        try:
+                            if json.loads((p / "info.json").read_text(encoding="utf-8")).get("painted"):
+                                found = "painted"
+                                break
+                        except (OSError, ValueError):
+                            pass
+                    if found:
+                        out[d.name] = found
+            for k in A.installed():
+                out[k] = "game"
+            return out
+        except Exception:
+            traceback.print_exc()  # the list shows without it
+            return {}
+
+    def p2d_job(mid):
+        """This model's 2D paint in the Studio's queue: "running", "queued" or None."""
+        st, name = worker.state(), job_name("battle", mid)
+        cur = st.get("current")
+        if cur and cur.get("name") == name and cur.get("kind") == JOB_2D:
+            return "running"
+        return "queued" if any(j["name"] == name and j["kind"] == JOB_2D for j in st["queued"]) else None
+
+    def p2d_rel(path):
+        """A path in the game's folder, from there (as the page shows them)."""
+        game = str(bl().GAME).rstrip("\\/") + os.sep
+        path = str(path)
+        return path[len(game):] if path.lower().startswith(game.lower()) else path
+
+    def p2d_problems(inst):
+        """What isn't as Install left it: its files gone, or changed since."""
+        import hashlib
+        out = []
+        for f in inst.get("files", []):
+            p = Path(f["path"])
+            try:
+                if not p.exists():
+                    out.append(f"{p2d_rel(p)} is gone")
+                elif hashlib.sha1(p.read_bytes()).hexdigest() != f.get("sha1"):
+                    out.append(f"{p2d_rel(p)} was changed after Install put it there")
+            except OSError as ex:
+                out.append(f"{p2d_rel(p)}: {ex}")
+        return out
+
+    def p2d_view_count(A, mid):
+        """How many views a paint of this model has (battleatlas.model_views: its round, close and moving parts'
+        views, and its battle cameras), or None."""
+        try:
+            mv = A.model_views(mid)
+            n = (len(mv.get("orbit") or []) + len(mv.get("close") or [])
+                 + sum(len(p.get("views") or []) for p in mv.get("moving") or []))
+            if mv.get("battle_cameras", "first") != "none":
+                n += len(A.battle_views(mid))
+            return n or None
+        except Exception:
+            return None
+
+    def p2d_estimate(A, mid, size):
+        """Rough seconds a 2D paint takes: its views at what a view took in the paints so far (P2D_VIEW_SECONDS before
+        any), plus the rest, which grows with the painting's size."""
+        if time.time() - p2d_secs["at"] > 30:
+            per = []
+            try:
+                for p in A.WORK.glob("*/*/info.json"):
+                    try:
+                        pt = json.loads(p.read_text(encoding="utf-8")).get("painted") or {}
+                    except (OSError, ValueError):
+                        continue
+                    s, n = pt.get("seconds"), len(pt.get("views") or [])
+                    if isinstance(s, (int, float)) and not isinstance(s, bool) and s > 0 and n:
+                        per.append(float(s) / n)
+            except OSError:
+                pass
+            p2d_secs.update(at=time.time(), paint=sum(per) / len(per) if per else None)
+        views = p2d_view_count(A, mid) or P2D_VIEWS
+        return round(views * (p2d_secs["paint"] or P2D_VIEW_SECONDS) + P2D_EXTRA_SECONDS * max(1.0, (size / 2048) ** 2))
+
+    def p2d_view(e):
+        """A battle model's 2D painting for the page: its settings (and what they mean with battleatlas' defaults), its
+        versions with their pictures, the ★ one, what's in the game (and whether it's as Install left it), the game
+        running, the last failure, rough seconds."""
+        mid = key_of("battle", e)
+        out = {"id": mid, "title": title("battle", e), "party": e["kind"] == "party", "can": True, "why_not": "",
+               "versions": [], "current": None, "installed": None, "problems": [], "error": None,
+               "job": p2d_job(mid), "game_running": False}
+        try:
+            A = batlas()
+        except Exception as ex:
+            traceback.print_exc()
+            out["error"] = f"The 2D painting's code didn't load: {type(ex).__name__}: {ex}"
+            return out
+        if not battle.game_name(mid):
+            out.update(can=False, why_not=P2D_NO_NAME)
+        ps = p2d_settings(mid)
+        eff = p2d_effective(A, ps)
+        s = project.looks.look_settings(eff["look"])
+        versions = p2d_versions(A, mid)
+        cur = p2d_current(A, mid, versions)
+        inst = A.installed().get(mid)
+        for v in versions:
+            v["current"] = v["id"] == cur
+            v["installed"] = bool(inst) and inst.get("version") == v["id"]
+        tex_inst = installed_all().get(f"battle/{mid}")
+        try:
+            dest = p2d_rel(A.atlas_dir())
+        except Exception:
+            dest = "mesh\\battle\\atlas"
+        out.update({
+            "settings": ps, "effective": eff,
+            "defaults": {"look": p2d_default_look(A), "strength": float(A.STRENGTH), "size": int(A.ATLAS_SIZE)},
+            "sizes": list(P2D_SIZES), "strength_range": list(STRENGTH_RANGE),
+            "uses_strength": s.get("family") in REPAINT_FAMILIES, "family": s.get("family"),
+            "versions": versions, "current": cur,
+            "installed": ({"version": inst.get("version"), "at": p2d_time(inst.get("at"), None),
+                           "files": len(inst.get("files", []))} if inst else None),
+            "problems": p2d_problems(inst)[:8] if inst else [],
+            "error": model_meta("battle", mid).get("error2d"),
+            "game_running": p2d_game_running(), "estimate": p2d_estimate(A, mid, eff["size"]),
+            "dest": dest, "game_name": battle.game_name(mid),
+            "textures_installed": bool(tex_inst),
+        })
+        return out
+
+    def p2d_label(label):
+        """battleatlas' view labels in the page's words ("formation 469 camera 0" -> "battle 469's camera 1")."""
+        m = re.fullmatch(r"formation (\d+) camera (\d+)", str(label))
+        return f"battle {m.group(1)}'s camera {int(m.group(2)) + 1}" if m else str(label)
+
+    def p2d_next(A, mid):
+        """The next version name (v1, v2, ...) after every one there, those being made included."""
+        d = A.WORK / mid
+        n = [int(m.group(1)) for p in (d.iterdir() if d.is_dir() else [])
+             if (m := re.fullmatch(r"v(\d+)(?:\.partial)?", p.name))]
+        return f"v{max(n, default=0) + 1}"
+
+    def p2d_identity(A, bat, out):
+        """battleatlas' identity check from the model's resting battle camera (as its build command does): the game's
+        own colours on the new texture against the original, preview/identity.png and the numbers; None when the
+        model has no battle camera."""
+        try:
+            views = A.battle_views(bat.id)
+            if not views:
+                return None
+            _, cam, pos, _ = views[0]
+            yaw = A.model_yaw(bat.id) if hasattr(A, "model_yaw") else A.ENEMY_YAW  # the party faces the other way
+            o, a, st = A.identity(bat, cam, pos, yaw)
+            d = np.abs(o.astype(int) - a.astype(int)).max(-1)
+            heat = np.clip(d * 16, 0, 255).astype(np.uint8)
+            Image.fromarray(np.hstack([o, a, np.dstack([heat] * 3)])).save(Path(out) / "identity.png")
+            return st
+        except Exception:
+            traceback.print_exc()  # only a check
+            return None
+
+    def p2d_make(w, A, mid, eff):
+        """battleatlas.make (the CLI's `paint`: the texture laid out, the identity check, the paint with the model's own
+        recipe, the game's colours put back, the grade, the pictures and the files, checked) for the queue. Made as
+        <version>.partial and renamed when complete, so a cancel or a failure leaves nothing half made. Returns the
+        version id. The painting size: the user's, else battleatlas' own choice (smaller for the party)."""
+        t0 = time.time()
+        vid = p2d_next(A, mid)
+        tmp = A.WORK / mid / f"{vid}.partial"
+        if tmp.exists():
+            shutil.rmtree(tmp)
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+
+        def progress(i, n, label):
+            w._stage(f"painting the views: {i} of {n} done (the last: {p2d_label(label)})", 0.1 + 0.8 * i / max(n, 1))
+
+        w._stage("laying out the model's surface on one painted texture, then painting the first view", 0.05)
+        try:
+            size = None if eff["size"] == getattr(A, "ATLAS_SIZE", None) else eff["size"]
+            try:
+                _folder, info = A.make(mid, size=size, look=eff["look"], strength=eff["strength"],
+                                       extra_words=eff["words"] or "", url=project.comfy_url, progress=progress,
+                                       cancelled=lambda: bool(w.cancel_flag), out_dir=tmp)
+            except ValueError as e:
+                raise Plain(f"The painted texture didn't come out right, so it wasn't kept: {e}")
+            w._stage("saving", 0.97)
+            info_file = tmp / "info.json"
+            if info_file.exists():
+                data = json.loads(info_file.read_text(encoding="utf-8"))
+                data["studio"] = {"words": eff["words"], "look": eff["look"], "strength": eff["strength"],
+                                  "size": size, "seconds": round(time.time() - t0)}
+                info_file.write_text(json.dumps(data, indent=1), encoding="utf-8")
+            while (A.WORK / mid / vid).exists():  # made by someone else meanwhile (battleatlas' own command)
+                vid = f"v{int(vid[1:]) + 1}"
+            tmp.rename(A.WORK / mid / vid)
+        except BaseException:
+            shutil.rmtree(tmp, ignore_errors=True)
+            try:
+                tmp.parent.rmdir()  # the model's folder, when this was to be its first version
+            except OSError:
+                pass
+            raise
+        return vid
+
+    def run_p2d(w, job):
+        """A 2D paint of a battle model (JOB_2D) with the settings it was queued with: the game closed and ComfyUI up
+        first, then p2d_make. The new version becomes the ★ one; the game isn't touched."""
+        import requests
+        kind, mid = parse_job_name(job["name"])
+        if kind != "battle":
+            raise Plain("Only battle characters and enemies are painted in 2D style.")
+        e = entry_or_raise(kind, mid)
+        mid = key_of(kind, e)
+        A = batlas()
+        eff = p2d_effective(A, clean_p2d(job.get("settings"), project.looks.data["looks"]))
+        started = time.time()
+        try:
+            if not battle.game_name(mid):
+                raise Plain(P2D_NO_NAME)
+            w._stage("checking that the game is closed", 0.01)
+            if p2d_game_running(fresh=True):
+                raise Plain(P2D_GAME_RUNNING)
+            w._stage("connecting to ComfyUI", 0.02)
+            if not studio.Comfy(project.comfy_url).online():
+                raise Plain(P2D_NO_COMFY)
+            vid = p2d_make(w, A, mid, eff)
+        except InterruptedError:
+            raise
+        except (urllib.error.URLError, ConnectionError, requests.ConnectionError) as ex:
+            save_model_meta(kind, mid, error2d=P2D_NO_COMFY)
+            raise Plain(P2D_NO_COMFY) from ex
+        except ValueError as ex:
+            msg = str(ex)
+            if "no formation" in msg:  # battleatlas.paint: no battle puts it anywhere to paint it from
+                msg = ("It couldn't be painted: the painting starts from a battle's own cameras, looking at the model "
+                       "where that battle puts it, and the game's battle data has no battle with it in. "
+                       f"(It said: {ex}.)")
+            else:
+                msg = f"ValueError: {ex}"
+            save_model_meta(kind, mid, error2d=msg)
+            raise Plain(msg) from ex
+        except Exception as ex:
+            save_model_meta(kind, mid, error2d=str(ex) if isinstance(ex, Plain) else f"{type(ex).__name__}: {ex}")
+            raise
+        save_model_meta(kind, mid, current2d=vid, error2d=None)
+        job["version"] = vid
+        job["note"] = f"painted in 2D style: {vid} in {round(time.time() - started)} s"
+        w._stage("done", 1.0)
+
+    def p2d_est(name):
+        try:
+            kind, mid = parse_job_name(name)
+            A = batlas()
+            return p2d_estimate(A, mid, p2d_effective(A, p2d_settings(mid))["size"])
+        except Exception:
+            return round(P2D_VIEWS * P2D_VIEW_SECONDS + P2D_EXTRA_SECONDS)
+
     # ---------------------------------------------------------------- routes
 
     bp = Blueprint("ff7_models", __name__, url_prefix="/api/modelpaint")
@@ -2087,10 +2478,133 @@ def register(studio):
         left = [p[len(game):] if p.lower().startswith(game.lower()) else p for p in left]
         return jsonify(look=look_view(e), removed=removed, left=left, sections=len(sections))
 
+    @bp.get("/paint2d/<mid>")
+    @safe
+    def api_p2d(mid):
+        return jsonify(p2d_view(entry("battle", mid)))
+
+    @bp.get("/paint2d/game")
+    @safe
+    def api_p2d_game():
+        """Is the game running (for the card's warning: painting waits until it's closed)."""
+        return jsonify(running=p2d_game_running())
+
+    @bp.get("/paint2d/<mid>/<vid>/<name>")
+    @safe
+    def api_p2d_picture(mid, vid, name):
+        e = entry("battle", mid)
+        if (name not in P2D_PICTURES and not P2D_VIEW.fullmatch(name)) or vid.startswith(".") or vid.endswith(".partial"):
+            abort(404)
+        p = batlas().WORK / key_of("battle", e) / _safe_name(vid) / "preview" / name
+        if not p.exists():
+            abort(404)
+        return send_file(p, mimetype="image/png" if name.endswith(".png") else "image/jpeg", max_age=0)
+
+    @bp.post("/paint2d/settings")
+    @safe
+    def api_p2d_settings():
+        """Change a battle model's 2D paint settings (any of P2D_DEFAULTS' keys; null for battleatlas' own), or reset:
+        all back to the defaults."""
+        body = request.get_json(force=True)
+        e = entry("battle", body.get("id"))
+        mid = key_of("battle", e)
+        looks_ = project.looks.data["looks"]
+        if body.get("reset"):
+            ps = dict(P2D_DEFAULTS)
+        else:
+            if body.get("look") not in (None, "") and body["look"] not in looks_:
+                abort(400)
+            ps = p2d_settings(mid)
+            ps.update({k: body[k] for k in P2D_DEFAULTS if k in body})
+            ps = clean_p2d(ps, looks_)
+            A = batlas()  # the defaults stored as None: they follow battleatlas' own
+            if ps["look"] == p2d_default_look(A):
+                ps["look"] = None
+            if ps["size"] == int(A.ATLAS_SIZE):
+                ps["size"] = None
+            if ps["strength"] is not None and abs(ps["strength"] - float(A.STRENGTH)) < 1e-6:
+                ps["strength"] = None
+        save_model_meta("battle", mid, paint2d=ps)
+        return jsonify(p2d_view(e))
+
+    @bp.post("/paint2d/paint")
+    @safe
+    def api_p2d_paint():
+        """Queue a 2D paint of a battle model with its settings as they are. While the game runs nothing is queued:
+        the AI waits until it's closed, and the page says so."""
+        body = request.get_json(force=True)
+        e = entry("battle", body.get("id"))
+        mid = key_of("battle", e)
+        if not battle.game_name(mid):
+            return jsonify(message=P2D_NO_NAME), 409
+        if p2d_game_running(fresh=True):
+            return jsonify(message=P2D_GAME_RUNNING, game_running=True), 409
+        A = batlas()
+        ps = p2d_settings(mid)
+        eff = p2d_effective(A, ps)
+        job = studio.make_job(job_name("battle", mid), JOB_2D, family=project.looks.look_settings(eff["look"]).get("family"),
+                              settings=ps)
+        job["est"] = p2d_estimate(A, mid, eff["size"])
+        return jsonify(added=worker.enqueue([job]), est=job["est"])
+
+    @bp.post("/paint2d/use")
+    @safe
+    def api_p2d_use():
+        """Mark a 2D version ★: the one Install puts in the game (the game itself isn't touched)."""
+        body = request.get_json(force=True)
+        e = entry("battle", body.get("id"))
+        mid = key_of("battle", e)
+        if body.get("version") not in {v["id"] for v in p2d_versions(batlas(), mid)}:
+            abort(404)
+        save_model_meta("battle", mid, current2d=body["version"])
+        return jsonify(p2d_view(e))
+
+    @bp.post("/paint2d/install")
+    @safe
+    def api_p2d_install():
+        """Put the ★ 2D version into the game (battleatlas.install; only ever from the user's click). It replaces the
+        model's earlier one, and refuses, writing nothing, where a file it would write isn't its own."""
+        body = request.get_json(force=True)
+        e = entry("battle", body.get("id"))
+        mid = key_of("battle", e)
+        A = batlas()
+        vid = p2d_current(A, mid, p2d_versions(A, mid))
+        if not vid:
+            return jsonify(message="Nothing to install yet: paint it first."), 409
+        before = (" The 2D painting that was in the game before was taken out first, so battles show the model as the "
+                  "game draws it now." if mid in A.installed() else "")
+        try:
+            got = A.install(mid, vid)
+        except FileExistsError as ex:
+            # "not ours, left alone: <path>, <path>": files in the game's folder
+            what = "; ".join(p2d_rel(x.strip()) for x in str(ex).split(":", 1)[-1].split(", ") if x.strip())
+            return jsonify(message="Nothing was installed. Some of the files it would write in your game aren't the "
+                                   "Studio's (another mod's, or put there by hand), so they were left alone: "
+                                   f"{what} (in your game's folder). Move or remove them yourself if you want this "
+                                   "painting in." + before), 409
+        except FileNotFoundError as ex:
+            return jsonify(message=f"Nothing was installed: the files of {vid} are missing ({ex}). Paint it again, or "
+                                   "pick another version." + before), 409
+        return jsonify(p2d=p2d_view(e), version=got.get("version"), files=len(got.get("files", [])))
+
+    @bp.post("/paint2d/uninstall")
+    @safe
+    def api_p2d_uninstall():
+        """Take the model's 2D painting out of the game: exactly the files its install wrote (the user's click)."""
+        body = request.get_json(force=True)
+        e = entry("battle", body.get("id"))
+        mid = key_of("battle", e)
+        A = batlas()
+        if mid not in A.installed():
+            return jsonify(message="This model's 2D painting isn't in the game."), 409
+        removed, left = A.uninstall(mid)
+        return jsonify(p2d=p2d_view(e), removed=removed, left=[p2d_rel(p) for p in left])
+
     # everything is defined: hook it into the Studio (nothing above changed it yet)
     studio.app.register_blueprint(bp)
     studio.JOB_KINDS[JOB_FINAL] = {"run": run_paint, "est": est_for("final")}
     studio.JOB_KINDS[JOB_PREVIEW] = {"run": run_paint, "est": est_for("preview")}
     studio.JOB_KINDS[JOB_LOOK] = {"run": run_look, "est": lambda name: 90}
+    studio.JOB_KINDS[JOB_2D] = {"run": run_p2d, "est": p2d_est}
     threading.Thread(target=load_catalogues, daemon=True).start()  # the lists are ready when the page asks
     return "/api/modelpaint/ui.js"

@@ -7,8 +7,8 @@
   const KINDS = {
     scene: { tab: "Battle scenes", one: "Battle scene", job: "battle scene", search: "Search: oq, location 2, Guard Hound…",
       hint: "The places battles are fought in. Each one's textures (ground, walls, sky) are painted flat in your look, and you can start one of its battles in your game to see it." },
-    battle: { tab: "Battle characters & enemies", one: "Battle character or enemy", job: "battle model", search: "Search: Cloud, Grunt, rt…",
-      hint: "The party and the enemies as they fight. Most enemies have no textures (their colour is in the model), so only the ones with textures can be painted." },
+    battle: { tab: "Battle characters & enemies", one: "Battle character or enemy", job: "battle model", search: "Search: Cloud, Grunt, rt, 2d painted…",
+      hint: "The party and the enemies as they fight. Paint in 2D style paints any of them as a hand-drawn 2D character. Most enemies have no textures (their colour is in the model), so the Paint card only paints the ones with textures." },
     field: { tab: "Field characters & objects", one: "Field character or object", job: "field model", search: "Search: cloud, aeris, save point, AAAA…",
       hint: "The people and things that walk around the fields: the game's original models, not the chibi mod you play with." },
   };
@@ -22,12 +22,15 @@
     battleResult: null,
     // the battle look (battle scenes): what the Studio last said about it, an install or uninstall under way
     bl: null, blBusy: false, blSeq: 0,
+    // paint in 2D style (battle models): what the Studio last said about it, the version shown, a click under way
+    p2d: null, p2dSeq: 0, p2dVer: null, p2dBusy: false,
   };
   if (!["orig", "new", "split"].includes(M.mode)) M.mode = "orig";
 
   JOB_LABELS.model = (j) => `painting the final${j.family ? ` · ${famShort(j.family)}` : ""}`;
   JOB_LABELS.model_preview = (j) => `painting a preview${j.family ? ` · ${famShort(j.family)}` : ""}`;
   JOB_LABELS.model_look = () => "building the battle look";
+  JOB_LABELS.model_2d = (j) => `painting in 2D style${j.family ? ` · ${famShort(j.family)}` : ""}`;
 
   const css = document.createElement("style");
   css.textContent = `
@@ -80,6 +83,24 @@
                   border: 1px solid var(--line); margin: 0 2px; }
     .mdl-bl-probs { font-size: 11px; color: var(--faint); margin: 4px 0 0; padding-left: 16px; }
     .mdl-sheet .mdl-bl-big { max-height: 75vh; object-fit: contain; }
+    .mdl-list .mdl-2d { font-size: 11px; color: var(--faint); }
+    .mdl-list .mdl-2d.painted { color: var(--gen); }
+    .mdl-list .mdl-2d.game { color: var(--ok); }
+    .mdl-p2d-vers { display: grid; gap: 4px; margin: 6px 0; max-height: 260px; overflow-y: auto; }
+    .mdl-p2d-ver { display: grid; grid-template-columns: 64px 1fr; gap: 8px; align-items: center; padding: 4px;
+                   border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+    .mdl-p2d-ver:hover { border-color: var(--accent); }
+    .mdl-p2d-ver.viewing { border-color: var(--accent); background: rgba(255,255,255,.04); }
+    .mdl-p2d-ver img, .mdl-p2d-ver .noimg { width: 64px; height: 48px; object-fit: cover; object-position: right center;
+                   border-radius: 4px; background: #000; display: block; }
+    .mdl-p2d-ver .vl { font-size: 12px; }
+    .mdl-p2d-ver .vs, .mdl-p2d-ver .vt { font-size: 11px; color: var(--faint); line-height: 1.35; }
+    .mdl-p2d-prev { display: grid; gap: 6px; margin: 8px 0 4px; }
+    .mdl-p2d-prev figure { margin: 0; cursor: zoom-in; min-width: 0; }
+    .mdl-p2d-prev img { width: 100%; max-height: 200px; object-fit: contain; display: block; border-radius: 4px;
+                        background: #000; border: 1px solid var(--line); }
+    .mdl-p2d-prev figcaption { font-size: 11px; color: var(--faint); margin-top: 2px; line-height: 1.3; }
+    .mdl-sheet .mdl-p2d-views img + img { margin-top: 8px; }
     @media (max-width: 1150px) { .mdl-page { grid-template-columns: 220px minmax(0, 1fr) 300px; } }
     @media (max-width: 860px) { .mdl-page { grid-template-columns: 180px minmax(0, 1fr) 260px; } }`;
   document.head.appendChild(css);
@@ -146,6 +167,7 @@
       <div class="panel-body"><div class="tab">
         <section class="card mdl-card" id="mdlAbout"></section>
         <section class="card mdl-card" id="mdlView"></section>
+        <section class="card mdl-card" id="mdlP2d" hidden></section>
         <section class="card mdl-card" id="mdlPaint"></section>
         <section class="card mdl-card" id="mdlGame"></section>
         <section class="card mdl-card" id="mdlBl" hidden></section>
@@ -216,21 +238,32 @@
     if (item && (item.id !== M.id || !M.item || M.item.kind !== kind)) select(item.id);
   }
 
+  // a battle model's 2D painting in the list (models.py p2d_status): the line under its name, its tip
+  const P2D_STATUS = {
+    "": { text: "2D: not painted", tip: "Not painted in 2D style yet" },
+    built: { text: "2D: not painted", tip: "Not painted in 2D style yet (only a check with the game's own colours was made)" },
+    painted: { text: "2D: painted", tip: "Painted in 2D style, not in the game" },
+    game: { text: "2D: in the game", tip: "Its 2D painting is in the game" },
+  };
+
   function dotClass(x) {
-    if (runningJob(M.kind, x.id)) return "running";
+    if (runningJob(M.kind, x.id) || (M.kind === "battle" && p2dJobs(x.id).any)) return "running";
     if (x.error) return "error";
-    if (x.installed) return "built";
-    if (x.mode === "final") return "generated";
+    if (x.installed || x.p2d === "game") return "built";
+    if (x.mode === "final" || x.p2d === "painted") return "generated";
     if (x.mode === "preview") return "preview";
     return "";
   }
 
   function dotTip(x) {
-    if (x.error) return `The last paint failed: ${x.error}`;
-    if (x.installed) return "Painted and in the game";
-    if (x.mode === "final") return "Painted (final), not in the game";
-    if (x.mode === "preview") return "Preview painted";
-    return "Not painted yet";
+    let tip;
+    if (x.error) tip = `The last paint failed: ${x.error}`;
+    else if (x.installed) tip = "Painted and in the game";
+    else if (x.mode === "final") tip = "Painted (final), not in the game";
+    else if (x.mode === "preview") tip = "Preview painted";
+    else tip = "Not painted yet";
+    if (M.kind === "battle") tip = `Its textures: ${tip.charAt(0).toLowerCase()}${tip.slice(1)}\n${(P2D_STATUS[x.p2d || ""] || P2D_STATUS[""]).tip}`;
+    return tip;
   }
 
   function renderList(rebuild = false) {
@@ -238,7 +271,8 @@
     if (rebuild || ul.dataset.kind !== M.kind) {
       ul.dataset.kind = M.kind;
       ul.innerHTML = items.map((x) => `<li data-id="${esc(x.id)}" class="${x.textured ? "" : "bare"}">` +
-        `<img loading="lazy" alt=""><div><div class="name"></div><div class="sub"></div></div><span class="sdot"></span></li>`).join("");
+        `<img loading="lazy" alt=""><div><div class="name"></div><div class="sub"></div>` +
+        `${M.kind === "battle" ? `<div class="mdl-2d"></div>` : ""}</div><span class="sdot"></span></li>`).join("");
       for (const li of ul.children) li.onclick = () => select(li.dataset.id);
     }
     const q = $("#mdlSearch").value.trim().toLowerCase();
@@ -254,6 +288,12 @@
       const name = li.querySelector(".name"), sub = li.querySelector(".sub"), dot = li.querySelector(".sdot");
       if (name.textContent !== x.title) name.textContent = x.title;
       if (sub.textContent !== x.sub) { sub.textContent = x.sub; sub.title = x.sub; }
+      const p2 = li.querySelector(".mdl-2d");
+      if (p2) {
+        const st = P2D_STATUS[x.p2d || ""] || P2D_STATUS[""], c2 = `mdl-2d ${x.p2d || ""}`;
+        if (p2.textContent !== st.text) { p2.textContent = st.text; p2.title = st.tip; }
+        if (p2.className !== c2) p2.className = c2;
+      }
       const cls = `sdot ${dotClass(x)}`, tip = dotTip(x);
       if (dot.className !== cls) dot.className = cls;
       if (dot.title !== tip) dot.title = tip;
@@ -261,7 +301,7 @@
       const pass = (!q || x.search.includes(q)) && !(M.kind === "battle" && M.hideBare && !x.textured);
       li.style.display = pass ? "" : "none";
       if (pass) shown++;
-      if (x.current) painted++;
+      if (x.current || x.p2d === "painted" || x.p2d === "game") painted++;
     }
     const bare = M.kind === "battle" ? items.filter((x) => !x.textured).length : 0;
     $("#mdlCount").textContent = `${shown} shown · ${painted} painted` + (bare ? ` · ${bare} without textures` : "");
@@ -278,6 +318,7 @@
     if (id !== M.id) {
       M.id = id;
       M.ver = null;
+      M.p2dVer = null;
       M.cam = 0;
       resetView(false);
       R.shown = {};
@@ -304,16 +345,19 @@
     if (!ids.includes(M.ver)) M.ver = it.current || ids[ids.length - 1] || null;
     if (M.cam >= Math.max(1, it.cameras.length)) M.cam = 0;
     if (M.bl && (M.bl.id !== it.id || it.kind !== "scene")) M.bl = null;
+    if (M.p2d && (M.p2d.id !== it.id || it.kind !== "battle")) M.p2d = null;
     loadLooks();
     renderAll();
     requestRender(false);
     loadBattleLook();
+    loadP2d();
   }
 
   function renderAll() {
     renderModes();
     renderAbout();
     renderView();
+    renderP2d();
     renderPaint();
     renderGame();
     renderBattleLook();
@@ -385,6 +429,7 @@
   async function loadLooks() {
     try { M.looks = await api("/api/looks"); } catch (e) { return; }
     renderPaint();
+    renderP2d();
     renderFoot();
   }
 
@@ -744,7 +789,9 @@
         ` (${inst.files} texture${inst.files === 1 ? "" : "s"}, since ${fmtWhen(inst.at, true)}).</div>` +
         (same ? "" : `<div class="mdl-line warn">That isn't the version marked ★: Install again to put the ★ one in.</div>`);
     } else if (!it.paintable) {
-      html += `<div class="mdl-line">Nothing to put in the game: it can't be painted (see above).</div>`;
+      html += it.kind === "battle"
+        ? `<div class="mdl-line">Nothing to put in the game from here: it has no textures. Its 2D painting has its own Install, in Paint in 2D style.</div>`
+        : `<div class="mdl-line">Nothing to put in the game: it can't be painted (see above).</div>`;
     } else {
       html += `<div class="mdl-line">${cur ? "Not in the game: the game shows the original." : "Nothing painted yet: Preview or Paint final first."}</div>`;
     }
@@ -1229,6 +1276,399 @@
       `<a href="${url}" target="_blank" rel="noopener">Open on its own</a></p><img class="mdl-bl-big" alt="" src="${url}">`);
   }
 
+  /* ---------------------------------------------------------- paint in 2D style (battle models) */
+
+  // A battle model painted as a hand-drawn 2D character (models.py p2d_*, ff7bg/models/battleatlas.py): its settings,
+  // Paint (a queue job), its versions with their pictures (the ★ one is what Install puts in), Install and Uninstall.
+  // A version's pictures: caption, title and what they show
+  const P2D_PICS = {
+    "battle.jpg": { cap: "in battle: as the game draws it | painted", title: "in battle",
+      text: "The model where a battle puts it, from that battle's own camera, with the battle scene behind: on the left " +
+        "as the game draws it now, on the right painted, with the flat light the game gives the painting." },
+    "turntable.jpg": { cap: "all round", title: "all round",
+      text: "The painted model from eight sides and two views of its head, with the battle scene behind: what you see " +
+        "when the battle camera swings round. The sides and back are painted from fewer views than the front, so they " +
+        "can be patchier." },
+    "vs_target.jpg": { cap: "against the 2D picture this style aims for", title: "against the 2D picture",
+      text: "Top: the battle the 2D picture was made from, as the game draws it. Middle: the same with this painting. " +
+        "Bottom: the 2D picture itself, the look this style aims for. For a party member, below that: their part of each, " +
+        "bigger." },
+    "moving.jpg": { cap: "the parts that move on their own", title: "the parts that move on their own",
+      text: "Parts the game moves on their own (such as Midgar Zolom's tongue), close up: first with the part hidden, to " +
+        "check none of it got painted onto what's behind it, then with it showing, as painted." },
+    "identity.png": { cap: "check: the game's own colours on the new texture", title: "the check",
+      text: "The game's own colours put on the new painted texture, to check it fits the model: left as the game draws " +
+        "it, middle on the new texture, right the differences (black where they're the same; thin bright lines between " +
+        "parts are normal)." },
+  };
+  const p2dPic = (id, vid, name, t) =>
+    `${API}/paint2d/${encodeURIComponent(id)}/${encodeURIComponent(vid)}/${name}?t=${Math.round(t || 0)}`;
+
+  async function loadP2d() {
+    const it = M.item;
+    if (!it || it.kind !== "battle") return;
+    const seq = ++M.p2dSeq;
+    let r;
+    try { r = await api(`${API}/paint2d/${encodeURIComponent(it.id)}`); } catch (e) { r = { id: it.id, error: e.message }; }
+    if (seq !== M.p2dSeq || !M.item || M.item.id !== it.id || M.item.kind !== "battle") return;
+    setP2d(r);
+  }
+
+  function setP2d(r) {
+    M.p2d = r;
+    const ids = (r.versions || []).map((v) => v.id);
+    if (!ids.includes(M.p2dVer)) M.p2dVer = r.current || ids[ids.length - 1] || null;
+    renderP2d();
+  }
+
+  // this model's 2D paints in the Studio's queue
+  function p2dJobs(id = M.id) {
+    const q = S.queue, name = `${KINDS.battle.job} ${id}`;
+    if (!q) return { running: null, queued: [], any: false };
+    const mine = (j) => j && j.name === name && j.kind === "model_2d";
+    const running = mine(q.current) ? q.current : null, queued = q.queued.filter(mine);
+    return { running, queued, any: !!(running || queued.length) };
+  }
+
+  // a version in a few words: "Painterly · strength 0.55 · 2048 px"
+  function p2dLine(v) {
+    if (!v.painted) return "the game's own colours on the new texture (not painted): a check";
+    return [v.look ? lookName(v.look) : "", v.strength != null ? `strength ${Number(v.strength).toFixed(2)}` : "",
+      v.size ? `${v.size} px` : ""].filter(Boolean).join(" · ");
+  }
+
+  function p2dTip(v) {
+    const bits = [`${v.id}: ${p2dLine(v)}`];
+    if (v.seconds) bits.push(`the AI took ${fmtDuration(v.seconds)}${v.views ? ` for ${v.views} views` : ""}`);
+    if (v.graded) bits.push("its colours matched to the 2D picture afterwards");
+    if (v.words) bits.push(`your words: ${v.words}`);
+    if (v.prompt) bits.push(`what the AI was told: ${v.prompt}`);
+    if (v.described) bits.push(`what the AI saw: ${v.described}`);
+    if (!v.studio) bits.push("painted outside the Studio");
+    return bits.join("\n");
+  }
+
+  function renderP2d() {
+    const it = M.item, box = $("#mdlP2d");
+    const on = !!it && it.kind === "battle";
+    if (box.hidden === on) box.hidden = !on;
+    if (!on) return;
+    // typing your words: the card stays as it is until you leave the box, so the cursor stays put
+    if (box.contains(document.activeElement) && document.activeElement.tagName === "TEXTAREA") {
+      M.p2dStale = true;
+      p2dProgress();
+      return;
+    }
+    M.p2dStale = false;
+    const P = M.p2d && M.p2d.id === it.id ? M.p2d : null;
+    const head = `<h2>Paint in 2D style</h2><div class="mdl-lines"><div>Paints the whole model as a hand-drawn 2D anime ` +
+      `character: flat colours, simple painted shadows and thin lines. The AI paints it from several angles, and the ` +
+      `paintings become one painted texture over every part of it, so models without textures can be painted too. ` +
+      `Nothing in your game changes until you install it.</div></div>`;
+    if (!P) { fill(box, head + `<div class="hint">Reading it…</div>`); return; }
+    if (!P.settings) { fill(box, head + `<div class="model-warn">${esc(P.error || "It couldn't be read.")}</div>`); return; }
+    const ps = P.settings, D = P.defaults, E = P.effective, L = M.looks;
+    const jobs = p2dJobs(it.id);
+    const ch = (k) => (ps[k] != null && ps[k] !== "" ? "changed" : "");
+    const allDefault = ["look", "strength", "size"].every((k) => ps[k] == null) && !ps.words;
+    // the look: battleatlas' own (Painterly) unless picked
+    const dl = L && L.looks.find((x) => x.id === D.look);
+    const dName = dl ? dl.name : D.look;
+    const lookOpts = [`<option value="" ${!ps.look ? "selected" : ""}>${esc(dName)} (default)</option>`]
+      .concat((L ? L.looks : []).filter((l) => l.id !== D.look).map((l) => `<option value="${esc(l.id)}" ${ps.look === l.id ? "selected" : ""}>` +
+        `${esc(l.name)}${l.family ? ` · ${esc(famShort(l.family))}` : ""}</option>`))
+      .concat([`<option value="__manage">Manage looks…</option>`]);
+    const look = `<div class="ctl ${ch("look")}"><label class="lbl" for="mdlP2dLook">Look</label><select id="mdlP2dLook">${lookOpts.join("")}</select>` +
+      `<div class="ctl-help">${helpText("Which of your looks paints it: its workflow and its own settings. The AI is also told " +
+        "that the picture is a frame from a hand-drawn 2D anime, so a look made for backgrounds works here too. Painterly, " +
+        "with those words, made the 2D picture of a battle this style aims for.", esc(dName))}</div></div>`;
+    // repaint strength
+    const sv = ps.strength ?? D.strength;
+    const strength = `<div class="slider ${ch("strength")} ${P.uses_strength ? "" : "dim"}" id="mdlP2dStrength">` +
+      `<div class="top"><span>Repaint strength</span><b>${sv.toFixed(2)}${ps.strength == null ? " (default)" : ""}</b></div>` +
+      `<input type="range" min="${P.strength_range[0]}" max="${P.strength_range[1]}" step="0.05" value="${sv}" ${P.uses_strength ? "" : "disabled"}>` +
+      `<div class="help">` +
+      (P.uses_strength ? "" : `<div class="help-note">This look's workflow (${esc(famShort(P.family))}) always redraws fully, so ` +
+        `repaint strength doesn't change it. Pick a look with MOSS, Flux.1 or Krea 2 to use it.</div>`) +
+      `<div>How much the AI may change the model as it paints it.</div><div class="help-range">` +
+      `<span><b>Higher:</b> more like a drawing and more of the AI's own ideas, but it starts inventing things that aren't ` +
+      `there: at 0.65 Midgar Zolom got an open mouth full of fangs on its closed face.</span>` +
+      `<span><b>Lower:</b> closer to the model as the game draws it, and less like a drawing.</span></div>` +
+      `<div class="help-rec">Recommended: ${Number(D.strength).toFixed(2)}.</div></div></div>`;
+    // the user's words
+    const words = `<div class="ctl ${ch("words")}"><label class="lbl" for="mdlP2dWords">Your words</label>` +
+      `<textarea id="mdlP2dWords" rows="2" maxlength="400" spellcheck="false" placeholder="e.g. glowing yellow eyes, a scar across its snout">${esc(ps.words)}</textarea>` +
+      `<div class="ctl-help">${helpText("What you'd like the AI to know about it: colours, details to keep, the mood. They're " +
+        "added after the 2D style's own words (a frame from a hand-drawn 2D anime: flat colours, simple painted shadows, " +
+        "thin coloured lines, no 3D shading) and what it is, for every view. A few plain words work best; the AI can still " +
+        "get them wrong.", "blank, or a few words")}</div></div>`;
+    // the painting's size
+    const sz = ps.size || D.size;
+    const size = `<div class="ctl ${ch("size")}"><label class="lbl" for="mdlP2dSize">Painting size</label><select id="mdlP2dSize">` +
+      P.sizes.map((x) => `<option value="${x === D.size ? "" : x}" ${sz === x ? "selected" : ""}>${x} × ${x} pixels${x === D.size ? " (default)" : ""}</option>`).join("") +
+      `</select>` +
+      (sz >= 4096 ? `<div class="model-warn">At 4096 this one painting takes about 85 MB of the game's memory, four times as ` +
+        `much as at 2048. The game is a 32-bit program that can use at most 4 GB in all, and it has run out before: with ` +
+        `several big paintings in one battle it may crash.</div>` : "") +
+      `<div class="ctl-help"><div>How big the picture is that holds the painting of the whole model.</div><div class="help-range">` +
+      `<span><b>Higher:</b> sharper when the battle camera comes close, but it takes more of the game's memory and a little ` +
+      `longer to paint.</span><span><b>Lower:</b> lighter on memory, softer up close.</span></div>` +
+      `<div class="help-rec">Recommended: ${D.size}.</div></div></div>`;
+    // paint
+    const painted = P.versions.some((v) => v.painted);
+    const canPaint = P.can && !jobs.any;
+    const paintTip = !P.can ? P.why_not : jobs.any ? "It's in the queue already (see below the button)" : P.game_running
+      ? "Your game is running: close it first, painting needs the graphics card" : "Paint it in 2D style with the settings above";
+    const paint = `<div class="ctl"><span class="lbl">Paint</span>` +
+      `<div class="row-btns tight"><button class="small primary" id="mdlP2dPaint" ${canPaint ? "" : "disabled"} ` +
+      `title="${esc(paintTip)}">${painted ? "Paint again" : "Paint"}</button></div>` +
+      (P.can ? `<div class="hint">Takes about ${fmtDuration(P.estimate)}: ${esc(lookName(E.look))}, strength ` +
+        `${Number(E.strength).toFixed(2)}, ${E.size} px${E.words ? ", your words" : ""}.</div>`
+        : `<div class="model-warn">${esc(P.why_not)}</div>`) +
+      (P.game_running && P.can ? `<div class="model-warn">Your game is running. The AI shares the graphics card with it, so ` +
+        `painting has to wait until the game is closed: close it, then press Paint.</div>` : "") +
+      (P.error && !jobs.running ? `<div class="model-warn" style="color:var(--bad)">The last paint failed: ${esc(P.error)}</div>` : "") +
+      `<div class="mdl-line" id="mdlP2dProg"></div>` +
+      `<div class="ctl-help">${helpText("The AI paints the model where a battle puts it: first from that battle's own cameras, " +
+        "with the battle scene behind it, then all round and close up to its head. The paintings are put together into one " +
+        "painted texture over the whole model; a later view only repaints what the views before it saw less well. It goes " +
+        "in the Studio's queue with the other jobs and makes a new version below, marked ★. The AI needs the graphics " +
+        "card, so your game has to be closed: Paint tells you if it isn't. Cancel queue stops it after the view it's " +
+        "painting, and nothing is kept. Nothing in your game changes until you install.",
+        "the settings as they are, with the game closed")}</div></div>`;
+    // the versions, newest first, and the picked one's pictures
+    const sel = P.versions.find((v) => v.id === M.p2dVer) || null;
+    let versions;
+    if (!P.versions.length) {
+      versions = `<div class="hint">No 2D versions yet: Paint makes one.</div>`;
+    } else {
+      versions = `<div class="mdl-p2d-vers">` + [...P.versions].reverse().map((v) =>
+        `<div class="mdl-p2d-ver ${sel && v.id === sel.id ? "viewing" : ""}" data-v="${esc(v.id)}" title="${esc(p2dTip(v))}">` +
+        (v.pictures.includes("battle.jpg") ? `<img alt="" loading="lazy" src="${p2dPic(it.id, v.id, "battle.jpg", v.at)}">` : `<div class="noimg"></div>`) +
+        `<div><div class="vl"><b>${esc(v.id)}</b>${v.current ? ` <span title="The version Install puts in the game">★</span>` : ""}` +
+        `${v.installed ? ` · <span class="ok">in the game</span>` : ""}</div>` +
+        `<div class="vs">${esc(p2dLine(v))}${v.words ? ` · “${esc(v.words)}”` : ""}</div>` +
+        `<div class="vt">${fmtWhen(v.at, true)}${v.seconds ? ` · ${fmtDuration(v.seconds)}` : ""}</div></div></div>`).join("") + `</div>`;
+      if (sel) {
+        const pics = sel.pictures.filter((n) => n !== "identity.png" || !sel.painted);
+        versions += (pics.length ? `<div class="mdl-p2d-prev">${pics.map((n) => `<figure data-p2d="${n}" title="${esc(P2D_PICS[n].text)}">` +
+          `<img alt="" loading="lazy" src="${p2dPic(it.id, sel.id, n, sel.at)}"><figcaption>${esc(sel.id)}: ${esc(P2D_PICS[n].cap)}</figcaption></figure>`).join("")}</div>`
+          : `<div class="hint">${esc(sel.id)} has no pictures.</div>`) +
+          `<div class="row-btns tight"><button class="small primary" id="mdlP2dUse" ${sel.current ? "disabled" : ""} ` +
+          `title="${sel.current ? "This is the ★ version already" : "Make this the version Install puts in the game. It doesn't change the game by itself."}">Use this version</button>` +
+          `<button class="small" id="mdlP2dViews" ${sel.view_pictures.length ? "" : "disabled"} title="Every view the AI painted, what it was shown next to what it painted">Every view</button>` +
+          (sel.painted && sel.pictures.includes("identity.png") ? `<button class="small ghost" id="mdlP2dCheck" title="${esc(P2D_PICS["identity.png"].text)}">Check</button>` : "") + `</div>`;
+      }
+    }
+    versions += `<div class="ctl-help">${helpText("Each paint makes a version here (the ones painted outside the Studio show too). " +
+      "Click one to see its pictures, and a picture to see it bigger. Use this version marks it ★: the one Install puts in " +
+      "the game (nothing changes in the game until you install). Every view shows each angle the AI painted.", "")}</div>`;
+    // in the game
+    const I = P.installed, cur = P.versions.find((v) => v.current) || null;
+    const iv = I && P.versions.find((v) => v.id === I.version);
+    let where;
+    if (I) {
+      where = `<div class="mdl-line"><span class="ok">In the game</span>: ${esc(I.version)}` +
+        (iv ? ` (${esc(p2dLine(iv))})` : " (a version since deleted)") + (I.at ? `, since ${fmtWhen(I.at, true)}` : "") + `.</div>` +
+        (cur && cur.id !== I.version ? `<div class="mdl-line warn">That isn't the ★ version (${esc(cur.id)}): Install again to put the ★ one in.</div>` : "") +
+        (P.problems.length ? `<div class="model-warn">Something in the game isn't as Install left it:</div>` +
+          `<ul class="mdl-bl-probs">${P.problems.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : "");
+    } else {
+      where = `<div class="mdl-line">Not in the game: battles show it as the game draws it.</div>`;
+    }
+    if (P.party) {
+      where += `<div class="model-warn">${esc(it.title)} is in the party, so once installed the painting shows in every battle ` +
+        `${esc(it.title)} fights in, not just one. The weapons aren't part of it: they keep the game's look.</div>`;
+    }
+    if (P.textures_installed) {
+      where += `<div class="hint">Its painted textures from the Paint card are in the game too. The 2D painting covers the ` +
+        `whole model, so while it's in, they don't show.</div>`;
+    }
+    const canInstall = !!cur && !M.p2dBusy;
+    const inst = `<div class="ctl"><span class="lbl">Install and Uninstall</span>${where}` +
+      `<div class="row-btns tight"><button class="small primary" id="mdlP2dInstall" ${canInstall ? "" : "disabled"} ` +
+      `title="${esc(!cur ? "Paint it first" : `Put ${cur.id}, the ★ version, in the game`)}">${I ? "Install again" : "Install"}</button>` +
+      `<button class="small" id="mdlP2dUninstall" ${I && !M.p2dBusy ? "" : "disabled"} title="Take this model's 2D painting out of the game">Uninstall</button></div>` +
+      `<div class="ctl-help">${helpText(`Install copies the ★ version's painting into your game's folder (${esc(P.dest)}), so ` +
+        `the next battle with ${esc(it.title)} shows it. FFNx-3d, the game's 3D add-on, draws it with flat light by ` +
+        "itself, so the painted shadows do the shading. It replaces this model's earlier 2D painting in the game. If a " +
+        "file it would write belongs to something else, nothing is installed and it tells you which. Uninstall takes " +
+        "out exactly what Install put in, nothing else. Nothing goes in by itself.",
+        "install a version you like; uninstall to compare with the original in a battle")}</div></div>`;
+    const html = head + `<div class="subhead mdl-sub-row"><span>Settings for ${esc(it.title)}</span>` +
+      `<button class="linkish" id="mdlP2dReset" ${allDefault ? "disabled" : ""} title="Look, repaint strength, your words and ` +
+      `painting size back to their defaults">Back to defaults</button></div>` +
+      look + strength + words + size + paint + `<div class="subhead">Versions</div>` + versions +
+      `<div class="subhead">In your game</div>` + inst;
+    fill(box, html, (el) => {
+      el.querySelector("#mdlP2dLook").onchange = (e) => {
+        const v = e.target.value;
+        if (v === "__manage") {
+          e.target.value = (M.p2d && M.p2d.settings.look) || "";
+          if (typeof openLooks === "function") openLooks();
+          return;
+        }
+        saveP2d({ look: v || null });
+      };
+      const range = el.querySelector("#mdlP2dStrength input[type=range]");
+      range.oninput = () => { el.querySelector("#mdlP2dStrength .top b").textContent = Number(range.value).toFixed(2); };
+      range.onchange = () => saveP2d({ strength: Number(range.value) });
+      const ta = el.querySelector("#mdlP2dWords");
+      ta.oninput = () => {
+        clearTimeout(M.p2dTimer);
+        M.p2dTimer = setTimeout(() => saveP2d({ words: ta.value }, true), 700);
+      };
+      ta.onblur = () => {
+        if (M.p2dTimer) { clearTimeout(M.p2dTimer); M.p2dTimer = null; saveP2d({ words: ta.value }); }
+        else if (M.p2dStale) renderP2d();
+      };
+      el.querySelector("#mdlP2dSize").onchange = (e) => saveP2d({ size: e.target.value ? Number(e.target.value) : null });
+      el.querySelector("#mdlP2dReset").onclick = () => saveP2d({ reset: true });
+      el.querySelector("#mdlP2dPaint").onclick = paintP2d;
+      for (const r of el.querySelectorAll("[data-v]")) r.onclick = () => { M.p2dVer = r.dataset.v; renderP2d(); };
+      for (const f of el.querySelectorAll("[data-p2d]")) f.onclick = () => showP2dPicture(f.dataset.p2d);
+      const use = el.querySelector("#mdlP2dUse"), views = el.querySelector("#mdlP2dViews"), check = el.querySelector("#mdlP2dCheck");
+      if (use) use.onclick = useP2d;
+      if (views) views.onclick = showP2dViews;
+      if (check) check.onclick = () => showP2dPicture("identity.png");
+      el.querySelector("#mdlP2dInstall").onclick = installP2d;
+      el.querySelector("#mdlP2dUninstall").onclick = uninstallP2d;
+    });
+    p2dProgress();
+  }
+
+  // the paint's progress (every second while the page is open), outside the card's HTML so the card stays put
+  function p2dProgress() {
+    const el = $("#mdlP2d #mdlP2dProg"), it = M.item;
+    if (!el || !it) return;
+    const j = p2dJobs(it.id);
+    const html = j.running
+      ? `Painting: ${esc(j.running.stage)}<div class="mdl-bar"><i style="width:${Math.round(j.running.progress * 100)}%"></i></div>`
+      : j.queued.length ? `<span class="hint">Queued: it starts when the jobs before it are done, then takes about ` +
+        `${fmtDuration(j.queued[0].est || 0)}.</span>` : "";
+    if (el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; }
+  }
+
+  // save one of the model's 2D settings (quiet: while typing, no toast)
+  async function saveP2d(change, quiet = false) {
+    const it = M.item;
+    if (!it || it.kind !== "battle") return;
+    M.p2dTimer = null;
+    try {
+      const r = await api(`${API}/paint2d/settings`, { body: { id: it.id, ...change } });
+      if (M.item && M.item.id === r.id && M.item.kind === "battle") setP2d(r);
+      if (!quiet) toast(change.reset ? `${it.title}: 2D settings back to their defaults` : `Saved for ${it.title}`);
+    } catch (e) { toast(e.message); }
+  }
+
+  async function paintP2d() {
+    const it = M.item;
+    if (!it || it.kind !== "battle") return;
+    let r;
+    try {
+      r = await api(`${API}/paint2d/paint`, { body: { id: it.id } });
+    } catch (e) {
+      await tell(e.message);  // the game running, and the like: nothing was queued
+      loadP2d();
+      return;
+    }
+    toast(r.added ? `${it.title}: painting in 2D style queued (about ${fmtDuration(r.est || 0)})` : "Already queued");
+    renderP2d();
+  }
+
+  async function useP2d() {
+    const it = M.item, v = M.p2d && M.p2d.versions.find((x) => x.id === M.p2dVer);
+    if (!it || !v) return;
+    try {
+      setP2d(await api(`${API}/paint2d/use`, { body: { id: it.id, version: v.id } }));
+      toast(M.p2d.installed && M.p2d.installed.version !== v.id
+        ? `${v.id} marked ★. The game still has ${M.p2d.installed.version}: Install again to put ${v.id} in.`
+        : `${v.id} marked ★: Install puts this one in the game.`, 6000);
+    } catch (e) { toast(e.message); }
+  }
+
+  async function installP2d() {
+    const it = M.item, P = M.p2d, cur = P && P.versions.find((v) => v.current);
+    if (!it || !cur || M.p2dBusy) return;
+    const ok = await ask(`Put ${it.title}'s 2D painting into your game: ${cur.id} (${p2dLine(cur)})?\n\n` +
+      `It's copied to your game's ${P.dest} folder. The next battle with ${it.title} shows it, and Uninstall takes it out again.` +
+      (P.installed ? ` It replaces the 2D painting in the game now (${P.installed.version}).` : "") +
+      (cur.painted ? "" : "\n\nThis version isn't painted: it's the game's own colours on the new texture, a check that the game draws it right.") +
+      (P.party ? `\n\n${it.title} is in the party: the painting shows in every battle ${it.title} fights in.` : ""),
+      P.installed ? "Install again" : "Install");
+    if (!ok) return;
+    M.p2dBusy = true;
+    renderP2d();
+    let err = null;
+    try {
+      const r = await api(`${API}/paint2d/install`, { body: { id: it.id } });
+      if (M.item && M.item.id === it.id) M.p2d = r.p2d;
+      reloadListSoon();
+      toast(`${it.title}'s 2D painting is in the game: ${r.version} (${r.files} file${r.files === 1 ? "" : "s"})`, 7000);
+    } catch (e) { err = e.message; }
+    M.p2dBusy = false;
+    if (err) {
+      await loadP2d();  // a refused install has taken the earlier one out first: show what's there now
+      reloadListSoon();
+      await tell(err);
+    } else renderP2d();
+  }
+
+  async function uninstallP2d() {
+    const it = M.item, I = M.p2d && M.p2d.installed;
+    if (!it || !I || M.p2dBusy) return;
+    if (!await ask(`Take ${it.title}'s 2D painting (${I.version}) out of your game?\n\nThe ${I.files} file${I.files === 1 ? "" : "s"} ` +
+      `Install put in are removed, so battles show ${it.title} as the game draws it again. Nothing else is touched.`, "Uninstall")) return;
+    M.p2dBusy = true;
+    renderP2d();
+    let err = null;
+    try {
+      const r = await api(`${API}/paint2d/uninstall`, { body: { id: it.id } });
+      if (M.item && M.item.id === it.id) M.p2d = r.p2d;
+      reloadListSoon();
+      toast(`${it.title}'s 2D painting is out of the game: ${r.removed} file${r.removed === 1 ? "" : "s"} removed`, 6000);
+      if (r.left.length) {
+        err = `${r.left.length === 1 ? "One file was" : `${r.left.length} files were`} left in the game, because something ` +
+          `changed ${r.left.length === 1 ? "it" : "them"} after Install put ${r.left.length === 1 ? "it" : "them"} there ` +
+          `(in your game's folder):\n\n${r.left.join("\n")}`;
+      }
+    } catch (e) { err = e.message; }
+    M.p2dBusy = false;
+    renderP2d();
+    if (err) await tell(err);
+  }
+
+  function showP2dPicture(name) {
+    const it = M.item, v = M.p2d && M.p2d.versions.find((x) => x.id === M.p2dVer), p = P2D_PICS[name];
+    if (!it || !v || !p) return;
+    const url = p2dPic(it.id, v.id, name, v.at);
+    openModal(`<div class="modal-head"><h2>${esc(it.title)} · 2D ${esc(v.id)}: ${esc(p.title)}</h2>` +
+      `<button class="ghost small" data-a="close">Close</button></div><p class="hint">${esc(p.text)} ` +
+      `<a href="${url}" target="_blank" rel="noopener">Open on its own</a></p><img class="mdl-bl-big" alt="" src="${url}">`);
+  }
+
+  function showP2dViews() {
+    const it = M.item, v = M.p2d && M.p2d.versions.find((x) => x.id === M.p2dVer);
+    if (!it || !v || !v.view_pictures.length) return;
+    openModal(`<div class="modal-head"><h2>${esc(it.title)} · 2D ${esc(v.id)}: every view the AI painted</h2>` +
+      `<button class="ghost small" data-a="close">Close</button></div><p class="hint">In the order they were painted: on ` +
+      `the left what the AI was shown, on the right what it painted. The first are from the battle's own cameras, the rest ` +
+      `all round and close up; each later one only repaints what the views before it saw less well.</p>` +
+      `<div class="mdl-p2d-views">${v.view_pictures.map((n) => `<img alt="" loading="lazy" src="${p2dPic(it.id, v.id, n, v.at)}">`).join("")}</div>`);
+  }
+
+  // is the game running (every 4 s while a battle model is shown): the card's warning, the Paint button's tip
+  async function pollP2dGame() {
+    const it = M.item;
+    if (M.open && it && it.kind === "battle" && M.p2d && M.p2d.id === it.id && M.p2d.settings) {
+      try {
+        const r = await api(`${API}/paint2d/game`);
+        if (M.p2d && M.p2d.game_running !== r.running) { M.p2d.game_running = r.running; renderP2d(); }
+      } catch (e) { /* the next poll */ }
+    }
+    setTimeout(pollP2dGame, 4000);
+  }
+
   /* ---------------------------------------------------------- jobs */
 
   function myJobs(kind = M.kind, id = M.id) {
@@ -1667,7 +2107,24 @@
     renderVersions();
     renderList();
     renderBattleLook();
+    renderP2d();
   }, 1000);
+  // a 2D paint finished: say so, and show the version it made
+  document.addEventListener("studio:jobs", (e) => {
+    const ours = e.detail.filter((r) => r.kind === "model_2d");
+    if (!ours.length) return;
+    for (const r of ours) {
+      if (r.ok) toast(`${r.name}: ${r.message || "painted in 2D style"}`, 6000);
+      else if (r.message && r.message !== "cancelled") toast(`${r.name}: the 2D painting wasn't made. ${r.message}`, 10000);
+    }
+    reloadListSoon();
+    const it = M.item;
+    if (it && it.kind === "battle" && ours.some((r) => r.name === it.job_name)) {
+      const made = ours.filter((r) => r.name === it.job_name && r.ok && r.version).pop();
+      if (made) M.p2dVer = made.version;
+      loadP2d();
+    }
+  });
   // a battle look build finished: say so, and show what it made
   document.addEventListener("studio:jobs", (e) => {
     const ours = e.detail.filter((r) => r.kind === "model_look");
@@ -1726,4 +2183,5 @@
 
   setOpen(M.open);
   pollGame();
+  pollP2dGame();
 })();

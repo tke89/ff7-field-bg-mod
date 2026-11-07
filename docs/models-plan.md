@@ -237,7 +237,11 @@ ENEMY081) has no texture at all. FFNx-3d draws a part from a per-model atlas whe
   - Builds go to `work/models/battle/atlas/<id>/<version>/`: `<MODEL>.png`, `<MODEL>.P<nn>.uv`, info.json and
     preview/.
   - `install` copies one into the game's `mesh/battle/atlas/` with a manifest (`work/models/battle/atlas/installed.json`).
-    It refuses files that aren't its own; `uninstall` removes exactly what it wrote.
+    It refuses files that aren't its own; `uninstall` removes exactly what it wrote. A folder it can't remove yet
+    (a changed file left in it) stays recorded, so a later uninstall or install takes it away.
+  - `make(id, ...)` is the `paint` command as one call (the Studio's "Paint in 2D style"): build, identity, paint with
+    the model's recipe, colour lock, grade, previews, export, check; `extra_words` for the user's words, `cancelled`
+    and `on_progress` passed down to ComfyUI (a cancel interrupts the view being painted).
 - **Part names:** the game loads part `<MODEL>.P<nn>` with nn the bone index (battle.lgp's `<id>` + role `am`+nn),
   skipping bones without a part. Checked against FFNx.log's "reading p file" lines:
   - the Grunt (ENEMY019, 21 parts: P00 P01 P02 P05 ... P34) and Zolom (39 parts: P00-P43 without P07 P09 P11 P36 P40)
@@ -255,7 +259,7 @@ ENEMY081) has no texture at all. FFNx-3d draws a part from a per-model atlas whe
   - Zolom stands at formation 469's enemy position, turned to face the party (yaw 180). It's checked against the
     in-game frame; the game's idle pose differs a little, since only frame 0 is decoded.
   - Views: the formation's 3 battle cameras with oo behind; then 6 views all round and 3 of the head, with a plain
-    gradient of the battle's sky behind.
+    gradient of the battle's sky behind (v1-v7; v8 on: 9 all round and 16 close, below).
   - Each view is restyled with painterly at 0.55 and the spec's words, then projected (paint.Painter).
   - About 60 s for 12 views.
 - **What the variants showed** (v1-v7; previews in each version's preview/: `vs_target.jpg`, `turntable.jpg`,
@@ -273,7 +277,8 @@ ENEMY081) has no texture at all. FFNx-3d draws a part from a per-model atlas whe
   - The battle cameras' paint is kept unless a view sees it 2x better than BETTER (`KEEP_BATTLE`).
   - The AI's colours, held to the original's by keep_colors, came out lighter and yellower than the target (Lab L 63
     against 51). `target_grade` matches Zolom's pixels in the target's framing to the target's mean and spread in Lab.
-- **Result, v6** (`work/models/battle/atlas/dd/v6/`, to install):
+- **Result, v6** (`work/models/battle/atlas/dd/v6/`, installed; v10 below replaces it: v6 has a tongue painted on
+  its face):
   - From the battle camera Zolom reads as drawn, in the target's colours: flat greens, painted shadow shapes on the
     hood and belly plates, thin dark lines between plates and on the hood's ribs, eyes, fangs and tongue. It holds up at
     1440 lines.
@@ -285,10 +290,74 @@ ENEMY081) has no texture at all. FFNx-3d draws a part from a per-model atlas whe
     the game without it).
   - In game it needs FORMAT.md's flat light (`toon = 1`, `toon_shadow_color = [1, 1, 1]`, no rim, highlight or
     outline, in `[bat_469]` or `[battles]`). `install` doesn't write that.
+- **Zolom's tongue (user, 2026-11-07: two tongues in game).** The tongue is its own chain of parts, bones 13-16
+  (`ENEMY081.P13`-`P16`), and flicks out in animations 1, 10 and 11; the jaw is P10 (it opens in animation 4), the
+  fangs P08 (upper) and P12 (lower). In the pose painted from (animation 0, frame 0) the tongue is inside the head and
+  the mouth is shut, so the tongue part was never painted. The painted tongue came from the AI: the fangs are pinkish
+  in the game, and from the battle camera it drew them as a long tongue down the face and throat, words "mouth closed,
+  no tongue" or not (v6, v8, v9). Fixed in v10:
+  - `colours` (`recolour()`): the AI sees the fangs white. It then draws two white fangs and a closed mouth.
+  - `MOVING` / `hide`: moving parts are left out of every view of the model, then painted on their own from a pose
+    that shows them (the tongue from animation 10, front and side), only their own pixels projected.
+  - `moving.jpg` in each version's preview checks it: the head with the tongue hidden (closed mouth, open mouth),
+    then with the tongue out. v10: no tongue on the face, one painted tongue on the tongue part. v6 for comparison:
+    `work/models/battle/atlas/dd/compare_tongue_v6_v10.jpg`.
+- **Zolom's sides and back (v8-v12).** v6's were olive with brown patches, faceted. What was tried:
+  - v8: 9 views all round instead of 6, 16 close ones (back of the hood, neck, coils, tail; regions by bone:
+    `region_points`), each with words for what it shows, no colour words but "plain green scales". No better.
+  - v9: those views at repaint 0.62. No better.
+  - v10: the round views show the model matched to the battle camera's painting in Lab (`match_input`: lightness to
+    its mean and spread, colour to its mean, its colour differences not scaled up). lift() had left them near black,
+    and a full Lab match scaled their faint colour noise up 4-7x into patches. The AI still painted brown patches: it's
+    the AI, not its input.
+  - v11 (sides 0.62) and v12 (each round view restyled whole, `whole`) are no better than v10.
+  - What worked is `colour_lock(mode="hue")` on the finished atlas: each texel takes the game's own hue (where the
+    original is coloured at all), the painting's saturation and lightness stay. The brown patches go back to green;
+    the red-brown side plates and hood markings, which are the game's, stay. The eyes come out red-orange, as in the
+    target.
+  - **v10 is the one to install.** From the battle camera it's at least as good as v6: closed mouth, white fangs,
+    no tongue, the same flat greens and belly lines. All round it's green with plate lines, no brown patches. It's
+    still faceted and a little blotchy in lightness on the coils. `work/models/battle/atlas/dd/compare_turntable_v6_v10.jpg`.
+- **The party (2026-11-07).** Cloud is `rt` (CLOUD). Barret in formation 469 is `sc` (BARRETT2): FFNx.log has
+  "reading p file: battle/BARRETT2.P00".. and BARRETT2_T00-T02, and `part_files("sc")` matches the log's parts
+  exactly (16), as `rt`'s do (17). `sb`, `sd` and `se` are his other forms.
+  - They're placed where the game's frame shows them (`PARTY_POSITIONS`: Cloud (-1255, 0, 915), Barret (924, 0, 590),
+    facing -z): each one's soles cast from `ingame_469_oo_light.png` onto the ground. Cloud's outline then lands on the
+    game's; Barret's soles and middle do too, a little smaller at the shoulders (only frame 0 of his idle is decoded).
+    From this camera both are seen from behind, and Barret's head is hidden behind his shoulders in the game too (the
+    target drew him one).
+  - Atlas 1024 (`PARTY_ATLAS_SIZE`: Cloud 0.65 texels per unit with his sword, Barret 0.47). At 2048 a battle camera
+    sees over 50 texels per pixel, which `paint.quality` reads as a perfect view, and the battle cameras repainted
+    the close views' work.
+  - Their weapon is in the atlas: the game loads it as `<MODEL>.W00` and FFNx-3d takes `CLOUD.W00.uv` like any part
+    (`part_files(weapon=)`, `build(weapon="auto")`).
+  - Identity: Cloud mean 0.56, p99 1; Barret mean 0.64, p99 1 from the battle camera. Close up, the faces' textures
+    survive (eyes, beard); chart edges show as faint dark lines on the face before painting.
+  - Views (`party_close`): the body from 9 sides framed without the weapon, the head from 4, the arms and hands, the
+    sword (Barret: his gun arm), then the battle cameras, which repaint nothing.
+  - Cloud: at repaint 0.55 he reads as anime Cloud (flat fills, line art, a clean face), but the AI drew a second
+    pauldron on his bare right shoulder, turned his gold hair pale and his navy clothes black. Words naming the
+    pauldron's shoulder didn't stop it (v3). 0.65 (v2) added more armour.
+  - Barret: drawn, with painted shadow shapes, but patchy where views met, and the AI made his olive vest brown leather
+    and his trousers teal. Painting his back first (`first="battle"`, the side the battle camera sees) gave a coherent
+    back (v3); `better=2.0` (a later view repaints only what it sees 2x better) a cleaner one (v4).
+  - `colour_lock(mode="hsv")`: the game's hue and saturation, the painting's lightness. Gold hair, navy clothes, skin
+    on Cloud's right shoulder (the extra pauldron is then a faint drawn shape), Barret's olive vest and green
+    trousers.
+  - **Picked: Cloud v4, Barret v4.** v5 (round views restyled whole) is about the same. Seen from the battle camera,
+    each reads as drawn but small: `work/models/battle/atlas/combined_469_dd-v10_rt-v4_sc-v4.jpg` has the whole frame
+    with all three painted, next to the target.
+- **Recipes** (`model_views`, `MODEL_VIEWS`; `make()` and the CLI use them):
+  - Zolom: v8's views and words, `match`, the fangs white, the tongue as a moving part, then `colour_lock("hue")` and
+    the target grade.
+  - Party: close views first, battle cameras last; Cloud's first view his front, Barret's his back with `better` 2.0;
+    then `colour_lock("hsv")`, no grade (Cloud's pixels in the target's framing were already within a level or four
+    of the target's in Lab).
 - **Not done:**
-  - party weapons, which the game names apart;
-  - wiring into the Models plug-in.
-  - Every pose and formation uses the same atlas (parts are rigid); only the painting views come from formation 469.
+  - every pose and formation uses the same atlas (parts are rigid); only the painting views come from formation 469;
+  - the weapons for nn other than 00 are named by assumption;
+  - Zolom's coils are still faceted in lightness, and the party is small from the battle cameras, so the 2D look shows
+    most on Zolom.
 
 ## Order
 Shared core first (formats, mesh, renderer), then battle scenes end to end (static, unlit, real cameras), then

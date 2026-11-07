@@ -29,6 +29,15 @@ instead of its vertex colours (and its own textures).
   - `numverts` and `numpolys` are the .p file's own. FFNx-3d checks them and ignores the file when they don't match.
   - u, v are 0..1 across the atlas, v = 0 at the image's top row (D3D / FFNx convention).
 - No `.uv` file: the part draws as the game does. A model may have atlas files for some parts only.
+- **Party weapons:** the game loads the weapon a party member holds as `battle/<MODEL>.W<nn>` (FFNx.log, 2026-11-07:
+  `CLOUD.W00` and `BARRETT2.W00` with their first weapons, battle.lgp's `rtck` and `scck`). FFNx-3d takes a `.uv`
+  for any `.p` file under `battle/` and the atlas by the name before the dot, so `<MODEL>.W00.uv` paints the weapon
+  from the model's own atlas. That nn is the weapon's index (role `ck` + nn) is assumed for the others, not seen; a
+  weapon without a `.uv` draws as the game does.
+- **Moving parts:** parts are rigid, so one atlas holds for every animation; but a part that moves apart from its
+  neighbours (Zolom's tongue, P13-P16, which flicks out; its jaw, P10) must carry only its own paint. A painting made
+  in a pose where it's hidden can still draw it onto its neighbours (Zolom v6 had a tongue painted down its face:
+  two tongues in game). The data side paints such parts on their own (battleatlas.MOVING).
 
 ## Engine (FFNx-3d, local fork)
 - **Load:** when a .p file under `battle/` loads, look for its `.uv`.
@@ -51,6 +60,9 @@ instead of its vertex colours (and its own textures).
   - **Identity check:** a render of the atlas-textured mesh matches the original render within a few levels.
 - **Painting:** the model's views from the battle cameras of its formations (scene.bin; 469 for Zolom) plus close
   views, painted with the Studio's look and words, then projected back into the atlas (the Models projected method).
+  - The party (Cloud `rt`/CLOUD, Barret `sc`/BARRETT2 in formation 469) isn't in scene.bin: it stands where the game's
+    frame shows it (battleatlas.PARTY_POSITIONS), facing -z. It's small from the battle cameras, so it's painted from
+    close views all round, the battle cameras last.
   - The 2D target's settings: look `painterly`, repaint 0.55, words: "A frame from a hand-drawn 2D anime: ... drawn
     flat in cel animation style, clean shapes, flat colours with simple painted shadow shapes, thin coloured line
     art, no 3D shading".
