@@ -57,6 +57,7 @@ from . import pfile, render, scenebin, tex
 
 GAME_WORKDIR = scenebin.GAME_WORKDIR
 BATTLE_LGP = GAME_WORKDIR / "data" / "battle" / "battle.lgp"
+DIRECT = GAME_WORKDIR / "direct" / "battle"  # the game's own replacements for battle.lgp's files (read_file)
 SCENE_BIN = scenebin.SCENE_BIN
 REPO = Path(__file__).resolve().parents[2]
 # catalogue() reads every file of battle.lgp (a few seconds): its result is kept here, redone when the data changes
@@ -183,19 +184,37 @@ def _archive(path):
         return _archives[path]
 
 
+def _direct(name, battle_lgp):
+    """The game's own replacement for a battle.lgp file, when there is one: FFNx's direct mode reads
+    workingdir/direct/battle/<file> in place of the archive's (7th Heaven mods put files there: the user's setup has a
+    whole new, denser Barret, `sc*`, and Cloud's `rtad`). Only for the game's own battle.lgp."""
+    if Path(battle_lgp) != BATTLE_LGP:
+        return None
+    p = DIRECT / name.lower()
+    return p if p.is_file() else None
+
+
 def read_file(name, battle_lgp=BATTLE_LGP):
-    """A file of battle.lgp ("rtaa", any case); KeyError when it isn't there."""
+    """A file of battle.lgp ("rtaa", any case), as the game reads it (its direct/ replacement first); KeyError when
+    it isn't there. Painting the archive's own model when the game draws a mod's made textures for parts the game
+    doesn't have: FFNx-3d refused Barret's painted texture (its parts' counts didn't match), 2026-11-07."""
+    p = _direct(name, battle_lgp)
+    if p is not None:
+        return p.read_bytes()
     with _lock:
         return _archive(battle_lgp).read(name)
 
 
 def has_file(name, battle_lgp=BATTLE_LGP):
-    return name.lower() in _archive(battle_lgp).entries
+    return _direct(name, battle_lgp) is not None or name.lower() in _archive(battle_lgp).entries
 
 
 def ids(battle_lgp=BATTLE_LGP):
-    """Every model id in battle.lgp (the ones with an `aa` header), sorted."""
-    return sorted({n[:2].lower() for n in _archive(battle_lgp).names() if n.lower().endswith("aa") and len(n) == 4})
+    """Every model id in battle.lgp (the ones with an `aa` header), sorted (with any the game's direct/ adds)."""
+    names = set(_archive(battle_lgp).names())
+    if Path(battle_lgp) == BATTLE_LGP and DIRECT.is_dir():
+        names |= {p.name for p in DIRECT.iterdir() if p.is_file()}
+    return sorted({n[:2].lower() for n in names if n.lower().endswith("aa") and len(n) == 4})
 
 
 # --- formats --------------------------------------------------------------------------------------------------------
@@ -695,6 +714,9 @@ def catalogue(cache=CACHE, battle_lgp=BATTLE_LGP, scene_bin=SCENE_BIN):
         "coverage" (share of the main camera's view the scene fills: the rest shows the game's black)}}.
     Kept in `cache` (a JSON file, None for none) and redone when battle.lgp or scene.bin changes."""
     stamp = {"version": CACHE_VERSION, "battle": _stamp(battle_lgp), "scene": _stamp(scene_bin)}
+    if Path(battle_lgp) == BATTLE_LGP and DIRECT.is_dir():  # the game's direct/ replacements (read_file) count too
+        files = [p.stat() for p in DIRECT.iterdir() if p.is_file()]
+        stamp["direct"] = [len(files), sum(s.st_size for s in files), int(max((s.st_mtime for s in files), default=0))]
     key = (str(cache), json.dumps(stamp))
     if key in _catalogue:
         return _catalogue[key]

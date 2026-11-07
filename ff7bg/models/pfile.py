@@ -98,7 +98,10 @@ def read(data):
     take(nb, 28)
     if h[15]:
         take(nv, 4)
-    if off != len(data):  # battle.lgp's files have no extensions: a .p file's counts add up to its length
+    # battle.lgp's files have no extensions: a .p file's counts add up to its length. Mods' parts (the user's direct/
+    # Barret) also carry the per-vertex normal index table without the header's flag for it: 4 bytes per vertex more,
+    # which FFNx ignores as the game does
+    if off != len(data) and not (not h[15] and len(data) - off == nv * 4):
         raise ValueError("not a .p file (size)")
     groups = []
     for i in range(ng):
