@@ -1,0 +1,115 @@
+--- a/ff3d/glow.py
++++ b/ff3d/glow.py
+@@ -130,6 +130,51 @@
+     return kept
+ 
+ 
++KEPT_TRUST = 0.35  # light_added: a light the render shows at least this much of is the painting's: nothing added
++
++
++def light_added(f, target):
++    """The static light layers the scene's colour gets (render size, float RGB 0..255, or None): `target` less what
++    the render shows of them (light_kept). Where the render shows them at all (light_kept at least KEPT_TRUST), only
++    on the lights the AI left out: each light is fitted on its own (as light_kept, over its own pixels and a ring
++    around them, on the channels it has, by their share of its light), and one the render shows at least KEPT_TRUST
++    of is as the painting has it, as AI 2D shows it. The church's teal orb and pink floor glow, painted at 0.6 and
++    0.4, got the field's 0.26 more on top, in the original's tile shapes: coloured patches AI 2D doesn't have."""
++    from ff7bg import ai
++    kept = light_kept(f)
++    add = max(0.0, float(target) - kept)
++    sl = static_light(f)
++    if add <= 0 or sl.max() < 1:
++        return None
++    if kept < KEPT_TRUST:  # painted out on the whole (blin70_2's, cosmo's): all of them, as before
++        return sl * add
++    light = cv2.resize(sl, (f.w, f.h), interpolation=cv2.INTER_AREA)
++    shown = ai.default_view(f.bg, f.meta.get("rendered_defaults", {}))[0][..., :3].astype(np.float32)
++    without = np.clip(shown - light, 0, 255)
++    r = cv2.resize(np.asarray(Image.open(f.render).convert("RGB")), (f.w, f.h),
++                   interpolation=cv2.INTER_AREA).astype(np.float32)
++    near = light.mean(-1) > 3
++    n, labels, stats, _ = cv2.connectedComponentsWithStats(cv2.dilate(near.astype(np.uint8), np.ones((5, 5), np.uint8)), 8)
++    keep = np.ones(n, np.float32)  # 1: added, 0: the painting's
++    for k in range(1, n):
++        m = (labels == k) & near
++        if m.sum() < 20:
++            continue
++        ring = (cv2.dilate((labels == k).astype(np.uint8), np.ones((15, 15), np.uint8)) > 0) & ~near
++        sel = m | ring
++        W, L, R = without[sel], light[sel], r[sel]
++        mean = light[m].mean(0)
++        on = [j for j in range(3) if mean[j] >= 0.25 * mean.max()]  # (a channel it hardly has fits anything)
++        ks = [np.linalg.lstsq(np.column_stack([W, L[:, j], np.ones(len(W))]), R[:, j], rcond=None)[0][3] for j in on]
++        if float(np.average(ks, weights=mean[on])) >= KEPT_TRUST:
++            keep[k] = 0.0
++    w = cv2.resize(keep[labels], (f.w * f.scale, f.h * f.scale), interpolation=cv2.INTER_LINEAR)
++    out = np.zeros((f.RH, f.RW), np.float32)
++    y0, x0 = f.frame[1] * f.scale, f.frame[0] * f.scale
++    out[y0:y0 + w.shape[0], x0:x0 + w.shape[1]] = w[: f.RH - y0, : f.RW - x0]
++    return sl * (add * out)[..., None] if out.max() > 0 else None
++
++
+ def static_light(f):
+     """The field's additive layers that don't animate (light shafts, haze, lamp halos) as light to add to the
+     scene's colour, at render resolution (float RGB, 0..255), cached in work/<field>/static_light.npy. Hiding the
+@@ -413,6 +458,60 @@
+     return len(pages)
+ 
+ 
++_GLASS = {}
++
++
++def through_glass(f):
++    """Where AI 2D shows the far backdrop (a layer 2/3 tile: the Studio keeps the original's art there, not the AI's)
++    through a static averaging layer that its pages leave out (the Studio's build_pages takes a static blended tile
++    over solid ones as painted into the AI image, which isn't used for a backdrop): what AI 2D shows there, from the
++    version's pages in the scene's colours, (RGB uint8 at render size, weight 0..1), or None. The render has the
++    averaging layer painted in: blin66_2's nebula, seen through the boardroom's glass, came out muted and streaked in
++    3D where AI 2D shows it vivid. (In the whole game only blin66_2 and blin66_6.)"""
++    key = (f.name, str(f.raw_render), f.raw_render.stat().st_mtime)
++    if key not in _GLASS:
++        _GLASS.clear()
++        _GLASS[key] = _through_glass(f)
++    return _GLASS[key]
++
++
++def _through_glass(f):
++    static = [t for t in f.bg.tiles if not t.param]
++    glass = [t for t in static if t.blending and t.type_trans == 0]
++    if not glass or not any(t.layer >= 2 and not t.blending for t in static):
++        return None
++    cache = PageCache(f.bg)
++
++    def drawn(t):
++        x, y = t.dst_x - f.mx, t.dst_y - f.my
++        return (slice(y, y + t.size), slice(x, x + t.size)), cache.tile(t)[..., 3][:f.h - y, :f.w - x] > 0
++    top = np.full((f.h, f.w), -1, np.int16)  # the layer of the front static solid tile
++    for t in draw_order([t for t in static if not t.blending]):
++        at, a = drawn(t)
++        top[at][a] = t.layer
++    over = np.zeros((f.h, f.w), bool)
++    for t in glass:
++        at, a = drawn(t)
++        over[at] |= a
++    m = (top >= 2) & over
++    studio = studio_pages(f)
++    if m.sum() < 64 or not studio or not all(t.tex in studio for t in static):
++        return None
++    S = f.scale
++    view = np.asarray(render_composite(f.bg, (f.mx, f.my, f.w, f.h), page_tile_source(studio, S), S,
++                                       include=lambda t: not t.param))
++    M = page_colours(f, studio)
++    if M is not None:
++        rgb = np.concatenate([view.reshape(-1, 3).astype(np.float32), np.ones((view.shape[0] * view.shape[1], 1), np.float32)], 1)
++        view = np.clip(np.round(rgb @ M), 0, 255).astype(np.uint8).reshape(view.shape)
++    w = cv2.GaussianBlur(cv2.resize(m.astype(np.float32), (f.w * S, f.h * S), interpolation=cv2.INTER_NEAREST), (0, 0), 0.5 * S)
++    rgb, weight = np.zeros((f.RH, f.RW, 3), np.uint8), np.zeros((f.RH, f.RW), np.float32)
++    y0, x0 = f.frame[1] * S, f.frame[0] * S
++    rgb[y0:y0 + view.shape[0], x0:x0 + view.shape[1]] = view[: f.RH - y0, : f.RW - x0]
++    weight[y0:y0 + w.shape[0], x0:x0 + w.shape[1]] = w[: f.RH - y0, : f.RW - x0]
++    return rgb, weight
++
++
+ def entry_off_art(f, plan):
+     """Where tiles also in the render are drawn by the game instead (animations that start on), the scene beneath
+     them from the version's pages, which the Studio paints for when they switch off: (RGB uint8, weight) at render

@@ -1,0 +1,11 @@
+--- live/ff3d/life.py
++++ fixed/ff3d/life.py
+@@ -1036,7 +1036,7 @@
+         return {}
+     from . import atmos
+     ch = _char_height(f)
+-    cam = -np.asarray(f.T, float) @ np.asarray(f.R, float)
++    cam = -(f.Rinv @ np.asarray(f.T, float))  # the camera's world position (R isn't quite a rotation: Field.Rinv)
+     lin = (render.astype(np.float32) / 255) ** 2.2
+     cand = []  # (score, world point, linear colour, kind)
+ 

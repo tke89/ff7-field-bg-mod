@@ -1,0 +1,142 @@
+--- a/ff3d/glow.py
++++ b/ff3d/glow.py
+@@ -838,6 +838,7 @@
+     back-to-front order)}, "entry_on": overlay tiles also in the render (animations that start on: the mesh needs
+     what's beneath them), "lit": the toggled glow layers' tiles (in `glowing`, switched by a script: their frames
+     hold all their light, glow_frames painted=False), which the game draws too, at their tile depth (their "vis" too),
++    "still": the static glow layers' tiles (their "vis" too, for over_scene),
+     "baked": one frame of a backdrop animation the render lacks, painted into the scene instead (entry_off_art),
+     "backdrop": the tiles of the parallax layers the game draws (drawn_layers), every state of them, "painted": its
+     static layer-3 tiles, whose art the render holds (write_overlays)}
+@@ -881,9 +882,11 @@
+         frames = [s for s in order.get(str(p), {}).get("order", []) if s] or sorted({t.state for t in mine_p})
+         baked += [t for t in mine_p if t.state == frames[0]]
+     lit = [t for t in f.bg.tiles if t.param and t.blending and (t.tex, t.palette) in glowing and not scrolling(f, t, moving)]
++    # the static glow layers' tiles: their 2D visibility too, for when the game draws them over the scene (over_scene)
++    still = [t for t in f.bg.tiles if not t.param and (t.tex, t.palette) in glowing and not scrolling(f, t, moving)]
+     # what's painted in the mesh and hides what's drawn before it: solid tiles, static or on in the render
+     solid = [t for t in f.bg.tiles if not t.blending and not is_overlay(t) and (not t.param or in_render(t))]
+-    cache, mine = PageCache(f.bg), {id(t) for t in tiles + lit + baked}
++    cache, mine = PageCache(f.bg), {id(t) for t in tiles + lit + still + baked}
+     # the original as the mesh shows it, 1x; where animations that start on are, the mesh has their off art instead
+     # (entry_off_art), so a switched tile there always counts as a change
+     shown = _shown(f, solid, cache)
+@@ -905,7 +908,7 @@
+     cover = np.zeros((f.h, f.w), np.float32)
+     apart = {k: np.zeros((f.h, f.w), np.float32) for k in set(keyed.values())}
+     vis = {}
+-    for t in reversed(draw_order(tiles + lit + baked + solid)):  # front to back: cover = what's drawn after this tile
++    for t in reversed(draw_order(tiles + lit + still + baked + solid)):  # front to back: cover = what's drawn after this tile
+         x, y, s = t.dst_x - f.mx, t.dst_y - f.my, t.size
+         tile = cache.tile(t)
+         alpha = tile[..., 3].astype(np.float32) / 255
+@@ -929,7 +932,79 @@
+     for t in back:  # all of each, every state: the game switches them, and the scene in front hides them
+         vis[id(t)] = np.ones((t.size, t.size), np.float32)
+     return {"tiles": tiles, "vis": vis, "entry_on": [t for t in tiles if not t.blending and in_render(t)], "lit": lit,
+-            "baked": baked, "backdrop": back, "painted": [t for t in back if t.layer == 3 and not t.param and not t.blending]}
++            "still": still, "baked": baked, "backdrop": back,
++            "painted": [t for t in back if t.layer == 3 and not t.param and not t.blending]}
++
++
++OVER_SCENE_HIDDEN = 0.2  # over_scene: a light layer the scene hides this share of (where the original shows it) goes over it
++OVER_SCENE_SOFT = 0.5    # ...its light cut to where the original shows it, with an edge this soft (background px)
++
++
++def over_scene(f, anim, plan, Z, step, depth):
++    """The blended light layers the game draws at their tiles' depth that the 3D scene still hides where the original
++    shows them: {(page, palette): the share of the layer's light hidden}, those at OVER_SCENE_HIDDEN or more. Z: the
++    mesh's camera depth on the vertex grid (step); depth(t): a tile's camera depth (the scene nearer than that hides
++    it; with push_under's 8% margin counted too, eals_1's pond glow came out 26% hidden where the game shows it all).
++    The glow layers' (switched, plan "lit", and static, "still") and the additive overlays (plan "tiles").
++
++    The original sorts by tile depth only, and a light layer's tiles are often as deep as the backdrop's: blin65_2's
++    room lights at z 4087, 11 to 16 times the depth of the room they light (estimated from the painting); subin_1a's
++    console lamps, 43 times; blin60_1's moving light, a static layer, behind walls nearer than push_back's foreground.
++    build.push_under pushes the scene back behind a switched layer's tiles only up to LIT_PUSH_CAP (any further folds it
++    up), so these stayed hidden in 3D and their animation with them. FFNx-3d draws the listed ones over the scene
++    (lighting config glow_over_scene: page, palette pairs), not depth tested, before the characters; their pages and
++    frames hold their light only where the original shows it (over_vis). A layer the camera moves apart from its
++    canvas place (moves_apart) isn't listed: its 2D visibility is for the canvas place. Nor is a switched layer that
++    is the picture itself (the_picture: the mesh holds its light, its frames only the shimmer): crater_2's ice field
++    is 38% hidden in places on its build, and it's as the original with that."""
++    g = f.scale / step
++    groups = {}
++    for (page, pal), by_hash in anim["glowing"].items():
++        tiles = [t for t in f.bg.tiles if t.tex == page and t.palette == pal and id(t) in plan["vis"]]
++        if not tiles or any(moves_apart(f, t) for t in tiles):
++            continue
++        whole = [t for t in f.bg.tiles if t.tex == page and t.palette == pal]
++        if any(t.param for t in whole) and the_picture(f, whole, pal):
++            continue
++        tr = f.bg.transparency[pal] if pal < len(f.bg.transparency) else True
++        light = np.max([layer(f, pal, c, tr, lambda t: t.tex == page).mean(-1) for c in by_hash.values()], 0)
++        groups[(page, pal)] = [(t, light[t.dst_y - f.my:t.dst_y - f.my + t.size, t.dst_x - f.mx:t.dst_x - f.mx + t.size])
++                               for t in tiles]
++    cache = PageCache(f.bg)
++    for t in plan["tiles"]:
++        if t.blending and t.type_trans in ADDITIVE and not moves_apart(f, t):
++            tile = cache.tile(t).astype(np.float32)
++            groups.setdefault((t.tex, page_palette(f, t)), []).append((t, tile[..., :3].mean(-1) * (tile[..., 3] > 0)))
++    out = {}
++    for key, tiles in groups.items():
++        shown = hidden = 0.0
++        for t, light in tiles:
++            n = int(round(t.size * g))
++            r0, c0 = int(round((t.dst_y - f.my + f.frame[1]) * g)), int(round((t.dst_x - f.mx + f.frame[0]) * g))
++            block = Z[max(0, r0):r0 + n, max(0, c0):c0 + n]
++            if depth(t) <= 0 or not block.size or not light.size:
++                continue
++            seen = cv2.resize(plan["vis"][id(t)].astype(np.float32), (n, n))[:block.shape[0], :block.shape[1]] > 0.5
++            light = cv2.resize(light, (n, n))[:block.shape[0], :block.shape[1]]
++            shown += float(light[seen].sum())
++            hidden += float(light[seen & (block < depth(t))].sum())
++        if shown > 0 and hidden / shown >= OVER_SCENE_HIDDEN:
++            out[key] = round(hidden / shown, 3)
++    return out
++
++
++def over_vis(f, plan, page, pal, scale):
++    """Where the original shows a light layer drawn over the scene (over_scene): its tiles' 2D visibility on the
++    canvas at `scale`, softened (OVER_SCENE_SOFT), float 0..1."""
++    v = np.zeros((f.h, f.w), np.float32)
++    for t in f.bg.tiles:
++        if t.tex != page or page_palette(f, t) != pal or id(t) not in plan["vis"]:
++            continue
++        x, y, s = t.dst_x - f.mx, t.dst_y - f.my, t.size
++        tv = plan["vis"][id(t)].astype(np.float32)[:f.h - y, :f.w - x]
++        v[y:y + tv.shape[0], x:x + tv.shape[1]] = np.maximum(v[y:y + tv.shape[0], x:x + tv.shape[1]], tv)
++    up = cv2.resize(v, (f.w * scale, f.h * scale), interpolation=cv2.INTER_LINEAR)
++    return np.clip(cv2.GaussianBlur(up, (0, 0), OVER_SCENE_SOFT * scale), 0, 1)
+ 
+ 
+ def page_palette(f, t):
+@@ -1073,11 +1148,16 @@
+             block = np.dstack([block[..., :3], tile_alpha(cache.tile(t), s)])
+         return block
+ 
++    over = plan.get("over") or {}
++
+     def put(img, t, block, s, sz):
+         v = cv2.resize(plan["vis"][id(t)], (sz, sz), interpolation=cv2.INTER_LINEAR)
+         dst = img[t.src_y * s:t.src_y * s + sz, t.src_x * s:t.src_x * s + sz]
+         alpha = np.round(block[..., 3] * np.clip(v, 0, 1)).astype(np.uint8)
+-        dst[..., :3] = np.where((alpha >= dst[..., 3])[..., None], block[..., :3], dst[..., :3])
++        rgb = block[..., :3]
++        if t.blending and (t.tex, page_palette(f, t)) in over:  # added over the scene: only where the original shows it
++            rgb = np.round(rgb * np.clip(v, 0, 1)[..., None]).astype(np.uint8)
++        dst[..., :3] = np.where((alpha >= dst[..., 3])[..., None], rgb, dst[..., :3])
+         dst[..., 3] = np.maximum(dst[..., 3], alpha)
+ 
+     pages, framed = {}, {}
+@@ -1277,7 +1357,10 @@
+             painted = False
+         elif not painted and the_picture(f, tiles, pal):  # the render holds it, all over: only what it adds
+             painted = True
++        # drawn over the scene (over_scene): its light only where the original shows it
++        seen = over_vis(f, plan, page, pal, scale)[..., None] if (page, pal) in (plan.get("over") or {}) else 1.0
+         for hh, add in glow_frames(f, pal, by_hash, scale, painted=painted).items():
++            add = add * seen
+             img = np.zeros((256 * scale, 256 * scale, 4), np.uint8)
+             for t in tiles:
+                 sx, sy, sz = t.src_x * scale, t.src_y * scale, t.size * scale

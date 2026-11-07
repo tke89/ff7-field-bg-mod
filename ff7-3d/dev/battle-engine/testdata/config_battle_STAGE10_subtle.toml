@@ -1,0 +1,16 @@
+# FFNx-3d battle look, a SUBTLE set for battle scene oq = STAGE10 (../TESTPLAN.md T10): what the pipeline's real data
+# might look like. Replace config_battle_STAGE10.toml's section with this one.
+
+[battle_STAGE10]
+haze_color = [0.42, 0.45, 0.42]
+haze_strength = 0.25
+haze_start = 8000.0
+haze_density = 0.00015
+haze_scene = 0.6
+char_grade = [1.03, 0.0, 0.0, 0.0,  0.0, 1.0, 0.0, 0.0,  0.0, 0.0, 0.95, 0.0]
+char_ambient = 2.0
+floor_light_rect = [-4000.0, -4000.0, 4000.0, 4000.0]
+floor_light_strength = 0.3
+normal_strength = 0.6
+normal_edge = 0.0
+sway = [ { texture = "STAGE10_T02", amount = 0.15 } ]

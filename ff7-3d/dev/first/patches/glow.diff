@@ -1,0 +1,51 @@
+--- live/ff3d/glow.py
++++ fixed/ff3d/glow.py
+@@ -189,15 +189,47 @@
+     return cv2.resize(r, (f.w * scale, f.h * scale), interpolation=cv2.INTER_AREA)
+ 
+ 
++RELIGHT_CORR = 0.6  # surface_light: a toggled light layer this like what's under it lights surfaces (not haze)
++RELIGHT_MAX = 3.0   # the most a surface gets brighter (blin65_2 at 4: clipped orange)
++RELIGHT_DARK = 16   # painting luma under this gets none of it, twice this gets all
++
++
++def surface_light(f, ups, scale):
++    """For a toggled light layer that brightens the original's own surfaces (its art is theirs, brighter: blin65_2's
++    room lights match what's under them at 0.93, 1.7-4x as bright; a message board's text or haze doesn't): each
++    frame as the painting lit the same way, {hash: painting x (light / the original under it)}, or None. Added as
++    the original's art, its lit walls and floor came out as yellow tile-shaped blocks over the painting's own walls
++    and over the black pit it has instead of the original's floor."""
++    luma = np.array([0.2126, 0.7152, 0.0722], np.float32)
++    rect = (f.mx, f.my, f.w, f.h)
++    base = np.asarray(render_composite(f.bg, rect, PageCache(f.bg).tile, 1,
++                                       lambda t: not t.param and not t.blending)).astype(np.float32)[..., :3] @ luma
++    base = cv2.resize(base, (f.w * scale, f.h * scale), interpolation=cv2.INTER_CUBIC)
++    peak = max(ups.values(), key=lambda a: float(a.mean())) @ luma
++    on = peak > 4
++    if on.sum() < 50 * scale * scale or float(np.corrcoef(peak[on], base[on])[0, 1]) < RELIGHT_CORR:
++        return None
++    paint = painted_canvas(f, scale)
++    # near-black stays black (blin65_2's pit is painted 10-20 levels up: x3 it showed as an olive floor)
++    paint = paint * np.clip((paint @ luma - RELIGHT_DARK) / RELIGHT_DARK, 0, 1)[..., None]
++    under = np.maximum(cv2.GaussianBlur(base, (0, 0), 0.8 * scale), 8)
++    return {hh: np.clip(paint * np.clip(cv2.GaussianBlur(up @ luma, (0, 0), 0.8 * scale) / under, 0, RELIGHT_MAX)[..., None],
++                        0, 255) for hh, up in ups.items()}
++
++
+ def glow_frames(f, pal, by_hash, scale=2, gain=0.9, whiten=0.35, painted=True):
+     """{hash: canvas RGB} light added over the painted mesh in each state: the state's glow above the darkest it
+     gets, blurred more along the fall than across, shaped by the painting's own streaks, pushed toward white.
+     painted=False (a layer the render doesn't hold: toggled off when it was made, e.g. Mt. Corel's haze): all of
+-    its light, softened a little."""
++    its light, softened a little; a layer that lights the original's surfaces lights the painting's instead
++    (surface_light)."""
+     transparent = f.bg.transparency[pal] if pal < len(f.bg.transparency) else True
+     ups = {hh: cv2.resize(layer(f, pal, c, transparent), (f.w * scale, f.h * scale), interpolation=cv2.INTER_CUBIC)
+            for hh, c in by_hash.items()}
+     if not painted:
++        lit = surface_light(f, ups, scale)
++        if lit is not None:
++            return lit
+         return {hh: np.clip(cv2.GaussianBlur(np.clip(up, 0, None), (0, 0), 0.8 * scale), 0, 255) for hh, up in ups.items()}
+     floor = np.min(np.stack(list(ups.values())), 0)
+     lum = painted_canvas(f, scale).mean(-1)

@@ -1,0 +1,50 @@
+--- a/ff3d/glow.py
++++ b/ff3d/glow.py
+@@ -187,6 +187,38 @@
+ _VIEWS = {}
+ 
+ 
++PICTURE_SHARE = 0.5  # the_picture: a switched glow layer covering this much of the canvas is the picture itself
++
++
++def the_picture(f, tiles, pal):
++    """Is a switched glow layer (its `tiles`, in `pal`) the picture itself, which the render holds: its param on in the
++    render, its glow tiles (every state of it) over PICTURE_SHARE of the canvas, and the render showing its light
++    (not painted_out)? Then its frames carry only what it adds over its dimmest state (painted=True). crater_2's ice
++    field is 1656 additive tiles in a param the render had on (70% of the canvas, 4 states, 34 palettes): with all of
++    their light added over the painting that holds it (push_under at LIT_PUSH_CAP 8.5 brought them out, F19), the
++    field went white (4:3 mean luma 164-167 where the original is 137-142; 130-140 with this), with pale tile-shaped
++    blocks where surface_light's ratio stepped. A lamp's glow (zz4's crystal, 5%) still gets all its light."""
++    on = {int(p): m for p, m in (f.meta.get("rendered_defaults") or {}).items()}
++    params = frozenset(t.param for t in tiles if t.param and on.get(t.param, 0))
++    if not params:
++        return False
++    key = (f.name, params)
++    if key not in _COVER:
++        glowing = set(animated(f))
++        cover = np.zeros((f.h, f.w), bool)
++        cache = PageCache(f.bg)
++        for t in f.bg.tiles:
++            if t.param in params and t.blending and (t.tex, t.palette) in glowing:
++                x, y = t.dst_x - f.mx, t.dst_y - f.my
++                a = cache.tile(t)[..., 3][max(0, -y):f.h - y, max(0, -x):f.w - x] > 0
++                cover[max(0, y):max(0, y) + a.shape[0], max(0, x):max(0, x) + a.shape[1]] |= a
++        _COVER[key] = float(cover.mean())
++    return _COVER[key] >= PICTURE_SHARE and not painted_out(f, pal)
++
++
++_COVER = {}
++
++
+ def light_added(f, target):
+     """The static light layers the scene's colour gets (render size, float RGB 0..255, or None): `target` less what
+     the render shows of them (light_kept). Where the render shows them at all (light_kept at least KEPT_TRUST), only
+@@ -1136,6 +1168,8 @@
+         painted = all(not t.param and not moves_apart(f, t) for t in tiles)
+         if painted and painted_out(f, pal):  # the AI painted it out: all of its light, as a toggled one's
+             painted = False
++        elif not painted and the_picture(f, tiles, pal):  # the render holds it, all over: only what it adds
++            painted = True
+         for hh, add in glow_frames(f, pal, by_hash, scale, painted=painted).items():
+             img = np.zeros((256 * scale, 256 * scale, 4), np.uint8)
+             for t in tiles:

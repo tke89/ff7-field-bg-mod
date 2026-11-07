@@ -1,0 +1,138 @@
+--- a/ff3d/build.py
++++ b/ff3d/build.py
+@@ -830,11 +830,11 @@
+                         # the render, the board hid every message the game drew. zz4's crystal glow (z 4094 over the
+                         # crystal at a seventh of that: x6.9) lost 68% of its light at 6, and fship_4, junonr1, kuro_5,
+                         # tunnel_5, hyou5_2, ghotin_2, gon_i, crater_2 (x6.3-8.3) all of it. blin65_2's room lights
+-                        # (z 4087: x11-16, most of the room) and the 20-odd fields like it still need the engine to draw
+-                        # such tiles over the scene (F19)
++                        # (z 4087: x11-16, most of the room) and the 20-odd fields like it: FFNx-3d draws such layers
++                        # over the scene (glow.over_scene, F20)
+ 
+ 
+-def push_under(f, Z, plan, step):
++def push_under(f, Z, plan, step, over=()):
+     """Behind each blended overlay tile (glow.overlay_plan), wherever the original shows it over the scene, move the
+     scene back along its camera rays just behind the tile's depth, so the game's depth test lets the tile through as
+     in 2D. Front-most tiles (smoke, haze, light shafts at depth ~0) need nothing. Solid tiles need nothing either:
+@@ -842,13 +842,14 @@
+     its true depth for when they're off. Their depth is often only for sorting (del1's ship: 4094, five times the
+     pier's in front of it), which the cap had left hidden behind the scene. The toggled glow layers' tiles too
+     (plan["lit"]: palette-animated and switched by a script, the game draws them with all their light), with a
+-    cap of their own (LIT_PUSH_CAP); push_back's box with its foreground rule left blin3_1's message board in front."""
++    cap of their own (LIT_PUSH_CAP); push_back's box with its foreground rule left blin3_1's message board in front.
++    Not the tiles of the layers FFNx-3d draws over the scene (`over`: (page, palette) pairs, glow.over_scene)."""
+     g = f.scale / step
+     out = Z.copy()
+     lit = {id(t) for t in plan.get("lit", [])}
+     for t in plan["tiles"] + plan.get("lit", []):
+         behind = TILE_DEPTH * t.z * 1.08
+-        if behind <= 0 or not t.blending:
++        if behind <= 0 or not t.blending or (t.tex, glow.page_palette(f, t)) in over:
+             continue
+         cap = LIT_PUSH_CAP if id(t) in lit else OVERLAY_PUSH_CAP
+         n = int(round(t.size * g))
+@@ -947,7 +948,7 @@
+     return out
+ 
+ 
+-def write_look(f, look, o=None, out=None):
++def write_look(f, look, o=None, out=None, over=None):
+     """The scene's colour texture and material map, image-based light and lighting section for a look and its light
+     settings; uses only cached work files, so it takes seconds (hot reload shows it in game). out: the scene's
+     folder (default: the game's)."""
+@@ -1022,6 +1023,13 @@
+     if floor.get("floor_light_strength", 0.0) > 0:
+         floor.pop("floor_light_strength")
+     haze_colour, haze_density, haze_start = atmos.haze(f)
++    # the light layers the game draws over the scene (glow.over_scene, `over`: (page, palette) pairs): the build's
++    # list, its pages cut to match; else the last build's (report.json: a build without the list leaves none)
++    if over is None:
++        rep = f.work / "report.json"
++        over = [tuple(int(v) for v in k.split("_")) for k in
++                (json.loads(rep.read_text()).get("glow_over_scene") or {} if rep.exists() else {})]
++    over = {"glow_over_scene": [n for pq in sorted(over) for n in pq]} if over else {}
+     ibl.lighting_section(f, extent, {
+         **lights(look, ll["shading"], ll["brightness"]),
+         "light_rotation_vertical": vertical, "light_rotation_horizontal": horizontal,
+@@ -1031,7 +1039,7 @@
+         "water_motion": round(2 * float(o["water_motion"]), 3),
+         "walkmesh_extrude": round(atmos.BORDER_PX / atmos.floor_px(f), 1),
+         **atmos.shadow_reach(f, atmos.BORDER_PX / atmos.floor_px(f)),
+-        **atmos.clouds(f, float(o["clouds"]), extent), **atmos.grass(float(o["grass"])), **fx, **relit})
++        **atmos.clouds(f, float(o["clouds"]), extent), **atmos.grass(float(o["grass"])), **fx, **relit, **over})
+     write_fields_section()
+     kind = atmos.particles(f, o["particles"], float(o["particle_amount"]), out, sources)
+     if not f.variant:  # the game draws the original's scrolling layers (glow.write_scrolling); with the blizzard's
+@@ -1105,22 +1113,38 @@
+ 
+     anim = glow.layers(f)
+     regions = [glow.grid_rect(f, r, step) for r in anim["rects"]]
+-    Z = push_back(Z, regions)
++    Zb = push_back(Z, regions)
+     plan = glow.overlay_plan(f, set(anim["glowing"]))
+-    Z = push_under(f, Z, plan, step)
+     # characters hidden as in the original (`reveal`); climbers on ladders always (the painting's wall is often
+     # estimated in front of its ladder: mds7st1's train cars)
+     walkers = ladder_layers(f, step, GH, GW) + (list(depth.walkmesh_layers(f, step)) + placed_layers(f, step, GH, GW)
+                                                  if o["reveal"] else [])
+-    bodies = {}
+-    if walkers:
+-        Z, report["walk_clearance"] = match_original_hiding(f, Z, walkers, step, up=up, floor=snapped > 0.5,
+-                                                            bodies=bodies, floor_at=W)
+-    # the mesh's depth: inside the game's near and far planes; the rest (contact shadows, the extent, simplify_in.npz
+-    # for the haze, the sun, life and surface) keeps the scene's own
+-    Zm, report["near_plane"] = clear_near_plane(Z, bodies)
+-    Zm, report["far_plane"] = clear_far_plane(Zm)
+-    Zm, report["parallax_order"] = parallax_order(f, Zm, step)  # a layer 3 the game draws among the scene
++
++    def shaped(over):
++        """The scene's depth Z and the mesh's Zm, the scene moved back under the blended tiles but those of the layers
++        drawn over it (`over`), and where the glow pushes (push_back, push_under) moved it."""
++        Z = push_under(f, Zb, plan, step, over)
++        pushed = Z != Z0
++        bodies = {}
++        if walkers:
++            Z, report["walk_clearance"] = match_original_hiding(f, Z, walkers, step, up=up, floor=snapped > 0.5,
++                                                                bodies=bodies, floor_at=W)
++        # the mesh's depth: inside the game's near and far planes; the rest (contact shadows, the extent,
++        # simplify_in.npz for the haze, the sun, life and surface) keeps the scene's own
++        Zm, report["near_plane"] = clear_near_plane(Z, bodies)
++        Zm, report["far_plane"] = clear_far_plane(Zm)
++        Zm, report["parallax_order"] = parallax_order(f, Zm, step)  # a layer 3 the game draws among the scene
++        return Z, Zm, pushed
++
++    Z, Zm, pushed = shaped(())
++    # light layers the mesh still hides where the original shows them (tiles far behind it): the game draws them over
++    # the scene (glow.over_scene; the look step lists them in the lighting section, from report.json), so the scene
++    # keeps its own depth under all of their tiles: moved back under the ones within the cap, junbin4's scene came out
++    # 5.5 times as wide (its extent sizes the shadow map)
++    plan["over"] = glow.over_scene(f, anim, plan, Zm, step, lambda t: TILE_DEPTH * t.z)
++    if plan["over"]:
++        Z, Zm, pushed = shaped(set(plan["over"]))
++    report["glow_over_scene"] = {f"{p}_{q}": share for (p, q), share in sorted(plan["over"].items())}
+     report["glow_layers"] = anim["summary"]
+     report["overlays"] = {"tiles": len(plan["tiles"]), "params": sorted({t.param for t in plan["tiles"]}),
+                           "start_on": len(plan["entry_on"]), "backdrop": len(plan.get("backdrop", []))}
+@@ -1219,7 +1243,11 @@
+         (f.work / "entry_off.npz").unlink(missing_ok=True)
+     else:
+         np.savez_compressed(f.work / "entry_off.npz", rgb=off[0], weight=off[1].astype(np.float16))
+-    extent = float(np.ptp(Pw.reshape(-1, 3)[:, :2], axis=0).max())
++    # the scene's size (it sizes the shadow map, the clouds and the relit light's reach) where it stands, not where the
++    # glow pushes moved it back behind tiles: at LIT_PUSH_CAP 8.5 crater_2's came out 7 times as wide, gon_i's 20 (the
++    # shadow map's texels as many times as coarse: gon_i's characters lost their own shadows)
++    _, Px = f.unproject(bx, by, np.where(pushed, Z0, Z))
++    extent = float(np.ptp(Px.reshape(-1, 3)[:, :2], axis=0).max())
+     (f.work / "extent.txt").write_text(str(extent))
+     stage(0.9, "chimneys, fires, flags and sky (Qwen)")
+     try:
+@@ -1229,7 +1257,7 @@
+     # the look as the field has it now: the 3D tab may have changed it while this ran (a minute or two), and writing
+     # back what was read at the start put Relit back to Painted
+     o = options(f)
+-    write_look(f, o["look"], o, out)
++    write_look(f, o["look"], o, out, over=plan["over"])
+     report.update(vertices=len(pw), triangles=len(tris), extent=float(extent), built=time.time(),
+                   seconds=round(time.time() - t0, 1), bytes=sum(p.stat().st_size for p in out.iterdir()))
+     swap_in(out, common.MESH / name)

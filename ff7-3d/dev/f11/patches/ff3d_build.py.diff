@@ -1,0 +1,29 @@
+--- a/ff3d/build.py
++++ b/ff3d/build.py
+@@ -792,8 +792,10 @@
+     surface.write_normals(f, out / f"{tex}_nml.dds", float(o["bump"]), grass=float(o["grass"]) > 0)
+     # both looks show the painting; relit, the game relights it (painting x its light now / the painting's light).
+     # (Relit used to be Marigold's de-lit colour: its painted shadows only half went and the colour step put the old
+-    # sunlight back as orange patches)
+-    colour = render.astype(np.float32)
++    # sunlight back as orange patches.) The painting in AI 2D's colours: the Studio's colour pass (keep_colors), which
++    # its pages have and the render doesn't (glow.scene_colours)
++    scene = glow.scene_colours(f, render)
++    colour = scene.copy()
+     off = f.work / "entry_off.npz"
+     if off.exists():  # animations that start on: the game draws them, so the mesh shows what's beneath
+         d = np.load(off)
+@@ -825,11 +827,11 @@
+     else:
+         relight.clear(out, tex)
+     walk_depth = np.load(f.work / "walk_depth.npy")
+-    ibl.write(f, render, walk_depth, ll["light_tint"], look, sun=(vertical, horizontal))
++    ibl.write(f, scene, walk_depth, ll["light_tint"], look, sun=(vertical, horizontal))
+     # the characters' own surrounding light, from the painting's colours (the scene keeps its own, above)
+     char_ibl = [ibl.envmap.IBL / f"field_{f.id}_char_{k}.dds" for k in "sd"]
+     if float(o["char_light"]) > 0:
+-        ibl.write(f, render, walk_depth, float(o["char_light"]), "painted", sun=(vertical, horizontal), suffix="_char")
++        ibl.write(f, scene, walk_depth, float(o["char_light"]), "painted", sun=(vertical, horizontal), suffix="_char")
+     else:
+         for p in char_ibl:
+             p.unlink(missing_ok=True)

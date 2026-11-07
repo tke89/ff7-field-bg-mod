@@ -1,0 +1,88 @@
+--- a/ff3d/glow.py
++++ b/ff3d/glow.py
+@@ -145,6 +145,48 @@
+ KEPT_TRUST = 0.35  # light_added: a light the render shows at least this much of is the painting's: nothing added
+ 
+ 
++PAINTED_LIFT = 10  # painted_out: a layer lifting the original's picture less than this over its surroundings (luma) can't tell
++
++
++def painted_out(f, pal):
++    """Has the AI painted out a static palette-animated glow layer (its tiles in `pal`, in the field file's colours,
++    which the AI saw)? Both: the render shows under KEPT_TRUST of its light (fitted as light_added fits a light, over
++    its pixels and a ring around them, on the channels it has) and lifts its place over that ring by under KEPT_TRUST
++    of what the layer lifts the original there (luma, weighted by its light: a light the AI kept but recoloured, such
++    as crcin_2's floor strips painted orange where the original's are pink-white, fits ~0 and still lifts). Its glow
++    frames (painted=True) held only what it adds above its dimmest state, so 3D had none of the light the original
++    shows: las4_3's big white radial glow (kept -0.10, lifts +13 where the original +90), jail1's green glow from the
++    well, pillar_2's lamps."""
++    from ff7bg import ai
++    luma = np.array([0.2126, 0.7152, 0.0722], np.float32)
++    transparent = f.bg.transparency[pal] if pal < len(f.bg.transparency) else True
++    light = layer(f, pal, tuple(palettes.file_palettes(f.raw)[pal]), transparent)
++    near = light.mean(-1) > 3
++    if near.sum() < 50:
++        return False
++    key = (f.name, str(f.raw_render), f.raw_render.stat().st_mtime)
++    if key not in _VIEWS:  # the original as the AI saw it, and the render, at 1x: once per field
++        _VIEWS.clear()
++        _VIEWS[key] = (ai.default_view(f.bg, f.meta.get("rendered_defaults", {}))[0][..., :3].astype(np.float32),
++                       cv2.resize(np.asarray(Image.open(f.render).convert("RGB")), (f.w, f.h),
++                                  interpolation=cv2.INTER_AREA).astype(np.float32))
++    shown, r = _VIEWS[key]
++    without = np.clip(shown - light, 0, 255)
++    ring = (cv2.dilate(near.astype(np.uint8), np.ones((15, 15), np.uint8)) > 0) & ~near
++    W, L, R = without[near | ring], light[near | ring], r[near | ring]
++    mean = light[near].mean(0)
++    on = [j for j in range(3) if mean[j] >= 0.25 * mean.max()]
++    ks = [np.linalg.lstsq(np.column_stack([W, L[:, j], np.ones(len(W))]), R[:, j], rcond=None)[0][3] for j in on]
++    w = light[near] @ luma
++    lift = lambda img: float(((img[near] @ luma) * w).sum() / w.sum() - (img[ring] @ luma).mean())
++    original = lift(shown)
++    return (float(np.average(ks, weights=mean[on])) < KEPT_TRUST and original >= PAINTED_LIFT
++            and lift(r) < KEPT_TRUST * original)
++
++
++_VIEWS = {}
++
++
+ def light_added(f, target):
+     """The static light layers the scene's colour gets (render size, float RGB 0..255, or None): `target` less what
+     the render shows of them (light_kept). Where the render shows them at all (light_kept at least KEPT_TRUST), only
+@@ -580,6 +622,22 @@
+     return 2 in drawn_layers(f)
+ 
+ 
++def moves_apart(f, t):
++    """Is the tile on a parallax layer (2 or 3) the camera moves apart from the scene (layer_reach over BACKDROP_MOVE)?
++    The game draws it at its parallax place, which the painting, made at the canvas place, can't hold: anfrst_1's
++    green shaft, 560 px of reach, was in the render at its canvas place, and its glow frames (painted=True) held only
++    its flicker, so 3D showed no shaft where the game draws it (AI 2D draws the original's, F4)."""
++    if t.layer not in (2, 3):
++        return False
++    key = (f.name, t.layer)
++    if key not in _REACH:
++        _REACH[key] = backdrop_motion(f, t.layer)
++    return _REACH[key] > BACKDROP_MOVE
++
++
++_REACH = {}
++
++
+ def _in_scene(f, in_render, animated, drawn):
+     """The solid tiles the scene holds: not on a layer the game draws (drawn), static or on in the render and not
+     animated (an overlay the game switches has the backdrop beneath it in 2D when it's off)."""
+@@ -1073,8 +1131,11 @@
+     for (page, pal), by_hash in anim["glowing"].items():
+         tiles = [t for t in f.bg.tiles if t.palette == pal and t.tex == page]
+         # only static layers (waterfalls, lamps) are trusted to be in the painting; toggled ones (haze, smoke) the
+-        # game draws in full over it, as the 2D game does, since the AI often paints them out
+-        painted = all(not t.param for t in tiles)
++        # game draws in full over it, as the 2D game does, since the AI often paints them out, and so are layers the
++        # camera moves apart from the scene (moves_apart: the painting has them at the canvas place)
++        painted = all(not t.param and not moves_apart(f, t) for t in tiles)
++        if painted and painted_out(f, pal):  # the AI painted it out: all of its light, as a toggled one's
++            painted = False
+         for hh, add in glow_frames(f, pal, by_hash, scale, painted=painted).items():
+             img = np.zeros((256 * scale, 256 * scale, 4), np.uint8)
+             for t in tiles:

@@ -1,0 +1,22 @@
+--- ff7bg/ai.py (Studio, live)
++++ ff7bg/ai.py (F13)
+@@ -330,11 +330,17 @@
+         return next(((r, img) for r, tiles, img in panels["off"] if hits(t, tiles)), None)
+ 
+     def original_tile(t):
+-        """Original art for one tile, upscaled with its surroundings and color-matched."""
++        """Original art for one tile, upscaled with its surroundings and color-matched. A solid tile on a parallax
++        layer (2-3) keeps the original's own transparency: where the layer ends on the canvas there's nothing
++        around it, and the upscale left its outer edge part transparent (a dark seam where a layer that wraps
++        meets itself as it scrolls: fship_1's sea)."""
+         x, y = t.dst_x - min_x, t.dst_y - min_y
+         region = canvases[tile_sheet[id(t)]][y : y + t.size + 2 * m, x : x + t.size + 2 * m]
+         up = upscale_rgba(np.ascontiguousarray(region), scale)
+-        return apply_color(up[m * scale : (m + t.size) * scale, m * scale : (m + t.size) * scale], M)
++        out = apply_color(up[m * scale : (m + t.size) * scale, m * scale : (m + t.size) * scale], M)
++        if t.layer >= 2 and not t.blending:
++            out = np.dstack([out[..., :3], tile_alpha(cache.tile(t), scale)])
++        return out
+ 
+     # Static glows are baked into the AI image, so their own tiles go blank, except where nothing solid
+     # lies beneath them: there the glow alone draws the scene (blin1's Shin-Ra screen is additive tiles

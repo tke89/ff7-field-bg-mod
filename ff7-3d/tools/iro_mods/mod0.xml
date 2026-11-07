@@ -1,0 +1,465 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ModInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <ID>2b25060c-c60e-426e-ac46-f85439e903e2</ID>
+  <Name>Ninostyle Chibi</Name>
+  <Category>Field Models</Category>
+  <Author>Ninostyle + L@zar0 + Tsunamix + Shiniboy</Author>
+  <Version>26.08303</Version>
+  <Description>Chibi Models</Description>
+  <ReleaseNotes></ReleaseNotes>
+  <ReleaseDate>2026-08-30</ReleaseDate>
+  <Link>https://www.nexusmods.com/finalfantasy7/mods/4?tab=description</Link>
+  <DonationLink />
+  <PreviewFile>Chibi_Gif.gif</PreviewFile>
+  <GameLanguage>ANY</GameLanguage>
+  
+
+  
+    ==============================================================================================================
+//Lazaro
+==============================================================================================================
+
+  <ModFolder Folder="lazaro"  ActiveWhen="lazaro = 1" />
+  
+  
+  
+  ==============================================================================================================
+//Dynamic Weapons folders
+==============================================================================================================
+
+  <ModFolder Folder="dynamic weapons\chibi"  ActiveWhen="dynamic weapons = 1" />
+==============================================================================================================
+//Cloud
+==============================================================================================================
+
+<Conditional Folder="Dynamic Weapons\Cloud\01 - Buster Sword" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="0" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\02 - Mythril Saber" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="1" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\03 - Hardedge" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="2" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\04 - Butterfly Edge" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="3" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\05 - Enhance Sword" ActiveWhen="Dynamic Weapons = 1">
+	<RuntimeVar Var="CloudWeapon" Values="4" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\06 - Organix" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="5" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\07 - Crystal Sword" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="6" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\08 - Force Stealer" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="7" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\09 - Rune Blade" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="8" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\10 - Murasama" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="9" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\11 - Nail Bat" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="10" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\12 - Yoshiyuki" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="11" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\13 - Apocalypse" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="12" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\14 - Heavens Cloud" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="13" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\15 - Ragnarok" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="14" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\16 - Ultima Weapon" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="15" />
+</Conditional>
+
+
+
+==============================================================================================================
+//Aerith
+==============================================================================================================
+
+<Conditional Folder="Dynamic Weapons\Aerith\00 - Guard Stick" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="AerisWeapon" Values="62" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Aerith\01 - Mythril Rod" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="AerisWeapon" Values="63" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Aerith\02 - Full Metal Staff" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="AerisWeapon" Values="64" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Aerith\03 - Striking Staff" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="AerisWeapon" Values="65" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Aerith\04 - Prism Staff" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="AerisWeapon" Values="66" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Aerith\05 - Aurora Rod" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="AerisWeapon" Values="67" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Aerith\06 - Wizard Staff" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="AerisWeapon" Values="68" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Aerith\07 - Wizer Staff" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="AerisWeapon" Values="69" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Aerith\08 - Fairy Tale" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="AerisWeapon" Values="70" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Aerith\09 - Umbrella" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="AerisWeapon" Values="71" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Aerith\10 - Princess Guard" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="AerisWeapon" Values="72" />
+</Conditional>
+
+
+==============================================================================================================
+//Cid
+==============================================================================================================
+
+<Conditional Folder="Dynamic Weapons\Cid\01 - Spear" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CidWeapon" Values="73" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\02 - Slash Lance" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CidWeapon" Values="74" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\03 - Trident" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CidWeapon" Values="75" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\04 - Mast Ax" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CidWeapon" Values="76" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\05 - Partisan" ActiveWhen="Dynamic Weapons = 1">
+	<RuntimeVar Var="CidWeapon" Values="77" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\06 - Viper Halberd" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CidWeapon" Values="78" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\07 - Javelin" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CidWeapon" Values="79" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\08 - Grow lance" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CidWeapon" Values="80" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\09 - Mop" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CidWeapon" Values="81" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\10 - Dragoon Lance" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CidWeapon" Values="81" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\11 - Scimitar" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CidWeapon" Values="82" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\12 - Flayer" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CidWeapon" Values="83" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\13 -Spirit Lance" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CidWeapon" Values="84" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\14 - Venus Gospel" ActiveWhen="Dynamic Weapons = 1" >
+	<RuntimeVar Var="CidWeapon" Values="85" />
+</Conditional>
+
+    ==============================================================================================================
+//efryt folder
+==============================================================================================================
+
+<ModFolder Folder="no change" ActiveWhen="efryt = 0" />
+<ModFolder Folder="efryt\fb" ActiveWhen="efryt = 1" />
+
+==============================================================================================================
+//vehicles folders
+==============================================================================================================
+
+  <ModFolder Folder="Buggy - No Change"  ActiveWhen="buggy = 0" />
+<ModFolder Folder="Buggy - NinoStyle"  ActiveWhen="buggy = 1" />
+<ModFolder Folder="Alt. Buggy - NinoStyle"  ActiveWhen="buggy = 2" />
+<ModFolder Folder="Alt. Buggy2 - NinoStyle"  ActiveWhen="buggy = 3" />
+<ModFolder Folder="Chocobo - No Change"  ActiveWhen="chocobo = 0" />
+<ModFolder Folder="Chocobo - NinoStyle"  ActiveWhen="chocobo = 1" />
+<ModFolder Folder="Alt. Chocobo - NinoStyle"  ActiveWhen="chocobo = 2" />
+<ModFolder Folder="Highwind - No Change"  ActiveWhen="highwind = 0" />
+<ModFolder Folder="Highwind - NinoStyle"  ActiveWhen="highwind = 1" />
+<ModFolder Folder="Alt. Highwind - NinoStyle"  ActiveWhen="highwind = 2" />
+<ModFolder Folder="Submarine - No Change"  ActiveWhen="submarine = 0" />
+<ModFolder Folder="Submarine - NinoStyle"  ActiveWhen="submarine = 1" />
+<ModFolder Folder="Tiny Bronco - No Change"  ActiveWhen="tiny_bronco = 0" />
+<ModFolder Folder="Tiny Bronco - NinoStyle"  ActiveWhen="tiny_bronco = 1" />
+<ModFolder Folder="Cargo Ship - No Change"  ActiveWhen="cargo_ship = 0" />
+<ModFolder Folder="Cargo Ship - NinoStyle"  ActiveWhen="cargo_ship = 1" />
+<ModFolder Folder="Gelnika - No Change"  ActiveWhen="gelnika = 0" />
+<ModFolder Folder="Gelnika - NinoStyle"  ActiveWhen="gelnika = 1" />
+
+==============================================================================================================
+//alt tifa folder
+==============================================================================================================
+
+<ModFolder Folder="no change" ActiveWhen="alt tifa = 0" />
+<ModFolder Folder="alt tifa\fb" ActiveWhen="alt tifa = 1" />
+
+  
+==============================================================================================================
+//chibi Models full xml (copy paste xml here from any updates to chibi package)
+==============================================================================================================
+
+<ModFolder Folder="no change" ActiveWhen="fb = 0" />
+<ModFolder Folder="fb" ActiveWhen="fb = 1" />
+<ModFolder Folder="fc" ActiveWhen="fb = 2" />
+
+  
+  <ConfigOption>
+    <Type>List</Type>
+    <Default>1</Default>
+    <ID>fb</ID>
+    <Name>Chibi Field and World Models</Name>
+    <Description>*Latest Nexus is not compatible with any fixes</Description>
+    <Option Value="0" Name="Off" PreviewFile="off.png"/>
+    <Option Value="1" Name="On" PreviewFile="on.png"/>
+    <Option Value="2" Name="On - Latest Nexus - experimental" PreviewFile="on.png"/>
+  </ConfigOption>
+  
+  ==============================================================================================================
+//Lazaro config
+==============================================================================================================
+  
+    <ConfigOption>
+    <Type>List</Type>
+    <Default>1</Default>
+    <ID>lazaro</ID>
+    <Name>L@zar0's Upgrades</Name>
+    <Description>Several fixes and upgrades including blinking head and blinking eyes.</Description>
+    <Option Value="0" Name="Off" PreviewFile="off.png"/>
+    <Option Value="1" Name="On" PreviewFile="on.png"/>
+  </ConfigOption>
+  
+==============================================================================================================
+//Efryt config
+==============================================================================================================
+  
+    <ConfigOption>
+    <Type>List</Type>
+    <Default>1</Default>
+    <ID>efryt</ID>
+    <Name>Efryt's Little Work</Name>
+    <Description>A few slight recolors and Buster Sword on Cloud's back.</Description>
+    <Option Value="0" Name="Off" PreviewFile="off.png"/>
+    <Option Value="1" Name="On" PreviewFile="efryt.png"/>
+  </ConfigOption>
+  
+  ==============================================================================================================
+//alt tifa config
+==============================================================================================================
+  
+  
+    <ConfigOption>
+    <Type>List</Type>
+    <Default>0</Default>
+    <ID>alt tifa</ID>
+    <Name>Tifa Remake Outfit</Name>
+    <Description></Description>
+    <Option Value="0" Name="Off" PreviewFile="off.png"/>
+    <Option Value="1" Name="On" PreviewFile="alt tifa\preview.png"/>
+  </ConfigOption>
+  
+  
+==============================================================================================================
+//Dynamic Weapons config
+==============================================================================================================
+
+
+<ConfigOption>
+    <Type>List</Type>
+    <Default>1</Default>
+    <ID>Dynamic Weapons</ID>
+    <Name>Dynamic Weapons (BETA)</Name>
+    <Description>Adds equiped weapon to Cloud, Aerith and Cid at all times.</Description>
+    <Option Value="0" Name="Dynamic Weapons - Off" PreviewFile="Off.png" />
+    <Option Value="1" Name="Dynamic Weapons - On" PreviewFile="On.png" />
+</ConfigOption>
+  
+  
+  ==============================================================================================================
+//vehicles config
+==============================================================================================================
+  
+
+  <ConfigOption>
+    <Type>List</Type>
+    <Default>1</Default>
+    <ID>buggy</ID>
+    <Name>Buggy</Name>
+    <Description>Enables the Buggy on the world map. Choose between a version with the original color scheme and a version closer to the other vehicles in terms of color palette.</Description>
+    <Option Value="0" Name="No Change" PreviewFile="no_change.png"/>
+    <Option Value="1" Name="Original Colors - NinoStyle" PreviewFile="NinoStyle_buggy.png"/>
+    <Option Value="2" Name="Alt. Colors - NinoStyle" PreviewFile="NinoStyle_buggy_alt.png"/>
+    <Option Value="3" Name="Truck - NinoStyle" PreviewFile="NinoStyle_buggy_alt2.png"/>
+  </ConfigOption>
+    
+  <ConfigOption>
+    <Type>List</Type>
+    <Default>2</Default>
+    <ID>chocobo</ID>
+    <Name>Chocobo</Name>
+    <Description>Enables the Chocobo on the world map.</Description>
+    <Option Value="0" Name="No Change" PreviewFile="no_change.png"/>
+    <Option Value="1" Name="NinoStyle" PreviewFile="NinoStyle_chocobo.png"/>
+    <Option Value="2" Name="NinoStyle" PreviewFile="NinoStyle_chocobo_alt.png"/>
+  </ConfigOption>  
+  
+  <ConfigOption>
+    <Type>List</Type>
+    <Default>1</Default>
+    <ID>highwind</ID>
+    <Name>Highwind</Name>
+    <Description>Enables the Highwind on the world map.</Description>
+    <Option Value="0" Name="No Change" PreviewFile="no_change.png"/>
+    <Option Value="1" Name="NinoStyle" PreviewFile="NinoStyle_highwind.png"/>
+    <Option Value="2" Name="NinoStyle" PreviewFile="NinoStyle_highwind2.png"/>
+  </ConfigOption>
+  
+    <ConfigOption>
+    <Type>List</Type>
+    <Default>1</Default>
+    <ID>submarine</ID>
+    <Name>Submarine</Name>
+    <Description>Enables the Submarine on the world map.</Description>
+    <Option Value="0" Name="No Change" PreviewFile="no_change.png"/>
+    <Option Value="1" Name="NinoStyle" PreviewFile="NinoStyle_submarine.png"/>
+  </ConfigOption>
+  
+    <ConfigOption>
+    <Type>List</Type>
+    <Default>1</Default>
+    <ID>tiny_bronco</ID>
+    <Name>Tiny Bronco</Name>
+    <Description>Enables the Tiny Bronco on the world map.</Description>
+    <Option Value="0" Name="No Change" PreviewFile="no_change.png"/>
+    <Option Value="1" Name="NinoStyle" PreviewFile="NinoStyle_tinybronco.png"/>
+  </ConfigOption>
+
+    <ConfigOption>
+    <Type>List</Type>
+    <Default>1</Default>
+    <ID>cargo_ship</ID>
+    <Name>Cargo Ship</Name>
+    <Description>Enables the Cargo Ship on the world map.</Description>
+    <Option Value="0" Name="No Change" PreviewFile="no_change.png"/>
+    <Option Value="1" Name="NinoStyle" PreviewFile="NinoStyle_cargo.png"/>
+  </ConfigOption>
+
+ <ConfigOption>
+    <Type>List</Type>
+    <Default>1</Default>
+    <ID>gelnika</ID>
+    <Name>Gelnika</Name>
+    <Description>Enables the Gelnika on the world map.</Description>
+    <Option Value="0" Name="No Change" PreviewFile="no_change.png"/>
+    <Option Value="1" Name="NinoStyle" PreviewFile="NinoStyle_gelnika.png"/>
+  </ConfigOption>
+  
+  ==============================================================================================================
+//conflict resolve
+==============================================================================================================
+
+<Compatibility>
+	<Setting>
+	    <MyID>fb</MyID>
+	    <MyValue>2</MyValue>
+	    <ModID>2b25060c-c60e-426e-ac46-f85439e903e2</ModID>
+	    <TheirID>lazaro</TheirID>
+	    <Require>0</Require>
+	</Setting>
+
+	<Setting>
+	    <MyID>fb</MyID>
+	    <MyValue>2</MyValue>
+	    <ModID>2b25060c-c60e-426e-ac46-f85439e903e2</ModID>
+	    <TheirID>Dynamic Weapons</TheirID>
+	    <Require>0</Require>
+	</Setting>
+
+	<Setting>
+	    <MyID>fb</MyID>
+	    <MyValue>2</MyValue>
+	    <ModID>2b25060c-c60e-426e-ac46-f85439e903e2</ModID>
+	    <TheirID>efryt</TheirID>
+	    <Require>0</Require>
+	</Setting>
+
+	<Setting>
+	    <MyID>fb</MyID>
+	    <MyValue>2</MyValue>
+	    <ModID>3b25060c-c60e-426e-ac46-f85479e983e5</ModID>
+	    <TheirID>fb</TheirID>
+	    <Require>1</Require>
+	</Setting>
+
+	<Setting>
+	    <MyID>fb</MyID>
+	    <MyValue>2</MyValue>
+	    <ModID>ee0e2b9f-9545-4688-b6b5-1f2fb6662aae</ModID>
+	    <TheirID>advancedBlink</TheirID>
+	    <Require>0</Require>
+	</Setting>
+</Compatibility>
+
+  <OrderConstraints>
+    <After>ee0e2b9f-9545-4688-b6b5-1f2fb6662aae</After>
+  </OrderConstraints>
+
+  ==============================================================================================================
+//FFNx config
+==============================================================================================================
+   
+  <FFNxConfig>
+	<ff7_advanced_blinking fb="2">false</ff7_advanced_blinking>
+  </FFNxConfig>
+  
+</ModInfo>

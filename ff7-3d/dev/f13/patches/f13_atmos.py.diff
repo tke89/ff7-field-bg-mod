@@ -1,0 +1,82 @@
+--- ff3d/atmos.py (live)
++++ ff3d/atmos.py (F13)
+@@ -188,11 +188,12 @@
+     return max(1, n // 2)
+ 
+ 
+-def glow(f, colour, strength, out, lights=None):
++def glow(f, colour, strength, out, lights=None, seen=None):
+     """The painting's lights, blurred, at half size beside the scene (<field>_scene_glow.dds); the game adds it over
+     everything 3D, characters too. Two sources: where the original art has light layers (lamps, signs, screens, light
+     shafts: big lit areas glow less), and the painting's own lights (painted_lights). lights: life.lights' still
+-    (lit windows, lanterns, their light on the ground; linear, half size), added whatever the strength. Nothing to
++    (lit windows, lanterns, their light on the ground; linear, half size), added whatever the strength. seen: where
++    the scene is (glow.backdrop_alpha; None: everywhere): none where it leaves the backdrop to the game. Nothing to
+     add: no glow file. Returns this glow, linear (for flicker), or None."""
+     path = out / f"{f.name}_scene_glow.dds"
+     base = _glow(f, colour, strength) if strength > 0 else None
+@@ -200,7 +201,7 @@
+     if total is None or total.max() <= 1e-5:
+         path.unlink(missing_ok=True)
+         return None
+-    _write_glow(path, _scene_under(colour, total.shape), total)
++    _write_glow(path, _scene_under(colour, total.shape), total, seen)
+     return base
+ 
+ 
+@@ -212,15 +213,20 @@
+     return _linear(np.clip(cv2.resize(colour, (shape[1], shape[0]), interpolation=cv2.INTER_AREA), 0, 255))
+ 
+ 
+-def _write_glow(path, scene, light):
++def _write_glow(path, scene, light, seen=None):
+     """A glow file adding `light` (linear) over `scene` (_scene_under). The game adds the file to the finished,
+     gamma-encoded picture (FFNx-3d drawGlow, BLEND_ADD), so it holds the difference the light makes there: added as
+     it was until 2026-11-01 (the light itself, gamma-encoded), faint light came out about 3x too strong over lit
+     surfaces: halos spread wide, each light's box edge showed as a ring and the light on the ground went milky
+-    (cos_top). Over black it's the same as before."""
++    (cos_top). Over black it's the same as before. seen (render size, 0 where the scene leaves the backdrop to the
++    game): nothing there, transparent (the glow is drawn on the scene's mesh, and the game's backdrop moves under it)."""
+     lit = np.clip(scene + np.clip(light, 0, GLOW_CAP), 0, 1)
+     rgb = np.clip(lit ** (1 / 2.2) - scene ** (1 / 2.2), 0, 1)
+-    gltfout.write_dds(path, np.dstack([np.round(rgb * 255).astype(np.uint8), np.full(rgb.shape[:2], 255, np.uint8)]))
++    a = np.full(rgb.shape[:2], 255, np.uint8)
++    if seen is not None:
++        on = cv2.resize(seen.astype(np.float32), (rgb.shape[1], rgb.shape[0]), interpolation=cv2.INTER_AREA) >= 0.5
++        rgb, a = rgb * on[..., None], np.where(on, a, 0).astype(np.uint8)
++    gltfout.write_dds(path, np.dstack([np.round(rgb * 255).astype(np.uint8), a]))
+ 
+ 
+ def _glow(f, colour, strength):
+@@ -660,12 +666,12 @@
+             "cloud_drift": [round(drift * 0.8, 5), round(drift * 0.6, 5)]}
+ 
+ 
+-def flicker(f, amount, out, colour, base=None, lights=None):
++def flicker(f, amount, out, colour, base=None, lights=None, seen=None):
+     """Warm lights flickering: frames of the scene's glow (<field>_scene_glow_<n>.dds beside it, which FFNx-3d cycles
+     instead of the still one) where each warm light (flames, candles, lanterns: redder than blue) brightens and dims
+     on its own, `amount` of +-35%; cool, electric ones stay steady. colour: the scene's (as for glow); base: glow's
+-    own (linear); lights: life.lights, whose windows and lanterns come with their own frames. None at 0 or without a
+-    glow. Returns how many lights flicker."""
++    own (linear); lights: life.lights, whose windows and lanterns come with their own frames; seen: as glow's. None at
++    0 or without a glow. Returns how many lights flicker."""
+     for p in out.glob(f"{f.name}_scene_glow_*.dds"):
+         p.unlink()
+     extra = lights.get("frames") if lights else None
+@@ -674,7 +680,7 @@
+     scene = _scene_under(colour, (base if base is not None else extra[0]).shape)
+     if base is None:  # only lit windows and lanterns
+         for i, fr in enumerate(extra):
+-            _write_glow(out / f"{f.name}_scene_glow_{i}.dds", scene, fr)
++            _write_glow(out / f"{f.name}_scene_glow_{i}.dds", scene, fr, seen)
+         return int(lights["count"])
+     base = np.clip(base, 0, GLOW_CAP)
+     rgb = base ** (1 / 2.2) * 255  # (its lights found as they look)
+@@ -699,5 +705,5 @@
+         light = base * (g ** 2.2)[..., None]  # (the gain was on the glow as it looks)
+         if extra:  # lit windows and lanterns, each on its own
+             light = light + extra[i % len(extra)]
+-        _write_glow(out / f"{f.name}_scene_glow_{i}.dds", scene, light)
++        _write_glow(out / f"{f.name}_scene_glow_{i}.dds", scene, light, seen)
+     return int(warm.sum()) + (int(lights["count"]) if extra else 0)

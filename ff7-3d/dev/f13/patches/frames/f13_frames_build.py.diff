@@ -1,0 +1,62 @@
+--- ff3d/build.py (live)
++++ ff3d/build.py (F13 frames + layer-3 order)
+@@ -676,34 +676,46 @@
+ 
+ 
+ def parallax_order(f, Z, step):
+-    """Where a layer 3 the game draws (glow.drawn_layers: at the depth a script set, layer3_depth) can come over the
+-    scene, the scene's depth in front of it or behind it as the original's tiles are in 2D, along the camera rays (the
+-    picture is the same): a layer-1 tile nearer than the layer hides it (crater_1's cliff, at 1, in front of its wall
+-    at 3840), layer 0, a farther layer-1 tile and layer 2 don't (hill's ground, layer 0 and 4094, under its Highwind
+-    at 512: 46% of it within the Highwind's reach was estimated nearer). Only within the layer's reach, its canvas
+-    footprint grown by how far the camera moves it (glow.layer_reach; a script's scroll isn't). For the mesh's depth
+-    (Zm). Returns (Z, {"behind", "front": share of the grid moved}) or (Z, None)."""
+-    drawn = glow.drawn_layers(f)
+-    if 3 not in drawn or glow.backdrop_alpha(f) is None:
+-        return Z, None
++    """Where a layer 3 the game draws at a depth a script set (glow.layer3_depth) can come over the scene, the scene's
++    depth in front of it or behind it as the original's tiles are in 2D, along the camera rays (the picture is the
++    same): a layer-1 tile nearer than the layer hides it (crater_1's cliff, at 1, in front of its wall at 3840),
++    layer 0, a farther layer-1 tile and layer 2 don't (hill's ground, layer 0 and 4094, under its Highwind at 512:
++    46% of it within the Highwind's reach was estimated nearer). The layer's tiles the game draws: solid ones when
++    the layer is drawn by the game (glow.drawn_layers), and blended ones it scrolls or switches (trnad_3's mist at
++    4080, scrolled: the far cliffs, estimated past it, showed it over them as a pale rectangle; in 2D the cliff's
++    tiles, at 1072 and up, hide it). Only within the layer's reach: its canvas footprint grown by how far the camera
++    moves it (glow.layer_reach), everywhere for an effect a script keeps scrolling (not hill's Highwind, which a
++    cutscene moves). For the mesh's depth (Zm). Returns
++    (Z, {"behind", "front": share of the grid moved}) or (Z, None)."""
+     d3 = glow.layer3_depth(f)
++    if d3 is None or f.variant:
++        return Z, None
++    drawn = glow.drawn_layers(f) if glow.backdrop_alpha(f) is not None else set()
++    moving = glow.scrolling_layers(f)
++    by_game = [t for t in f.bg.tiles if t.layer == 3 and ((not t.blending and 3 in drawn)
++                                                           or (t.blending and (t.param or glow.scrolling(f, t, moving))))]
++    if not by_game:
++        return Z, None
++    mine = {id(t) for t in by_game}
+     zt = TILE_DEPTH * d3
+     in_render, animated = glow.entry_states(f)
+     cache = PageCache(f.bg)
+     key = np.full((f.h, f.w), np.inf, np.float32)  # the front scene tile's place in the game's order (tile depths)
+     reach = np.zeros((f.h, f.w), np.uint8)
+     for t in f.bg.tiles:
+-        if t.blending:
+-            continue
+         x, y, s = t.dst_x - f.mx, t.dst_y - f.my, t.size
+         a = cache.tile(t)[..., 3][:f.h - y, :f.w - x] > 0
+-        if t.layer == 3:
++        if id(t) in mine:
+             reach[y:y + s, x:x + s][a] = 1
++        elif t.blending or t.layer == 3:
++            continue
+         elif t.layer not in drawn and (not t.param or (in_render(t) and t.param not in animated)):
+             k = {0: 5000.0, 2: 6000.0}.get(t.layer, float(t.z))  # layer 0 (z 0.9997) and 2 (0.9998) behind any layer 1
+             blk = key[y:y + s, x:x + s]
+             blk[a] = np.minimum(blk[a], k)
+     rx, ry = glow.layer_reach(f, 3)
++    if any(glow.scrolling(f, t, moving) for t in by_game):  # an effect a script keeps scrolling over all of it
++        reach[:] = 1
+     reach = cv2.dilate(reach, np.ones((2 * int(np.ceil(ry)) + 1, 2 * int(np.ceil(rx)) + 1), np.uint8)) > 0
+     GH, GW = Z.shape
+     g = lambda m: cv2.resize(m.astype(np.uint8), (GW, GH), interpolation=cv2.INTER_NEAREST) > 0

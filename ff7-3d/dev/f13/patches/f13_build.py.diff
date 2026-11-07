@@ -1,0 +1,60 @@
+--- ff3d/build.py (live)
++++ ff3d/build.py (F13)
+@@ -773,6 +773,25 @@
+     return cv2.cvtColor(lab, cv2.COLOR_LAB2RGB) * 255
+ 
+ 
++FILL_REACH = 8  # texels: how far the scene's colour is carried out over where it's transparent (fill_out)
++
++
++def fill_out(colour, seen):
++    """The scene's colour carried out over where it's transparent (`seen` 0): at its edges the texture is filtered
++    with the texels beyond, and the shader's sky drift and ripples fetch from a few texels off, so those take the
++    scene's own colour, not the render's painting of the backdrop the game draws there instead."""
++    out = np.asarray(colour, np.float32).copy()
++    hole = seen < 0.5
++    if not hole.any():
++        return out
++    w = (~hole).astype(np.float32)
++    num = cv2.GaussianBlur(out * w[..., None], (0, 0), FILL_REACH / 2)
++    den = cv2.GaussianBlur(w, (0, 0), FILL_REACH / 2)
++    near = hole & (den > 1e-4)
++    out[near] = num[near] / den[near][..., None]
++    return out
++
++
+ def write_look(f, look, o=None, out=None):
+     """The scene's colour texture and material map, image-based light and lighting section for a look and its light
+     settings; uses only cached work files, so it takes seconds (hot reload shows it in game). out: the scene's
+@@ -810,12 +829,19 @@
+     added = glow.light_added(f, float(o["static_glow"]))
+     if added is not None:
+         colour = colour + added
+-    rgba = np.dstack([np.clip(colour, 0, 255).astype(np.uint8), np.full((f.RH, f.RW), 255, np.uint8)])
++    # where the game draws the backdrop (it moves apart from the scene: glow.backdrop_by_game), the scene is
++    # transparent: FFNx-3d skips it there and the game's tiles show wherever nothing nearer is in front
++    seen = glow.scene_alpha(f)
++    alpha = np.full((f.RH, f.RW), 255, np.uint8)
++    if seen is not None:
++        colour = fill_out(colour, seen)
++        alpha = np.where(seen >= 0.5, 255, 0).astype(np.uint8)
++    rgba = np.dstack([np.clip(colour, 0, 255).astype(np.uint8), alpha])
+     gltfout.write_dds(out / f"{tex}.dds", rgba)
+     Image.fromarray(rgba[..., :3]).save(f.work / "colour.jpg", quality=88)
+     sources, fx, light, _ = life.write(f, o, out)  # what the painting has: chimneys, fires, windows, sky, flags
+-    base = atmos.glow(f, colour, float(o["glow"]), out, lights=light["still"] if light else None)
+-    flickering = atmos.flicker(f, float(o["flicker"]), out, colour, base=base, lights=light)
++    base = atmos.glow(f, colour, float(o["glow"]), out, lights=light["still"] if light else None, seen=seen)
++    flickering = atmos.flicker(f, float(o["flicker"]), out, colour, base=base, lights=light, seen=seen)
+     if flickering:  # its frames loop in order (blinking lights keep time)
+         fx["glow_fps"] = life.GLOW_FPS
+     vertical, horizontal, _ = atmos.sun(f) if o["sun"] == "painting" else (*ibl.DEFAULT_SUN, 0)
+@@ -941,7 +967,7 @@
+     Zm, report["far_plane"] = clear_far_plane(Zm)
+     report["glow_layers"] = anim["summary"]
+     report["overlays"] = {"tiles": len(plan["tiles"]), "params": sorted({t.param for t in plan["tiles"]}),
+-                          "start_on": len(plan["entry_on"])}
++                          "start_on": len(plan["entry_on"]), "backdrop": len(plan.get("backdrop", []))}
+     Pc, Pw = f.unproject(bx, by, Z)
+     Pcm, Pm = f.unproject(bx, by, Zm)
+ 

@@ -1,0 +1,23 @@
+--- a/README.md
++++ b/README.md
+@@ -21,6 +21,8 @@
+ normals), so building fronts, fences and walls keep standing in front of the walkmesh behind them. Floor-like
+ ground within 3% of its depth (`snap_rel`, at least `snap_tol`) then snaps onto it. Farm went from 10.8% median floor
+ error to 0.8% (scenes built before 2026-10-25 have the old, single fit).
++A walkmesh that isn't in the picture (gldelev, junone3, md0: just below it) can't be fitted on: DA3 is anchored
++where it comes nearest the picture, with the depth spread fitted scenes usually have (`depth.off_picture_fit`).
+ 
+ Output in the game folder: `mesh/field/<field>/` (scene), `mods/3dtest/field/<field>/` (hidden 2D pages and
+ animated glow frames), `lighting/ibl/field_<id>_*.dds`, and a `[field_<field>]` section in `lighting/config.toml`.
+@@ -45,7 +47,10 @@
+ The two looks both show the painting. Painted lights it gently with the game's light (sun 1.4, sky 2.3). Relit
+ (`ff3d/relight.py`) shows painting x (the light on it now / the light on it in the painting), both worked out the
+ same way in the fork's shader on a white surface, so with the painting's own sun it is the painting, and with the
+-sun moved (`sun_turn`, `sun_height`) its light and shadows follow:
++sun moved (`sun_turn`, `sun_height`) its light and shadows follow. Both start from the painting in AI 2D's colours
++(`glow.scene_colours`): the Studio cuts its pages after a colour pass (`keep_colors`, the user's 0.8), and until
++2026-11-02 the scene had the render's own colours instead (datiao's statues olive, the crater's rocks orange-patched,
++Gaea's Cliff blue, sector 8 green, all under the look's saturation). Relit:
+ - the painting's sun: shading (Marigold normals) and cast shadows (marched over the depth grid) against painting /
+   de-lit colour, 15-80 degrees up, cached in `relight_sun.json`; its sun-to-sky strength sets the scene's (the game's
+   is ~0.85 at 3D shading 50%);

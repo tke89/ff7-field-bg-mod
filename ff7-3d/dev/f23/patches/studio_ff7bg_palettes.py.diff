@@ -1,0 +1,31 @@
+--- a/ff7bg/palettes.py
++++ b/ff7bg/palettes.py
+@@ -199,6 +199,19 @@
+     return np.frombuffer(ps, dtype="<u2", count=count * 256, offset=12).reshape(count, 256).astype(np.int64)
+ 
+ 
++def loaded_palettes(raw):
++    """The palettes as the game holds them once the field is loaded: a 0x0000 colour past entry 0 already reads as
++    the palette's entry 0, so STPAL copies that and the script's changes start from it. Taken as 0x0000 until
++    2026-11-03 (page_bgra then showed the entry as the state's entry 0): wherever a script animates entry 0 and
++    leaves such an entry alone, the hash was not the game's and FFNx never found the frame (mtnvl4's mist, page 16:
++    entry 255 is 0x0000 in the file, ADPAL changes 0-254; FFNx's log showed it load the frames named this way)."""
++    v = file_palettes(raw).copy()
++    zero = v == 0
++    zero[:, 0] = False
++    v[zero] = np.broadcast_to(v[:, :1], v.shape)[zero]
++    return v
++
++
+ def multiply(v, mr, mg, mb):
+     """MPPAL/MPPAL2 on 15-bit colours, as the PC game does it: each channel times m/64, clamped, except that green
+     and blue are masked one bit too wide, so the top bit of the channel below adds half a step (fitted to FFNx's
+@@ -222,7 +235,7 @@
+     opcodes. Palette arrays are in units of 16 colours. loads collects every (palette, colours) LDPAL sets."""
+ 
+     def __init__(self, raw, seed=0):
+-        self.vram = file_palettes(raw).copy()
++        self.vram = loaded_palettes(raw)
+         self.arr = np.zeros(256 * 16, dtype=np.int64)
+         self.mem = {g: bytearray(256) for g in "ABCDET"}
+         self.rng = random.Random(seed)

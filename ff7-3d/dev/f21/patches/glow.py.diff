@@ -1,0 +1,196 @@
+--- a/ff3d/glow.py
++++ b/ff3d/glow.py
+@@ -376,24 +376,82 @@
+ def entry_states(f):
+     """(in_render(tile): is this toggled tile on in the render, the field's animated params). The render holds the
+     states on when it was made (the version's rendered_defaults; the field's entry states before those existed).
+-    Animated: the Studio's (its scripts.analyze reads each entity's script 0) and other scripts' loops (script_loops)."""
++    Animated: the Studio's (its scripts.analyze reads each entity's script 0), other scripts' loops (script_loops),
++    and params the render holds a state of that may not be on at entry (entry_unknown): the game switches all of
++    them, so the mesh holds none of their states (what's beneath them, entry_off_art) and the game draws each, whole.
++    (One the render holds nothing of keeps the render beneath, and its states are judged as switched tiles are.)"""
+     job = json.loads((common.STUDIO / "ai" / "jobs.json").read_text())[f.name]
+     on = {int(p): m for p, m in (f.meta.get("rendered_defaults") or job.get("defaults") or {}).items()}
+     animated = {int(p) for p in job.get("animations", {})} | set(script_loops(f.raw))
++    animated |= {p for p in entry_unknown(f.raw) | (event_switched(f.raw) if EVENT_STATES else set()) if on.get(p, 0)}
+     return (lambda t: bool(on.get(t.param, 0) & t.state)), animated
+ 
+ 
+-BGON, BGOFF, WAIT, JMPB, JMPBL = 0xE0, 0xE1, 0x24, 0x12, 0x13  # field opcodes
++# Every state a script switches after entry (a door opened, a lamp put out) handled like those too: the mesh holds
++# what's beneath the render's state and the game draws that state as a 2D tile, so it goes when a script switches it
++# off (the render's state stayed in 3D wherever the next one doesn't reach: anfrst_4's crystals, an opened door).
++# Off by default: every closed door and switch the render holds becomes a 2D tile, 6889 tiles in 179 built fields
++# (20 of them rebuilds), against 1260 tiles in 17 without it (FF3D_EVENT_STATES=1 for it).
++EVENT_STATES = os.environ.get("FF3D_EVENT_STATES", "0") != "0"
++
++
++def event_switched(raw):
++    """{param} some script switches (bank 0, a constant param) other than in an init's part that always runs."""
++    out = set()
++    for s in palettes.scripts(raw):
++        for pos, op, b in s.ops():
++            if op in (BGON, BGOFF, BGCLR) and len(b) >= 3 and not b[1] >> 4 and (s.index != 0 or pos >= s.init_end):
++                out.add(b[2])
++    return out | entry_unknown(raw)
++
++
++BGON, BGOFF, BGCLR, WAIT, JMPF, JMPFL, JMPB, JMPBL = 0xE0, 0xE1, 0xE4, 0x24, 0x10, 0x11, 0x12, 0x13  # field opcodes
++ALL_STATES = [1 << i for i in range(8)]
++# the IF opcodes (IFUB, IFUBL, IFSW, IFSWL, IFUW, IFUWL, IFKEY, IFKEYON, IFKEYOFF, IFPRTYQ, IFMEMBQ): their jump's
++# size (bytes, at the end of the opcode); when the condition fails, the script goes on at the jump byte + the jump
++IFS = {0x14: 1, 0x15: 2, 0x16: 1, 0x17: 2, 0x18: 1, 0x19: 2, 0x30: 1, 0x31: 1, 0x32: 1, 0xCB: 1, 0xCC: 1}
++
++
++def entry_unknown(raw):
++    """{param} whose states on entry depend on the save: an entity's init switches it only on a condition (inside an
++    IF, or its ELSE: a story point, a chest opened, a door unlocked) or to a state from a variable. The Studio's
++    entry states (scripts.analyze, as Makou Reactor) take every BGON in an init as done, so the render holds those
++    states on, while the game shows them only when the condition holds: hideway2's chest open (lit orange) in 3D
++    where the game has it closed, blin69_1's blood (after the escape) in a game saved before it. Baked into the mesh,
++    such a state showed whatever the game had, and an overlay the game switched on over it was cut to where it
++    differed from it (OVERLAY_SAME)."""
++    out = set()
++    for s in palettes.scripts(raw):
++        if s.index != 0:
++            continue
++        ops = [(pos, op, b) for pos, op, b in s.ops() if pos < s.init_end]
++        cond = []  # code ranges an init runs only on a condition
++        for i, (pos, op, b) in enumerate(ops):
++            if op in IFS and len(b) > IFS[op]:
++                n = IFS[op]
++                end = pos + len(b) - n + (b[-1] if n == 1 else struct.unpack_from("<H", b, len(b) - 2)[0])
++                cond.append((pos + len(b), end))
++                last = [(q, o, c) for q, o, c in ops if q < end][-1]
++                if last[1] in (JMPF, JMPFL) and last[0] > pos:  # ...and its ELSE: the block jumps over it
++                    q, o, c = last
++                    cond.append((end, q + 1 + (c[1] if o == JMPF else struct.unpack_from("<H", c, 1)[0])))
++        for pos, op, b in ops:
++            if op in (BGON, BGOFF, BGCLR) and len(b) >= 3 and not b[1] >> 4:  # the param a constant
++                if (op != BGCLR and len(b) >= 4 and b[1] & 0xF) or any(a <= pos < e for a, e in cond):
++                    out.add(b[2])
++    return out
+ 
+ 
+ def script_loops(raw):
+-    """{param: [state bits]} that a field script keeps switching (bank 0) in a loop that waits: an animation, in
++    """{param: [state bits]} that a field script keeps switching in a loop that waits: an animation, in
+     whichever script it runs. The Studio's scripts.analyze reads each entity's script 0 only, so it missed Junon's
+     sea (jundoc1a/1b, junone7: the "wave"/"SEA" entity's script 1 cycles param 1 through 7 states), and the 3D took
+     its frames for one-off switches shown only where the original changes (OVERLAY_SAME): blocky specks of the
+     states' sunlit sea over the render's plain one. A loop: a backward jump (JMPB/JMPBL) over a WAIT and over two or
+-    more states of a param switched on, or one switched on and off (a blink); a script waiting for an event before
+-    switching once isn't one."""
++    more states of a param switched on, or one switched on and off (a blink), or a state taken from a variable (every
++    state then: colne_6's spinning ball and rkt_w's fire count one up each turn, mrkt3's dancing dolls on the Honey
++    Bee sign; the Studio reads bank 0 only, and the 3D showed them cut to where they differ from the render's state,
++    which for the dolls was nowhere); a script waiting for an event before switching once isn't one."""
+     from ff7bg import scripts
+     (off,) = struct.unpack_from("<I", raw, 6)
+     (length,) = struct.unpack_from("<I", raw, off)
+@@ -420,8 +478,12 @@
+                 continue
+             switched = {}
+             for q, o in body:
+-                if o in (BGON, BGOFF) and q + 3 < len(code) and code[q + 1] == 0 and code[q + 3] < 8:
+-                    switched.setdefault(code[q + 2], []).append((o, 1 << code[q + 3]))
++                if o in (BGON, BGOFF) and q + 3 < len(code) and not code[q + 1] >> 4:
++                    if code[q + 1] & 0xF:  # the state from a variable
++                        if o == BGON:
++                            switched.setdefault(code[q + 2], []).extend((BGON, b) for b in ALL_STATES)
++                    elif code[q + 3] < 8:
++                        switched.setdefault(code[q + 2], []).append((o, 1 << code[q + 3]))
+             for p, events in switched.items():
+                 ons = [b for o, b in events if o == BGON]
+                 if len(set(ons)) >= 2 or set(ons) & {b for o, b in events if o == BGOFF}:
+@@ -430,6 +492,26 @@
+     return out
+ 
+ 
++def swaps(raw):
++    """{param: {(on, off)}}: state bits a script switches on (on) while it switches another off (off; BGCLR: all of
++    them), bank 0: a door opening (rkt_w: BGOFF 2, BGON 4), a gate turned (ghotel). The state switched off isn't
++    there to hide the one switched on, though both are in the original's tiles: with the render's (closed) state
++    baked in the mesh, the overlay of the other was cut to what the closed one left of it (rkt_w's four doors: 0 to
++    7% of the open ones; nvmkin1, junonr3, southmk2, move_f: all of theirs), so the door stayed shut in 3D."""
++    out = {}
++    for s in palettes.scripts(raw):
++        ons, offs = {}, {}
++        for pos, op, b in s.ops():
++            if op in (BGON, BGOFF, BGCLR) and len(b) >= 3 and not b[1] >> 4:
++                if op == BGCLR:
++                    offs.setdefault(b[2], set()).update(ALL_STATES)
++                elif len(b) >= 4 and not b[1] & 0xF and b[3] < 8:
++                    (ons if op == BGON else offs).setdefault(b[2], set()).add(1 << b[3])
++        for p, bits in ons.items():
++            out.setdefault(p, set()).update((a, c) for a in bits for c in offs.get(p, ()) if c != a)
++    return {p: v for p, v in out.items() if v}
++
++
+ OVERLAY_SAME = 24  # a switched tile's pixel this close to what's under it is the same picture: a layer drawn with its
+                    # own palette repeats the sky around it a few levels off, as speckle (del1's ship: 65% of its
+                    # area differs at all, 47% by more than 16, and that share holds to 48)
+@@ -812,14 +894,26 @@
+     # where the scene leaves the backdrop to the game, what's under a switched tile is the backdrop wherever it has
+     # moved to, not its canvas copy: the tile shows whole there, as in 2D
+     held = scene_cover(f) >= 0.5 if by_game else np.ones((f.h, f.w), bool)
++    # a state in the mesh that a script switches off as it switches another on (a door's closed state, as it opens)
++    # hides nothing of that one: its cover is kept apart, per state. Solid ones only: a blended one shown there
++    # would have the scene pushed back behind it (build.push_under), and trnad_1's blackout layer (738 tiles behind
++    # the whole picture, the render's state of it in front) would have taken all of the scene's depth with it
++    swap = swaps(f.raw)
++    keyed = {id(t): (t.param, t.state) for t in solid if t.param and t.param in swap}
+     cover = np.zeros((f.h, f.w), np.float32)
++    apart = {k: np.zeros((f.h, f.w), np.float32) for k in set(keyed.values())}
+     vis = {}
+     for t in reversed(draw_order(tiles + lit + baked + solid)):  # front to back: cover = what's drawn after this tile
+         x, y, s = t.dst_x - f.mx, t.dst_y - f.my, t.size
+         tile = cache.tile(t)
+         alpha = tile[..., 3].astype(np.float32) / 255
+         if id(t) in mine:
+-            v = (1 - cover[y:y + s, x:x + s]) * (alpha > 0)[:f.h - y, :f.w - x]
++            off = {(t.param, b) for a, b in swap.get(t.param, ()) if a == t.state and not t.blending}
++            cov = cover[y:y + s, x:x + s]
++            for k, c in apart.items():
++                if k not in off:
++                    cov = np.maximum(cov, c[y:y + s, x:x + s])
++            v = (1 - cov) * (alpha > 0)[:f.h - y, :f.w - x]
+             if not t.blending and not in_render(t) and t.param not in animated and id(t) not in whole:
+                 diff = np.abs(tile[:f.h - y, :f.w - x, :3].astype(np.int16) - shown[y:y + s, x:x + s]).max(2)
+                 same = (diff <= OVERLAY_SAME) & ~unknown[y:y + s, x:x + s] & held[y:y + s, x:x + s]
+@@ -827,7 +921,8 @@
+                 v = v * change
+             vis[id(t)] = v
+         else:
+-            cover[y:y + s, x:x + s] = np.maximum(cover[y:y + s, x:x + s], alpha[:f.h - y, :f.w - x])
++            c = apart[keyed[id(t)]] if id(t) in keyed else cover
++            c[y:y + s, x:x + s] = np.maximum(c[y:y + s, x:x + s], alpha[:f.h - y, :f.w - x])
+     back = [t for t in f.bg.tiles if drawn_back(t)]
+     for t in back:  # all of each, every state: the game switches them, and the scene in front hides them
+         vis[id(t)] = np.ones((t.size, t.size), np.float32)
+@@ -1052,11 +1147,21 @@
+         return 0
+     for lay in sorted({t.layer for t in tiles}):
+         mine = [t for t in tiles if t.layer == lay]
+-        art, (x0, y0) = scrolling_art(f, mine, s, speeds[lay], SCROLL_GRAIN if grain else 0.0)
++        # states a script shows one at a time at one place (junonr2/junonl2's chimney smoke: 8 frames on top of each
++        # other) are each a picture of their own: drawn into one, the last frame's art (near empty) was every frame's
++        spots = {}
++        for t in mine:
++            spots.setdefault((t.dst_x, t.dst_y), set()).add((t.param, t.state if t.param else 0))
++        stacked = any(len(v) > 1 for v in spots.values())
++        groups = {}
+         for t in mine:
+-            sz, ax, ay = t.size * s, (t.dst_x - x0) * s, (t.dst_y - y0) * s
+-            img = pages.setdefault((t.tex, page_palette(f, t)), np.zeros((256 * s, 256 * s, 4), np.uint8))
+-            img[t.src_y * s:t.src_y * s + sz, t.src_x * s:t.src_x * s + sz] = art[ay:ay + sz, ax:ax + sz]
++            groups.setdefault((t.param, t.state if t.param else 0) if stacked else 0, []).append(t)
++        for group in groups.values():
++            art, (x0, y0) = scrolling_art(f, group, s, speeds[lay], SCROLL_GRAIN if grain else 0.0)
++            for t in group:
++                sz, ax, ay = t.size * s, (t.dst_x - x0) * s, (t.dst_y - y0) * s
++                img = pages.setdefault((t.tex, page_palette(f, t)), np.zeros((256 * s, 256 * s, 4), np.uint8))
++                img[t.src_y * s:t.src_y * s + sz, t.src_x * s:t.src_x * s + sz] = art[ay:ay + sz, ax:ax + sz]
+     out.mkdir(parents=True, exist_ok=True)
+     for (page, pal), img in pages.items():
+         Image.fromarray(img, "RGBA").save(out / f"{f.name}_{page:02d}_{pal:02d}.png")

@@ -1,0 +1,131 @@
+--- ff3d/glow.py (live)
++++ ff3d/glow.py (F13 frames + layer-3 order)
+@@ -503,12 +503,14 @@
+ BGPDH = 0x2C  # field opcode: set a background layer's depth (banks, layer, depth)
+ 
+ 
+-def layer_depths(f, layer):
++def layer_depths(f, layer, entry=False):
+     """The depths field scripts set the layer to (BGPDH: banks, layer, depth), a set; None for one from a variable.
+     The game draws layer 2 at the back (z 0.9998) unless one does (junonl2: 433, among the scene's tiles), and layer 3
+-    at the depth one sets (crater_1's crater wall: 3840; hill's Highwind: 512)."""
++    at the depth one sets (crater_1's crater wall: 3840; hill's Highwind: 512). entry: only those an entity's init
++    sets (the depth on entry; trnad_3's wind sets its mist's 4080 later, in its main loop)."""
+     return {None if b[1] else int.from_bytes(bytes(b[3:5]), "little")
+-            for s in palettes.scripts(f.raw) for _, op, b in s.ops() if op == BGPDH and len(b) >= 5 and b[2] == layer}
++            for s in palettes.scripts(f.raw) for pos, op, b in s.ops()
++            if op == BGPDH and len(b) >= 5 and b[2] == layer and (not entry or (s.index == 0 and pos < s.init_end))}
+ 
+ 
+ def depth_set(f, layer):
+@@ -517,8 +519,11 @@
+ 
+ 
+ def layer3_depth(f):
+-    """The one depth a script sets layer 3 to (a tile depth: x TILE_DEPTH camera units), or None."""
++    """The one depth a script sets layer 3 to on entry (a tile depth: x TILE_DEPTH camera units), or None (none, or
++    others set later: the depth then isn't known)."""
+     d = layer_depths(f, 3)
++    if d != layer_depths(f, 3, entry=True):
++        return None
+     return next(iter(d)) if len(d) == 1 and None not in d else None
+ 
+ 
+@@ -816,12 +821,19 @@
+     edge came out part transparent: a dark seam where a wrapping layer meets itself, fship_1's sea). A static layer-3
+     tile the game draws (plan "painted") takes the render's own painting of it instead, in the scene's colours: the
+     Studio's composite has layer 3 in front of everything, so the AI painted all of it, and its upscaled original
+-    made hill's Highwind blurred and stepped where the scene had it painted."""
++    made hill's Highwind blurred and stepped where the scene had it painted.
++
++    A palette the field's scripts animate (not a glow layer's: those are glow frames) gets the version's frames as
++    well (`<field>_<page>_<palette>_<hash>.png`, one per palette state, which FFNx picks by the palette it draws
++    with), cut the same way: with only the still page, trnad_2's sky stayed in the file palette's deep blue where
++    AI 2D, through the frames, shows the pale sky the scripts set."""
+     studio = studio_pages(f)
+     cache = PageCache(f.bg)  # the original's tiles, any colour depth (16-bit pages have no palette)
+     M = page_colours(f, studio) if studio else None
+     back = {id(t) for t in plan.get("backdrop", [])}
+     painted = {id(t) for t in plan.get("painted", [])}
++    tiles = plan["tiles"] + plan.get("backdrop", [])
++    moving = set(animated(f)) if tiles else set()  # palette-animated (page, palette) pairs
+     scene, shape = None, None
+     if painted:  # the render in the scene's colours, and the layer's outline smooth on the canvas (not the tiles' steps)
+         S = f.scale
+@@ -832,34 +844,60 @@
+             cov[y:y + s, x:x + s] = np.maximum(cov[y:y + s, x:x + s], cache.tile(t)[..., 3][:f.h - y, :f.w - x] / 255)
+         up = cv2.GaussianBlur(cv2.resize(cov, (f.w * S, f.h * S), interpolation=cv2.INTER_LINEAR), (0, 0), 0.5 * S)
+         shape = np.clip((up - 0.5) * 4 + 0.5, 0, 1)  # an edge about half a background pixel wide
+-    pages = {}
+-    for t in plan["tiles"] + plan.get("backdrop", []):
++
++    def from_page(t, page, s, sz):
++        block = page[t.src_y * s:t.src_y * s + sz, t.src_x * s:t.src_x * s + sz]
++        if M is not None and not t.blending and block.shape[:2] == (sz, sz):
++            rgb = np.concatenate([block[..., :3].reshape(-1, 3).astype(np.float32), np.ones((sz * sz, 1), np.float32)], 1)
++            block = np.dstack([np.clip(np.round(rgb @ M), 0, 255).astype(np.uint8).reshape(sz, sz, 3), block[..., 3]])
++        if id(t) in back and not t.blending and block.shape[:2] == (sz, sz):
++            block = np.dstack([block[..., :3], tile_alpha(cache.tile(t), s)])
++        return block
++
++    def put(img, t, block, s, sz):
++        v = cv2.resize(plan["vis"][id(t)], (sz, sz), interpolation=cv2.INTER_LINEAR)
++        dst = img[t.src_y * s:t.src_y * s + sz, t.src_x * s:t.src_x * s + sz]
++        alpha = np.round(block[..., 3] * np.clip(v, 0, 1)).astype(np.uint8)
++        dst[..., :3] = np.where((alpha >= dst[..., 3])[..., None], block[..., :3], dst[..., :3])
++        dst[..., 3] = np.maximum(dst[..., 3], alpha)
++
++    pages, framed = {}, {}
++    for t in tiles:
+         s = f.scale if t.tex in studio else 1
+         sz = t.size * s
+-        if id(t) in painted and t.tex in studio:
++        animate = (t.tex, t.palette) in moving and t.tex in studio and f.bg.pages[t.tex].depth < 2
++        if id(t) in painted and t.tex in studio and not animate:
+             y, x = (t.dst_y - f.my + f.frame[1]) * s, (t.dst_x - f.mx + f.frame[0]) * s
+             rgb = np.clip(np.round(scene[y:y + sz, x:x + sz]), 0, 255).astype(np.uint8)
+             block = np.dstack([rgb, np.round(shape[y:y + sz, x:x + sz] * 255).astype(np.uint8)])
+         elif t.tex in studio:
+-            block = studio[t.tex][t.src_y * s:t.src_y * s + sz, t.src_x * s:t.src_x * s + sz]
+-            if M is not None and not t.blending and block.shape[:2] == (sz, sz):
+-                rgb = np.concatenate([block[..., :3].reshape(-1, 3).astype(np.float32), np.ones((sz * sz, 1), np.float32)], 1)
+-                block = np.dstack([np.clip(np.round(rgb @ M), 0, 255).astype(np.uint8).reshape(sz, sz, 3), block[..., 3]])
+-            if id(t) in back and not t.blending and block.shape[:2] == (sz, sz):
+-                block = np.dstack([block[..., :3], tile_alpha(cache.tile(t), s)])
++            block = from_page(t, studio[t.tex], s, sz)
+         else:
+             block = cache.tile(t)
+         if block.shape[:2] != (sz, sz):
+             continue
+-        img = pages.setdefault((t.tex, page_palette(f, t)), np.zeros((256 * s, 256 * s, 4), np.uint8))
+-        v = cv2.resize(plan["vis"][id(t)], (sz, sz), interpolation=cv2.INTER_LINEAR)
+-        dst = img[t.src_y * s:t.src_y * s + sz, t.src_x * s:t.src_x * s + sz]
+-        alpha = np.round(block[..., 3] * np.clip(v, 0, 1)).astype(np.uint8)
+-        dst[..., :3] = np.where((alpha >= dst[..., 3])[..., None], block[..., :3], dst[..., :3])
+-        dst[..., 3] = np.maximum(dst[..., 3], alpha)
++        put(pages.setdefault((t.tex, page_palette(f, t)), np.zeros((256 * s, 256 * s, 4), np.uint8)), t, block, s, sz)
++        if animate:
++            framed.setdefault((t.tex, t.palette), []).append(t)
+     for (page, pal), img in pages.items():
+         Image.fromarray(img, "RGBA").save(out / f"{f.name}_{page:02d}_{pal:02d}.png")
+-    return len(pages)
++    src = f.raw_render.parent / "pages" / "field" / f.name
++    frames = 0
++    for (page, pal), mine in framed.items():
++        s = f.scale
++        for fp in sorted(src.glob(f"{f.name}_{page:02d}_{pal:02d}_*.png")):
++            art = np.asarray(Image.open(fp).convert("RGBA"))
++            if art.shape[0] != 256 * s:
++                continue
++            img = np.zeros((256 * s, 256 * s, 4), np.uint8)
++            for t in mine:
++                sz = t.size * s
++                block = from_page(t, art, s, sz)
++                if block.shape[:2] == (sz, sz):
++                    put(img, t, block, s, sz)
++            Image.fromarray(img, "RGBA").save(out / fp.name)
++            frames += 1
++    return len(pages) + frames
+ 
+ 
+ def write_scrolling(f, show=True, grain=True):

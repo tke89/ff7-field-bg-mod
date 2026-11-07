@@ -1,0 +1,118 @@
+--- a/ff3d/glow.py
++++ b/ff3d/glow.py
+@@ -8,6 +8,8 @@
+ - its parallax layers where they move apart from the scene (drawn_layers: the far backdrop, layer 2, and a layer 3
+   a script set among the scene), which the game draws behind the scene at their parallax place while the scene
+   leaves them out (backdrop_alpha)."""
++import hashlib
++import io
+ import json
+ import math
+ import os
+@@ -1334,6 +1336,71 @@
+     return view, weight
+ 
+ 
++FRAME_MAX = 1024  # a field's distinct glow frames (per layer, summed) at most: each is a 1 MB texture in game (512x512)
++# and FFNx-3d keeps 1536 cached (ffnx3d_texcache, F24); past this, frames that look alike share one image
++MERGE_TOLS = (1, 2, 3, 4, 6, 8, 10, 12, 16, 20, 24, 32, 48, 64, 96, 128, 255)  # levels, tried in order
++
++
++def frame_signature(img):
++    """A glow frame's colours at 1/8 size (uint8): what merge_frames compares."""
++    rgb = img[..., :3].astype(np.float32)
++    h, w = rgb.shape[:2]
++    return np.round(rgb.reshape(h // 8, 8, w // 8, 8, 3).mean((1, 3))).astype(np.uint8)
++
++
++def merge_frames(layers, sigs, limit=FRAME_MAX):
++    """({layer: {digest: the digest drawn instead}}, tolerance) for {layer: {hash: digest}} and {digest: signature}:
++    within a layer, frames no more than `tol` levels apart anywhere (at 1/8 size) share the first one's image, at the
++    smallest tolerance of MERGE_TOLS that brings the field to `limit` distinct frames; none merged (tol 0) when it
++    has no more already (2026-11-06: bugin3 had 13,029 distinct frames, ancnt2 1,043, crater_2 601)."""
++    def merged(tol):
++        out = {}
++        for key, hs in layers.items():
++            ds = sorted(set(hs.values()), key=lambda d: float(sigs[d].mean()))
++            rep = out[key] = {}
++            if tol <= 0:
++                rep.update((d, d) for d in ds)
++                continue
++            stack = np.empty((len(ds),) + sigs[ds[0]].shape, np.int16)
++            means, ids = [], []
++            for d in ds:
++                s = sigs[d].astype(np.int16)
++                m = float(s.mean())
++                # the mean differs no more than the largest difference: only representatives this close can match
++                lo = int(np.searchsorted(np.asarray(means), m - tol)) if means else 0
++                hit = None
++                if lo < len(ids):
++                    diff = np.abs(stack[lo:len(ids)] - s).reshape(len(ids) - lo, -1).max(1)
++                    ok = np.nonzero(diff <= tol)[0]
++                    if ok.size:
++                        hit = ids[lo + int(ok[0])]
++                if hit is None:
++                    stack[len(ids)] = s
++                    means.append(m)
++                    ids.append(d)
++                    hit = d
++                rep[d] = hit
++        return out
++
++    def count(out):
++        return sum(len(set(r.values())) for r in out.values())
++
++    plan = merged(0)
++    if count(plan) <= limit:
++        return plan, 0
++    # the smallest that fits, halving the range (the low tolerances are the slow ones: bugin3 took 280 s trying
++    # them in turn); the last, 255, leaves one image per layer
++    lo, hi, best = -1, len(MERGE_TOLS) - 1, None
++    while hi - lo > 1:
++        mid = (lo + hi) // 2
++        plan = merged(MERGE_TOLS[mid])
++        if count(plan) <= limit:
++            hi, best = mid, plan
++        else:
++            lo = mid
++    return (best if best is not None else merged(MERGE_TOLS[hi])), MERGE_TOLS[hi]
++
++
+ def write_pages(f, anim, plan, scale=2):
+     """Hide every page (transparent _00, which every palette falls back to), except the overlays (the game keeps
+     drawing and switching those over the scene, as in 2D), and write the animated glow frames."""
+@@ -1346,7 +1413,9 @@
+         blank.save(out / f"{f.name}_{page:02d}_00.png")
+     write_overlays(f, plan, out)
+     in_render, _ = entry_states(f)
+-    n = 0
++    # F24: frames are made first and written after, within FRAME_MAX distinct images (merge_frames); identical files
++    # share one texture in game (ffnx3d_texcache)
++    frames, images, sigs = {}, {}, {}
+     for (page, pal), by_hash in anim["glowing"].items():
+         tiles = [t for t in f.bg.tiles if t.palette == pal and t.tex == page]
+         # only static layers (waterfalls, lamps) are trusted to be in the painting; toggled ones (haze, smoke) the
+@@ -1367,7 +1436,22 @@
+                 dx, dy = (t.dst_x - f.mx) * scale, (t.dst_y - f.my) * scale
+                 img[sy:sy + sz, sx:sx + sz, :3] = add[dy:dy + sz, dx:dx + sz]
+                 img[sy:sy + sz, sx:sx + sz, 3] = 255
++            digest = hashlib.blake2b(img.tobytes(), digest_size=16).digest()
++            if digest not in images:
++                buf = io.BytesIO()
++                Image.fromarray(img, "RGBA").save(buf, "PNG")
++                images[digest] = buf.getvalue()
++                sigs[digest] = frame_signature(img)
++            frames.setdefault((page, pal), {})[hh] = digest
++    merged, tol = merge_frames(frames, sigs) if frames else ({}, 0)
++    n = 0
++    for (page, pal), by_hash in frames.items():
++        for hh, digest in by_hash.items():
+             # the hash as FFNx prints it (%llx): no leading zeros, or FFNx never finds the frame
+-            Image.fromarray(img, "RGBA").save(out / f"{f.name}_{page:02d}_{pal:02d}_{hh:x}.png")
++            (out / f"{f.name}_{page:02d}_{pal:02d}_{hh:x}.png").write_bytes(images[merged[(page, pal)][digest]])
+             n += 1
++    if frames:
++        kept = sum(len(set(r.values())) for r in merged.values())
++        print(f"glow frames: {n} ({len(images)} distinct, {kept} kept" + (f", alike within {tol} merged)" if tol else ")"),
++              flush=True)
+     return n

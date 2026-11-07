@@ -1,0 +1,72 @@
+--- ff7-3d/ff3d/glow.py
++++ ff7-3d/ff3d/glow.py
+@@ -6,6 +6,7 @@
+   frames, things that appear later), which the game keeps drawing and switching as in 2D, and blended layers a
+   script keeps scrolling (the Great Glacier's blizzard, mist, waves), which the game keeps moving."""
+ import json
++import struct
+ 
+ import cv2
+ import numpy as np
+@@ -295,10 +296,59 @@
+ 
+ def entry_states(f):
+     """(in_render(tile): is this toggled tile on in the render, the field's animated params). The render holds the
+-    states on when it was made (the version's rendered_defaults; the field's entry states before those existed)."""
++    states on when it was made (the version's rendered_defaults; the field's entry states before those existed).
++    Animated: the Studio's (its scripts.analyze reads each entity's script 0) and other scripts' loops (script_loops)."""
+     job = json.loads((common.STUDIO / "ai" / "jobs.json").read_text())[f.name]
+     on = {int(p): m for p, m in (f.meta.get("rendered_defaults") or job.get("defaults") or {}).items()}
+-    return (lambda t: bool(on.get(t.param, 0) & t.state)), {int(p) for p in job.get("animations", {})}
++    animated = {int(p) for p in job.get("animations", {})} | set(script_loops(f.raw))
++    return (lambda t: bool(on.get(t.param, 0) & t.state)), animated
++
++
++BGON, BGOFF, WAIT, JMPB, JMPBL = 0xE0, 0xE1, 0x24, 0x12, 0x13  # field opcodes
++
++
++def script_loops(raw):
++    """{param: [state bits]} that a field script keeps switching (bank 0) in a loop that waits: an animation, in
++    whichever script it runs. The Studio's scripts.analyze reads each entity's script 0 only, so it missed Junon's
++    sea (jundoc1a/1b, junone7: the "wave"/"SEA" entity's script 1 cycles param 1 through 7 states), and the 3D took
++    its frames for one-off switches shown only where the original changes (OVERLAY_SAME): blocky specks of the
++    states' sunlit sea over the render's plain one. A loop: a backward jump (JMPB/JMPBL) over a WAIT and over two or
++    more states of a param switched on, or one switched on and off (a blink); a script waiting for an event before
++    switching once isn't one."""
++    from ff7bg import scripts
++    (off,) = struct.unpack_from("<I", raw, 6)
++    (length,) = struct.unpack_from("<I", raw, off)
++    sec = raw[off + 4:off + 4 + length]
++    entities = sec[2]
++    (pos_texts, n_akao) = struct.unpack_from("<HH", sec, 4)
++    pos_scripts = 32 + 8 * entities + 4 * n_akao
++    end_all = min(struct.unpack_from("<I", sec, 32 + 8 * entities)[0] if n_akao else len(sec), pos_texts)
++    table = [struct.unpack_from("<32H", sec, pos_scripts + 64 * e) for e in range(entities)]
++    starts = sorted({p for row in table for p in row} | {end_all})
++    out = {}
++    for start in starts[:-1]:
++        code = sec[start:next((p for p in starts if p > start), end_all)]
++        ops = list(scripts._ops(code))
++        for pos, op in ops:
++            if op == JMPB and pos + 1 < len(code):
++                target = pos - code[pos + 1]
++            elif op == JMPBL and pos + 2 < len(code):
++                target = pos - struct.unpack_from("<H", code, pos + 1)[0]
++            else:
++                continue
++            body = [(q, o) for q, o in ops if target <= q < pos]
++            if not any(o == WAIT for _, o in body):
++                continue
++            switched = {}
++            for q, o in body:
++                if o in (BGON, BGOFF) and q + 3 < len(code) and code[q + 1] == 0 and code[q + 3] < 8:
++                    switched.setdefault(code[q + 2], []).append((o, 1 << code[q + 3]))
++            for p, events in switched.items():
++                ons = [b for o, b in events if o == BGON]
++                if len(set(ons)) >= 2 or set(ons) & {b for o, b in events if o == BGOFF}:
++                    states = out.setdefault(p, [])
++                    states += [b for b in ons if b not in states]
++    return out
+ 
+ 
+ OVERLAY_SAME = 24  # a switched tile's pixel this close to what's under it is the same picture: a layer drawn with its

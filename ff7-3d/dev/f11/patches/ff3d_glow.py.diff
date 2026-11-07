@@ -1,0 +1,70 @@
+--- a/ff3d/glow.py
++++ b/ff3d/glow.py
+@@ -396,7 +396,7 @@
+         in_render, _ = entry_states(f)
+         shown = _shown(f, [t for t in f.bg.tiles if not t.blending and (not t.param or in_render(t))], cache)
+     M = page_colours(f, studio)
+-    R = np.asarray(Image.open(f.render).convert("RGB")).astype(np.float32)
++    R = scene_colours(f, Image.open(f.render).convert("RGB"))
+     S = f.scale
+     occ = {}
+     for t in tiles:
+@@ -542,6 +542,46 @@
+     return pages
+ 
+ 
++_PASS = {}
++
++
++def studio_pass(f):
++    """The Studio's colour pass on this version: (N (4, 3), k), or None. Its build pulls the render's colours toward
++    the original art's palette (keep_colors, the user's 0.8: one 3x4 fitted render -> original for the whole picture,
++    ff7bg.ai.keep_colors) before it cuts the pages AI 2D shows: pages = render x (1 - k) + (render @ N[:3] + N[3]) x k.
++    Refitted here as the Studio fits it (the render at 1x against the original as rendered), which gives the pages to
++    the level on the static tiles (datiao_1, gaia_32, las3_1, cosin1, ancnt4, farm: 0.00 mean). k is what the
++    version's build applied (meta result.keep_colors; none before the setting existed)."""
++    key = (f.name, str(f.raw_render), f.raw_render.stat().st_mtime)
++    if key not in _PASS:
++        _PASS.clear()
++        k = float(((f.meta or {}).get("result") or {}).get("keep_colors") or 0.0)
++        N = None
++        if k > 0 and not f.variant:  # a stage-2 variant has no pages (regen.py)
++            from ff7bg import ai
++            orig = np.asarray(render_composite(f.bg, (f.mx, f.my, f.w, f.h), PageCache(f.bg).tile, 1,
++                                               ai.shows(f.meta.get("rendered_defaults", {}))))
++            hi = np.asarray(Image.open(f.render).convert("RGB"))
++            hi = hi[f.frame[1] * f.scale:, f.frame[0] * f.scale:][:f.h * f.scale, :f.w * f.scale]
++            N = ai.fit_color(cv2.resize(hi, (f.w, f.h), interpolation=cv2.INTER_AREA), orig[..., :3])
++        _PASS[key] = (N, k) if N is not None else None
++    return _PASS[key]
++
++
++def scene_colours(f, rgb):
++    """An image at the render's scale (RGB, 0..255) in the colours AI 2D shows: the Studio's colour pass
++    (studio_pass), which its pages have and the render doesn't. The 3D scene used the render's own until 2026-11-02:
++    MOSS's colours, which the pass had pulled back (datiao's statues olive with acid-yellow ridges where AI 2D has
++    pink-grey stone, the crater's rocks with orange patches where it's blue-grey, Gaea's Cliff's snow cyan and its
++    cliff deep blue, sector 8 green), under the look's saturation on top. Float32."""
++    rgb = np.asarray(rgb, np.float32)
++    p = studio_pass(f)
++    if p is None:
++        return rgb
++    N, k = p
++    return np.clip(rgb * (1 - k) + (rgb @ N[:3].astype(np.float32) + N[3].astype(np.float32)) * k, 0, 255)
++
++
+ PAGE_FIT_LEFT = 0.4  # page_colours: the share of the pages' difference from the render a fit may leave and be used
+ PAGE_FIT_KEEP = 80   # page_colours: fitted again on the best this many percent, as the Studio fits its colour pass
+ 
+@@ -554,8 +594,9 @@
+     some static tiles hold other art (corel1's beneath its smoke, which is on in the render: the Studio's "all off"
+     repaint), and an untrimmed fit there mixed corel1's channels wildly and was dropped, so its smoke frames' sky
+     came out as pale tile blocks beside the column. The trimmed fit leaves 0.3 to 0.8 levels on the median pixel.
+-    Used only when it explains the difference where it fits (under PAGE_FIT_LEFT of it left)."""
+-    scene = np.asarray(Image.open(f.render).convert("RGB")).astype(np.float32)
++    Used only when it explains the difference where it fits (under PAGE_FIT_LEFT of it left). Since the scene takes
++    the pass too (scene_colours), this is None wherever the pass is refitted exactly, and catches what's left."""
++    scene = scene_colours(f, Image.open(f.render).convert("RGB"))
+     s = f.scale
+     src, dst = [], []
+     for t in f.bg.tiles:

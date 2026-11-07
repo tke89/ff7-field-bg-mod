@@ -1,0 +1,37 @@
+--- ff3d/glow.py (live)
++++ ff3d/glow.py (F13 cover)
+@@ -568,17 +568,29 @@
+ 
+ def scene_cover(f):
+     """The original's cover of what the scene holds (_in_scene), 1x (0..1): where it's 0 the original shows a layer
+-    the game draws (drawn_layers), or nothing at all."""
++    the game draws (drawn_layers), or nothing at all. Static blended tiles count too where nothing solid lies beneath
++    them on the canvas (not even the backdrop): the Studio has the AI's painting drawn there by the blended tile itself
++    (ai.build_pages glow_tile), so AI 2D shows it, over the backdrop the game scrolls under it. trnad_2's pale sky is
++    such additive haze over empty canvas: cut out, it left the backdrop's deep blue streaks alone there. (A glass over
++    the backdrop, blin66_2's window, has the backdrop beneath: AI 2D shows that without the glass, and so does 3D.)"""
+     in_render, animated = entry_states(f)
+-    keep = _in_scene(f, in_render, animated, drawn_layers(f))
++    drawn = drawn_layers(f)
++    keep = _in_scene(f, in_render, animated, drawn)
++    moving = scrolling_layers(f)
+     cache = PageCache(f.bg)
+     cov = np.zeros((f.h, f.w), np.float32)
++    solid = np.zeros((f.h, f.w), bool)  # any solid tile, the backdrop's too
++    glaze = np.zeros((f.h, f.w), np.float32)  # static blended tiles of the scene's layers
+     for t in f.bg.tiles:
++        x, y, s = t.dst_x - f.mx, t.dst_y - f.my, t.size
++        a = cache.tile(t)[..., 3][:f.h - y, :f.w - x].astype(np.float32) / 255
+         if keep(t):
+-            x, y, s = t.dst_x - f.mx, t.dst_y - f.my, t.size
+-            a = cache.tile(t)[..., 3][:f.h - y, :f.w - x].astype(np.float32) / 255
+             cov[y:y + s, x:x + s] = np.maximum(cov[y:y + s, x:x + s], a)
+-    return cov
++        if not t.blending and (not t.param or in_render(t)):
++            solid[y:y + s, x:x + s] |= a > 0
++        elif t.blending and not t.param and t.layer not in drawn and not scrolling(f, t, moving):
++            glaze[y:y + s, x:x + s] = np.maximum(glaze[y:y + s, x:x + s], a)
++    return np.maximum(cov, glaze * ~solid)
+ 
+ 
+ _ALPHA = {}

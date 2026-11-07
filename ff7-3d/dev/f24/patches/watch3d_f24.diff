@@ -1,0 +1,82 @@
+--- a/tools/watch3d.py
++++ b/tools/watch3d.py
+@@ -52,6 +52,67 @@
+                          capture_output=True, text=True).stdout.split()
+     return [round(int(v) / 2**20) for v in out] if out else None
+ 
++
++class MemoryLog:
++    """The game's memory once a second while a capture runs -> report/review/memory.jsonl (F24: the two climbs on
++    2026-11-03 happened during captures, and nothing recorded what ran). Each line: time, the field being captured,
++    the game's field and view, its address space in use / committed / largest free block (MB, VirtualQueryEx: the
++    32-bit game's 4 GB) and FFNx-3d's `textures` status (bgfx handles in use of 4096, the glow-frame cache)."""
++    PATH = OUT / "memory.jsonl"
++
++    def __init__(self, name):
++        import threading
++        self.name, self.stop_ = name, threading.Event()
++        self.thread = threading.Thread(target=self.run, daemon=True)
++        self.thread.start()
++
++    @staticmethod
++    def address_space():
++        import ctypes.wintypes as wt
++
++        class MBI(ctypes.Structure):
++            _fields_ = [("BaseAddress", ctypes.c_void_p), ("AllocationBase", ctypes.c_void_p),
++                        ("AllocationProtect", wt.DWORD), ("PartitionId", wt.WORD), ("RegionSize", ctypes.c_size_t),
++                        ("State", wt.DWORD), ("Protect", wt.DWORD), ("Type", wt.DWORD)]
++        k32 = ctypes.windll.kernel32
++        pid = wt.DWORD()
++        hwnd = ctl.window()
++        if not hwnd:
++            return None
++        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
++        h = k32.OpenProcess(0x0400, False, pid.value)  # PROCESS_QUERY_INFORMATION
++        if not h:
++            return None
++        try:
++            addr, used, commit, big, mbi = 0x10000, 0, 0, 0, MBI()
++            while addr < 0xFFFF0000 and k32.VirtualQueryEx(h, ctypes.c_void_p(addr), ctypes.byref(mbi), ctypes.sizeof(mbi)):
++                if mbi.State == 0x10000:  # MEM_FREE
++                    big = max(big, mbi.RegionSize)
++                else:
++                    used += mbi.RegionSize
++                    commit += mbi.RegionSize if mbi.State == 0x1000 else 0
++                addr = (mbi.BaseAddress or 0) + mbi.RegionSize
++            return {"used_mb": used >> 20, "commit_mb": commit >> 20, "largest_free_mb": big >> 20}
++        finally:
++            k32.CloseHandle(h)
++
++    def run(self):
++        while not self.stop_.wait(1.0):
++            try:
++                st = live.status()
++                line = {"t": time.strftime("%H:%M:%S"), "capture": self.name, "field": st.get("field"),
++                        "view": st.get("view"), **(self.address_space() or {}), "textures": st.get("textures")}
++            except Exception as e:  # never the capture's problem
++                line = {"t": time.strftime("%H:%M:%S"), "capture": self.name, "error": f"{type(e).__name__}: {e}"}
++            try:
++                with open(self.PATH, "a", encoding="utf-8") as f:
++                    f.write(json.dumps(line) + "\n")
++            except OSError:
++                pass
++
++    def stop(self):
++        self.stop_.set()
++        self.thread.join(timeout=3)
+ 
+ 
+ 
+@@ -231,9 +292,11 @@
+ 
+ def capture(name):
+     take_game()
++    memlog = MemoryLog(name)
+     try:
+         return capture_held(name)
+     finally:
++        memlog.stop()
+         BUSY.unlink(missing_ok=True)
+ 
+ 

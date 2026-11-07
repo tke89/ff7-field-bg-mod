@@ -1,0 +1,6 @@
+# FFNx-3d battle look, TEST (../TESTPLAN.md T1): a formation's own group wins over its battle scene's. Append to
+# lighting/config.toml after config_battle_STAGE10.toml's section; formation 310's haze turns orange, the rest of
+# [battle_STAGE10] still applies (its grade, normal maps, drift...).
+
+[bat_310]
+haze_color = [0.9, 0.5, 0.2]

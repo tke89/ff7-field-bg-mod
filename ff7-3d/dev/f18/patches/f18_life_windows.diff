@@ -1,0 +1,89 @@
+--- a/ff3d/life.py
++++ b/ff3d/life.py
+@@ -109,6 +109,7 @@
+ SKY_FLOOR = 0.04   # the effects map's R over all the sky, drifting or not (FFNx.lighting.frag: no cloud shadows there)
+ # windows: emission over the painting's own colour, their light on the ground (background px, at the window)
+ WINDOW_EMIT = 1.2
++WINDOW_LIT = 0.03  # a window box lit less than this on average (pane_light) is dark glass or a wall: none
+ SPILL_PX = 22.0
+ SPILL = 0.45
+ SCREEN_EMIT = 0.35  # screens and indicator lights: extra glow over what the painting has
+@@ -727,17 +728,37 @@
+ 
+ # --- lit windows and lanterns (the scene's glow, each flickering on its own) ---
+ 
++def _ramp(x, a, b):
++    """0 at a, 1 at b, linear between (falling when b < a)."""
++    return np.clip((x - a) / (b - a), 0, 1)
++
++
++def pane_light(hue, s, v):
++    """How much each pixel looks like glass with a lamp or candle behind it, 0..1 (HSV: hue in degrees, s and v
++    0..1): yellow, orange or near white, and bright for its colour. Pale needs to be near white (cream paper and
++    plaster are 0.7-0.85), saturated yellow less; orange brighter and more saturated than wood or paper a lantern
++    lights (uttmpin1's beige walls and shoji: hue 24-28, s 0.5-0.65, v 0.7-0.75; its lit slum windows far off in
++    mds6_22: hue 23-34, s 0.83, v 0.76-0.88). Blue, teal and green glass isn't candlelight (church, elm)."""
++    warm = np.maximum(_ramp(hue, 14, 24) * _ramp(hue, 80, 68), _ramp(s, 0.2, 0.1))
++    orange = _ramp(hue, 38, 28) * _ramp(hue, 0.5, 1)
++    need = 0.9 - 0.3 * _ramp(s, 0.2, 0.45) + orange * (0.12 + 0.3 * _ramp(s, 0.8, 0.6))
++    return warm * _ramp(v - need, -0.1, 0.05)
++
++
+ def windows(f, feats, render):
+     """Qwen's lit windows as light sources at half size: [(ys, xs, weight per pixel, linear colour, flicker
+-    share)]. Candlelight behind each pane (brighter on the glass than on the bars), stronger where the painting
+-    already shows it lit; only in the evening and at night (Qwen's answer: sunlit glass would only bloom)."""
++    share)]. Candlelight where the painting shows a lit pane, each pixel by how lit it looks (pane_light): panes,
++    not the frame's thin lines (lit wood, gold trim), and brighter than around them (not a lit wall); a box with
++    hardly any is left as painted. Only in the evening and at night (Qwen's answer: sunlit glass would only bloom).
++    Until 2026-11-03 every pixel in a box got at least a third of the light and beige paper counted as lit: walls,
++    shoji, walkways and dark glass went under flat pale rectangles (uttmpin1)."""
+     scene = feats.get("scene") or {}
+     if scene and (scene.get("indoors") or not scene.get("evening")):
+         return []
+     hw, hh = f.RW // 2, f.RH // 2
+     small = cv2.resize(render, (hw, hh), interpolation=cv2.INTER_AREA)
+     hsv = cv2.cvtColor(small, cv2.COLOR_RGB2HSV_FULL).astype(np.float32)
+-    hue, s, v = hsv[..., 0] * 360 / 256, hsv[..., 1] / 255, hsv[..., 2] / 255
++    lit = pane_light(hsv[..., 0] * 360 / 256, hsv[..., 1] / 255, hsv[..., 2] / 255).astype(np.float32)
+     lum = small.astype(np.float32) @ [0.299, 0.587, 0.114] / 255
+     # (asked before the evening question: fainter the brighter the scene)
+     dark = 1.0 if scene else float(np.clip(1.0 - np.median(lum) / 0.45, 0.2, 1.0))
+@@ -748,11 +769,17 @@
+         X1, Y1, X2, Y2 = int(round(x1 + mx)), int(round(y1 + my)), int(round(x2 - mx)), int(round(y2 - my))
+         if X2 - X1 < 2 or Y2 - Y1 < 2:
+             continue
+-        ys, xs = np.mgrid[Y1:Y2, X1:X2].reshape(2, -1)
+-        warm = (hue[ys, xs] > 15) & (hue[ys, xs] < 60) & (s[ys, xs] > 0.3) & (v[ys, xs] > 0.5)
+-        lit = 0.35 + 0.65 * min(1.0, float(warm.mean()) * 3)
+-        w = (0.35 + 0.65 * v[ys, xs]) * lit * dark
+-        out.append((ys, xs, w, CANDLE, 0.25, "window"))
++        k = max(3, int(round(min(X2 - X1, Y2 - Y1) * 0.15)) | 1)  # a grey opening: panes stay, thin lines go
++        w = lit[Y1:Y2, X1:X2]
++        w = np.minimum(w, cv2.morphologyEx(w, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))))
++        r = max(X2 - X1, Y2 - Y1)  # brighter than its surroundings, a box's size around
++        A1, B1, A2, B2 = max(0, X1 - r), max(0, Y1 - r), min(hw, X2 + r), min(hh, Y2 + r)
++        around = cv2.GaussianBlur(lum[B1:B2, A1:A2], (0, 0), 0.5 * r)[Y1 - B1:Y2 - B1, X1 - A1:X2 - A1]
++        w = w * _ramp(lum[Y1:Y2, X1:X2] / (around + 0.02), 1.0, 1.25)
++        if float(w.mean()) < WINDOW_LIT:
++            continue
++        ys, xs = np.nonzero(w > 0.02)
++        out.append((ys + Y1, xs + X1, w[ys, xs] * dark, CANDLE, 0.25, "window"))
+     return out
+ 
+ 
+@@ -1071,11 +1098,9 @@
+ 
+     for kind, b, *_ in found:
+         add("fire" if kind not in FLAMES else "lantern", b["x1"], b["y1"], b["x2"], b["y2"])
+-    if windows_on:
+-        scene = feats.get("scene") or {}
+-        if not scene or (not scene.get("indoors") and scene.get("evening")):
+-            for b in feats.get("window", []):
+-                add("window", b["x1"], b["y1"], b["x2"], b["y2"], CANDLE)
++    if windows_on:  # the lit ones, at their lit panes (windows: in the evening, outdoors)
++        for ys, xs, *_ in windows(f, feats, render):
++            add("window", xs.min() * 2, ys.min() * 2, (xs.max() + 1) * 2, (ys.max() + 1) * 2, CANDLE)
+     for b in feats.get("screen", []):
+         add("screen", b["x1"], b["y1"], b["x2"], b["y2"])
+     for b in feats.get("tank", []):

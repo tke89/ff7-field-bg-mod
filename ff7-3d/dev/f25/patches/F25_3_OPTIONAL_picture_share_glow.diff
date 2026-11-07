@@ -1,0 +1,13 @@
+--- a/ff3d/glow.py
++++ b/ff3d/glow.py
+@@ -189,7 +189,9 @@
+ _VIEWS = {}
+ 
+ 
+-PICTURE_SHARE = 0.5  # the_picture: a switched glow layer covering this much of the canvas is the picture itself
++PICTURE_SHARE = 0.15  # the_picture: a switched glow layer covering this much of the canvas is the picture itself
++                      # (0.5 until F25: psdun_4's sky light, 16%, the render holding 87-91% of it, came out white
++                      # with all of it added again; also blue_2, nvdun31, lastmap, nivl_b1, sninn_2, sininb31)
+ 
+ 
+ def the_picture(f, tiles, pal):

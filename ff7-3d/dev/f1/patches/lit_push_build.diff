@@ -1,0 +1,42 @@
+--- base2/ff3d/build.py	2026-11-02 10:34:47.177675400 +0000
++++ dev2/ff3d/build.py	2026-11-02 10:51:53.034822000 +0000
+@@ -445,6 +445,10 @@
+ 
+ 
+ OVERLAY_PUSH_CAP = 3.0  # no further back than this (a tile whose z isn't a real depth would fold the scene up)
++LIT_PUSH_CAP = 6.0      # ...behind a toggled glow layer's tiles (plan["lit"]): blin3_1's message board is at a
++                        # quarter of its tiles' depth (z 3810 x TILE_DEPTH: x4.4), and with no painted message left in
++                        # the render, the board hid every message the game drew. blin65_2's room lights (z 4087:
++                        # x11-13, most of the room) stay hidden: the room would go to the far plane
+ 
+ 
+ def push_under(f, Z, plan, step):
+@@ -453,13 +457,17 @@
+     in 2D. Front-most tiles (smoke, haze, light shafts at depth ~0) need nothing. Solid tiles need nothing either:
+     FFNx-3d draws them over the scene before the characters (deferred.cpp draw_scene_overlays), so the scene keeps
+     its true depth for when they're off. Their depth is often only for sorting (del1's ship: 4094, five times the
+-    pier's in front of it), which the cap had left hidden behind the scene."""
++    pier's in front of it), which the cap had left hidden behind the scene. The toggled glow layers' tiles too
++    (plan["lit"]: palette-animated and switched by a script, the game draws them with all their light), with a
++    cap of their own (LIT_PUSH_CAP); push_back's box with its foreground rule left blin3_1's message board in front."""
+     g = f.scale / step
+     out = Z.copy()
+-    for t in plan["tiles"]:
++    lit = {id(t) for t in plan.get("lit", [])}
++    for t in plan["tiles"] + plan.get("lit", []):
+         behind = TILE_DEPTH * t.z * 1.08
+         if behind <= 0 or not t.blending:
+             continue
++        cap = LIT_PUSH_CAP if id(t) in lit else OVERLAY_PUSH_CAP
+         n = int(round(t.size * g))
+         r0, c0 = int(round((t.dst_y - f.my + f.frame[1]) * g)), int(round((t.dst_x - f.mx + f.frame[0]) * g))
+         block = out[r0:r0 + n, c0:c0 + n]
+@@ -467,7 +475,7 @@
+             continue
+         v = cv2.resize(plan["vis"][id(t)].astype(np.float32), (n, n), interpolation=cv2.INTER_LINEAR)
+         v = v[:block.shape[0], :block.shape[1]]
+-        move = (v > 0.5) & (block < behind) & (behind <= OVERLAY_PUSH_CAP * block)
++        move = (v > 0.5) & (block < behind) & (behind <= cap * block)
+         block[move] = behind
+     return out
+ 

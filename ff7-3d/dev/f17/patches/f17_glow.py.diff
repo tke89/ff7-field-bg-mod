@@ -1,0 +1,78 @@
+--- a/ff3d/glow.py
++++ b/ff3d/glow.py
+@@ -363,7 +363,24 @@
+                    # original repeats the scene) steps off the scene by more than OVERLAY_SAME (repaint_seams): blin63_t's
+                    # lit panels 0 to 0.11, del1's ship 0.77; cut blocks at 0.27 and up (convil_1's square by the well
+                    # 0.34, ithill, ghotel, anfrst_4, bugin2, gaiin_3, clsin2_3)
+-REPAINT_EDGE = 32  # ... and only with this much of such edge to judge by (background px)
++REPAINT_EDGE = 32  # ... and only with this much of such edge to judge by (background px); with less, by its whole
++                   # outer edge: shown whole when that is this long and no more than REPAINT_CUT of it steps off
++                   # (seamless): tunnel_6's opened shutter, its art cut out inside its tiles (no edge to judge), dark on
++                   # dark (8-16 levels: only 7% of it passes OVERLAY_SAME), came out as scattered blocks of the lit tunnel
++
++
++def seamless(g, scale):
++    """Is a repaint_seams spot shown whole? By the edge where the original repeats the scene (REPAINT_CUT), with
++    REPAINT_EDGE of it to judge by; else by its whole outer edge: where its art stops short of its tiles' edges
++    (transparent there) or changes the picture right up to them, the repaint can't meet the scene with a seam the
++    original hasn't got, and what OVERLAY_SAME leaves of it is only scattered pieces where the state is low in
++    contrast (tunnel_6's opened shutter, its tunnel dark on the shutter's dark: 17% of it shown, in blocks). A state
++    over the whole picture (another view: junin7, junele2) meets the scene nowhere: whole."""
++    if g["samples"] >= REPAINT_EDGE * scale:
++        return g["cut"] <= REPAINT_CUT
++    if g["area"] >= 0.99:
++        return True
++    return g["edge"] >= REPAINT_EDGE and g["samples"] * g["cut"] <= REPAINT_CUT * g["edge"] * scale
+ 
+ 
+ def _shown(f, solid, cache):
+@@ -383,7 +400,8 @@
+     outer tile edges, where the original's tile repeats what's around it (within OVERLAY_SAME; an object's own outline
+     there is no seam): the page's edge row against the render's row just outside, less the render's own step there.
+     [{"ids": {id(tile)}, "param", "state", "x", "y", "tiles", "samples" (edge px x scale), "seam": their median,
+-    "cut": the share over OVERLAY_SAME}]; [] without pages.
++    "cut": the share over OVERLAY_SAME, "edge": the spot's whole outer edge (background px), "area": its share of
++    the canvas}]; [] without pages.
+ 
+     The Studio's states pass repaints all a state changes in the original, however little (speckle included), and
+     blends it into the scene at the edges (Poisson). Where that worked, the repaint is a thing of its own inside the
+@@ -407,9 +425,10 @@
+     for t in tiles:
+         g = occ.setdefault((t.param, t.state), np.zeros((f.h, f.w), np.uint8))
+         g[max(0, t.dst_y - f.my):t.dst_y - f.my + t.size, max(0, t.dst_x - f.mx):t.dst_x - f.mx + t.size] = 1
+-    samples = {}
++    samples, edge = {}, {}
+     for t in tiles:
+         x, y, s = t.dst_x - f.mx, t.dst_y - f.my, t.size
++        edge[id(t)] = 0
+         if x < 0 or y < 0 or x + s > f.w or y + s > f.h:
+             samples[id(t)] = np.zeros(0, np.float32)
+             continue
+@@ -439,6 +458,7 @@
+             else:
+                 continue
+             inner, outer, ref, ok = line
++            edge[id(t)] += s
+             step = np.abs(inner - outer).max(1) - np.abs(ref - outer).max(1)
+             got.append(np.maximum(step, 0)[np.repeat(ok, S)])
+         samples[id(t)] = np.concatenate(got) if got else np.zeros(0, np.float32)
+@@ -454,7 +474,8 @@
+             out.append({"ids": {id(t) for t in mine}, "param": p, "state": st, "tiles": len(mine), "samples": len(al),
+                         "x": min(t.dst_x for t in mine) - f.mx, "y": min(t.dst_y for t in mine) - f.my,
+                         "seam": float(np.median(al)) if len(al) else -1.0,
+-                        "cut": float((al > OVERLAY_SAME).mean()) if len(al) else 1.0})
++                        "cut": float((al > OVERLAY_SAME).mean()) if len(al) else 1.0,
++                        "edge": sum(edge[id(t)] for t in mine), "area": float((lab == k).mean())})
+     return out
+ 
+ 
+@@ -681,8 +702,7 @@
+     # (entry_off_art), so a switched tile there always counts as a change
+     shown = _shown(f, solid, cache)
+     switched = [t for t in tiles if not t.blending and not in_render(t) and t.param not in animated]
+-    whole = set().union(*[g["ids"] for g in repaint_seams(f, switched, shown)
+-                          if g["samples"] >= REPAINT_EDGE * f.scale and g["cut"] <= REPAINT_CUT])
++    whole = set().union(*[g["ids"] for g in repaint_seams(f, switched, shown) if seamless(g, f.scale)])
+     unknown = np.zeros((f.h, f.w), bool)
+     for t in tiles:
+         if not t.blending and in_render(t):

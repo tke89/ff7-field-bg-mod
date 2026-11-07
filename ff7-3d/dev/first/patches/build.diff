@@ -1,0 +1,11 @@
+--- live/ff3d/build.py
++++ fixed/ff3d/build.py
+@@ -740,7 +740,7 @@
+         back = (Pcf[gaps] * (zg.max(1, keepdims=True) / zg)[..., None]).reshape(-1, 3)
+         far = gaps[np.arange(len(gaps)), zg.argmax(1)]
+         n0 = len(pw)
+-        pw = np.concatenate([pw, (back - f.T) @ f.R])
++        pw = np.concatenate([pw, (back - f.T) @ f.Rinv.T])
+         nw = np.concatenate([nw, np.repeat(full["nw"][far], 3, 0)])
+         uv = np.concatenate([uv, full["uv"][gaps].reshape(-1, 2)])
+         jw = np.concatenate([jw, full["jw"][gaps].reshape(-1, 4)])

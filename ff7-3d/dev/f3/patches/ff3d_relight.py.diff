@@ -1,0 +1,33 @@
+--- a/ff3d/relight.py
++++ b/ff3d/relight.py
+@@ -12,7 +12,7 @@
+ import numpy as np
+ from PIL import Image
+ 
+-from . import atmos, gltfout, ibl, life
++from . import atmos, glow, gltfout, ibl, life
+ 
+ MAX_GAIN = 3.0        # the most a part of the painting brightens (a deep painted shadow the sun now reaches)
+ FIT_SIZE = 240        # the sun's fit on a grid this wide
+@@ -151,7 +151,9 @@
+     no_depth = cv2.resize((~np.isfinite(Z)).astype(np.float32), (f.RW, f.RH), interpolation=cv2.INTER_LINEAR)
+     lights = np.clip(cv2.GaussianBlur(atmos.light_map(f).max(2), (0, 0), 2) / 0.12, 0, 1)
+     painted = cv2.resize(atmos.painted_lights(render), (f.RW, f.RH), interpolation=cv2.INTER_LINEAR)
+-    return np.clip(np.maximum.reduce([keep, no_depth, lights, painted]), 0, 1)
++    glass = glow.through_glass(f)  # a far backdrop through a window, like the sky (blin66_2's nebula)
++    backdrop = glass[1] if glass is not None else np.zeros_like(keep)
++    return np.clip(np.maximum.reduce([keep, no_depth, lights, painted, backdrop]), 0, 1)
+ 
+ 
+ def write(f, o, ll, out, tex):
+@@ -183,7 +185,9 @@
+         sun_c, sky_c = sun_c * np.sqrt(k), sky_c / np.sqrt(k)
+     relit = 1.0 - keep_painted(f, render, feats, Z, step)
+     relit = cv2.resize(relit, (gw, gh), interpolation=cv2.INTER_AREA)
+-    sun_map = np.dstack([now_lit, then_lit, relit, np.ones_like(relit)])
++    # A: how much each part may mirror the characters as a polished floor (life.floor_mirror; for FFNx-3d's
++    # reflection pass, which until it reads this mirrors every surface its normals say faces up)
++    sun_map = np.dstack([now_lit, then_lit, relit, life.floor_mirror(f, render, (gh, gw))])
+     gltfout.write_dds(out / f"{tex}_sun.dds", np.round(np.clip(sun_map, 0, 1) * 255).astype(np.uint8))
+     lamps = 1.0 if float(o["char_lamps"]) > 0 else 0.0
+     report = {"sun": [v, h], "fit": round(fit, 3), "contrast": round(contrast, 2), "sunny": sunny,

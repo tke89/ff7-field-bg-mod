@@ -1,0 +1,13 @@
+--- a/ff3d/surface.py
++++ b/ff3d/surface.py
+@@ -95,7 +95,9 @@
+     if not p.exists():
+         return None
+     d = np.load(p)
+-    Z = d["Z"].astype(np.float32)
++    # the depth as the mesh draws it, glow pushes and all (Z_drawn; Z is where the scene stands, F25): a push's edge is
++    # a break in the mesh
++    Z = (d["Z_drawn"] if "Z_drawn" in d.files else d["Z"]).astype(np.float32)
+     # a surface turned theta away from the camera changes depth by tan(theta) / zoom of itself per background pixel
+     slope = np.hypot(cv2.Sobel(Z, cv2.CV_32F, 1, 0, ksize=3), cv2.Sobel(Z, cv2.CV_32F, 0, 1, ksize=3)) / 8
+     tan = slope / np.maximum(Z, 1e-6) * float(d["grid"]) * f.zoom

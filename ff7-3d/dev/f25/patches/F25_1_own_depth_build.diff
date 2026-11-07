@@ -1,0 +1,48 @@
+--- a/ff3d/build.py
++++ b/ff3d/build.py
+@@ -1148,12 +1148,18 @@
+     report["glow_layers"] = anim["summary"]
+     report["overlays"] = {"tiles": len(plan["tiles"]), "params": sorted({t.param for t in plan["tiles"]}),
+                           "start_on": len(plan["entry_on"]), "backdrop": len(plan.get("backdrop", []))}
++    # the scene where it stands, not where the glow pushes (push_back, push_under) moved it back behind tiles: what's
++    # worked out from its shape (contact shadows, the extent, simplify_in.npz for the haze, the sun, life and surface).
++    # psdun_4's sky, pushed 8.5 times as deep under its light layers, took the mist in front of it along: the puffs'
++    # size, set for their median depth, made those in front of the rocks 7 times as big (pale cut-off patches) (F25)
++    Zs = np.where(pushed, Z0, Z)
+     Pc, Pw = f.unproject(bx, by, Z)
+     Pcm, Pm = f.unproject(bx, by, Zm)
++    _, Ps = f.unproject(bx, by, Zs)
+ 
+     n = marigold_normals(f, (GH, GW))
+     stage(0.55, "contact shadows")
+-    ao = ambient_occlusion(f, Pw, Z, n, step)
++    ao = ambient_occlusion(f, Ps, Zs, n, step)
+     np.save(f.work / "ao.npy", ao)
+ 
+     render = np.asarray(Image.open(f.render).convert("RGB"))
+@@ -1191,7 +1197,8 @@
+     report["full_triangles"] = int(len(q) * 2)
+     report["cell_area"] = {f"{1 << l}": float((level == l).mean()) for l in range(int(level.max()) + 1)}
+     np.save(f.work / "levels.npy", level)
+-    np.savez_compressed(f.work / "simplify_in.npz", Z=Z, broken=cut0 | cut1, grid=f.scale / step)
++    # (Z_drawn: as the mesh has it, for surface.steady: a push's edge is a break in the mesh)
++    np.savez_compressed(f.work / "simplify_in.npz", Z=Zs, Z_drawn=Z, broken=cut0 | cut1, grid=f.scale / step)
+ 
+     ys, xs = np.mgrid[0:GH, 0:GW].astype(float)
+     uv = np.stack([xs * step / f.RW, ys * step / f.RH], -1).reshape(-1, 2)
+@@ -1243,11 +1250,10 @@
+         (f.work / "entry_off.npz").unlink(missing_ok=True)
+     else:
+         np.savez_compressed(f.work / "entry_off.npz", rgb=off[0], weight=off[1].astype(np.float16))
+-    # the scene's size (it sizes the shadow map, the clouds and the relit light's reach) where it stands, not where the
+-    # glow pushes moved it back behind tiles: at LIT_PUSH_CAP 8.5 crater_2's came out 7 times as wide, gon_i's 20 (the
+-    # shadow map's texels as many times as coarse: gon_i's characters lost their own shadows)
+-    _, Px = f.unproject(bx, by, np.where(pushed, Z0, Z))
+-    extent = float(np.ptp(Px.reshape(-1, 3)[:, :2], axis=0).max())
++    # the scene's size (it sizes the shadow map, the clouds and the relit light's reach) where it stands (Zs): at
++    # LIT_PUSH_CAP 8.5 crater_2's came out 7 times as wide, gon_i's 20 (the shadow map's texels as many times as
++    # coarse: gon_i's characters lost their own shadows)
++    extent = float(np.ptp(Ps.reshape(-1, 3)[:, :2], axis=0).max())
+     (f.work / "extent.txt").write_text(str(extent))
+     stage(0.9, "chimneys, fires, flags and sky (Qwen)")
+     try:

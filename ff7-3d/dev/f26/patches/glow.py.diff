@@ -1,0 +1,126 @@
+--- ff3d/glow.py	2026-11-06 19:59:27.828832200 +0000
++++ dev/f26/ff3d/glow.py	2026-11-06 20:42:59.965504400 +0000
+@@ -385,16 +385,116 @@
+     job = json.loads((common.STUDIO / "ai" / "jobs.json").read_text())[f.name]
+     on = {int(p): m for p, m in (f.meta.get("rendered_defaults") or job.get("defaults") or {}).items()}
+     animated = {int(p) for p in job.get("animations", {})} | set(script_loops(f.raw))
+-    animated |= {p for p in entry_unknown(f.raw) | (event_switched(f.raw) if EVENT_STATES else set()) if on.get(p, 0)}
++    animated |= {p for p in entry_unknown(f.raw) if on.get(p, 0)}
++    if EVENT_STATES != "0":
++        ev = {p for p in event_switched(f.raw) if on.get(p, 0)} - animated
++        animated |= ev if EVENT_STATES == "1" else event_states(f, ev, on)
+     return (lambda t: bool(on.get(t.param, 0) & t.state)), animated
+ 
+ 
+-# Every state a script switches after entry (a door opened, a lamp put out) handled like those too: the mesh holds
+-# what's beneath the render's state and the game draws that state as a 2D tile, so it goes when a script switches it
+-# off (the render's state stayed in 3D wherever the next one doesn't reach: anfrst_4's crystals, an opened door).
+-# Off by default: every closed door and switch the render holds becomes a 2D tile, 6889 tiles in 179 built fields
+-# (20 of them rebuilds), against 1260 tiles in 17 without it (FF3D_EVENT_STATES=1 for it).
+-EVENT_STATES = os.environ.get("FF3D_EVENT_STATES", "0") != "0"
++# Every state a script switches after entry (a door opened, a lamp put out) handled like those too, where that shows
++# (event_states): the mesh holds what's beneath the render's state and the game draws that state as a 2D tile, so it
++# goes when a script switches it off. Baked, it stayed in 3D wherever what replaces it doesn't reach: anfrst_4's
++# flower beside the one that replaces it, colne_6's rug over the opened trapdoor, onna_52's and onna_4's doors that
++# never opened, jtempl's temple. FF3D_EVENT_STATES: "auto" (default) the states event_states keeps (2509 tiles in 100 built fields,
++# 2026-11-06); "1" every one (5629 tiles in 167: whole scenes became 2D tiles, bugin1a's room, trnad_1's forest); "0" none.
++EVENT_STATES = os.environ.get("FF3D_EVENT_STATES", "auto")
++EVENT_COVER = 0.25   # event_states: a state whose start-on tiles cover more of the canvas than this is the scene itself
++EVENT_GAIN = 64      # ...the least the original changes where it goes off and nothing switched on with it covers (1x px)
++EVENT_HOLE = 0.5     # ...the most of that the original shows as a hole (flat black or a placeholder colour)
++EVENT_OFFART = 0.5   # ...the least of it where the Studio's off art differs from the render (> OVERLAY_SAME)
++_EVENT = {}
++
++
++def event_offs(raw, p, held):
++    """For each field script that switches a `held` state of param p off after the always-run init (BGOFF of a held
++    bit, BGCLR): the states of p it switches on with it (a mask, 0 for none); None for one that sets a state from a
++    variable (anything may follow)."""
++    out = []
++    for s in palettes.scripts(raw):
++        off, var, ons = False, False, 0
++        for pos, op, b in s.ops():
++            if op not in (BGON, BGOFF, BGCLR) or len(b) < 3 or b[1] >> 4 or b[2] != p or (s.index == 0 and pos < s.init_end):
++                continue
++            if op != BGCLR and len(b) >= 4 and b[1] & 0xF:
++                var = True
++            elif op == BGCLR or (op == BGOFF and len(b) >= 4 and b[3] < 8 and (1 << b[3]) & held):
++                off = True
++            elif op == BGON and len(b) >= 4 and b[3] < 8 and not (1 << b[3]) & held:
++                ons |= 1 << b[3]
++        if var or off:
++            out.append(None if var else ons)
++    return out
++
++
++def _holes(img):
++    """Flat black or flat saturated pixels (a placeholder the game never shows) of a 1x RGB picture."""
++    x = img.astype(np.float32)
++    luma = x @ np.array([0.2126, 0.7152, 0.0722], np.float32)
++    mean = cv2.blur(luma, (5, 5))
++    sd = np.sqrt(np.maximum(cv2.blur(luma * luma, (5, 5)) - mean * mean, 0))
++    mx, mn = x.max(2), x.min(2)
++    return (sd < 1.5) & ((mx < 10) | ((mx > 100) & (mx - mn > 0.6 * mx)))
++
++
++def event_states(f, params, on):
++    """Which of the event-switched `params` the render holds a state of the game draws as tiles that start on, the mesh
++    holding the Studio's off art beneath them (entry_off_art), as entry_unknown's are. Only where that shows what the
++    mesh can't (F26: in game, at entry, such a tile looks as AI 2D does there, without the 3D's light and gloss, and
++    with AI 2D's tile seams: onna_4's door frames, onna_52's door):
++    - its start-on tiles cover no more than EVENT_COVER of the canvas: one switch of the whole scene (bugin1a's room
++      before the planetarium show, 70%; trnad_1's forest, 95%; zcoal_1's engine, 37%) made the scene a flat 2D tile;
++    - a script switches the render's state off (event_offs), and the original changes at least EVENT_GAIN pixels there
++      beyond what the states switched on with it cover: otherwise it's never off, changes nothing (md8brdg2's 148
++      tiles, las0_1) or gives way to a state drawn whole over it already (swaps: eleout's lift, the boardroom's chairs,
++      nvmkin1, move_f, junonr3);
++    - the original doesn't show a hole there (EVENT_HOLE: what nothing ever uncovers in game);
++    - the Studio's off art differs from the render on at least EVENT_OFFART of it: where the AI kept the render's
++      state (kuro_7's caves, nivl, bonevil), the mesh would show it after the event just the same.
++    Without the version's pages for every tile there's no off art: none. Cached per field, version and params."""
++    key = (f.name, str(f.raw_render), f.raw_render.stat().st_mtime, frozenset(params), tuple(sorted(on.items())))
++    if key in _EVENT:
++        return _EVENT[key]
++    kept = set()
++    studio = studio_pages(f) if params else {}
++    if studio and all(t.tex in studio for t in f.bg.tiles):
++        cache, rect, S = PageCache(f.bg), (f.mx, f.my, f.w, f.h), f.scale
++        shows = lambda s: (lambda t: not t.param or bool(s.get(t.param, 0) & t.state))
++        orig = np.asarray(render_composite(f.bg, rect, cache.tile, 1, shows(on)))[..., :3].astype(np.int16)
++        art = np.asarray(render_composite(f.bg, rect, page_tile_source(studio, S), S, include=lambda t: not t.param))
++        art = art[..., :3].astype(np.float32)
++        M = page_colours(f, studio)  # in the scene's colours, as entry_off_art paints it
++        if M is not None:
++            art = np.clip(np.round(np.concatenate([art.reshape(-1, 3), np.ones((art.shape[0] * art.shape[1], 1), np.float32)], 1) @ M),
++                          0, 255).reshape(art.shape)
++        R = scene_colours(f, Image.open(f.render).convert("RGB"))
++        y0, x0 = f.frame[1] * S, f.frame[0] * S
++        R = R[y0:y0 + f.h * S, x0:x0 + f.w * S]
++        h, w = min(R.shape[0], art.shape[0]), min(R.shape[1], art.shape[1])
++        moved = cv2.resize(np.abs(R[:h, :w] - art[:h, :w]).max(2), (f.w, f.h), interpolation=cv2.INTER_AREA) > OVERLAY_SAME
++
++        def drawn(keep):
++            m = np.zeros((f.h, f.w), bool)
++            for t in f.bg.tiles:
++                if not t.blending and keep(t):
++                    x, y = t.dst_x - f.mx, t.dst_y - f.my
++                    a = cache.tile(t)[..., 3][:f.h - y, :f.w - x] > 0
++                    m[y:y + a.shape[0], x:x + a.shape[1]] |= a
++            return m
++        for p in sorted(params):
++            held = on.get(p, 0)
++            foot = drawn(lambda t: t.param == p and held & t.state)
++            if not foot.any() or foot.mean() > EVENT_COVER:
++                continue
++            gone = np.asarray(render_composite(f.bg, rect, cache.tile, 1, shows({**on, p: 0})))[..., :3]
++            change = (np.abs(orig - gone.astype(np.int16)).max(2) > OVERLAY_SAME) & foot
++            gain = np.zeros((f.h, f.w), bool)
++            for ons in event_offs(f.raw, p, held):
++                gain |= change & ~drawn(lambda t: t.param == p and bool(ons) and bool(t.state & ons))
++            if gain.sum() >= EVENT_GAIN and _holes(gone)[gain].mean() <= EVENT_HOLE and moved[gain].mean() >= EVENT_OFFART:
++                kept.add(p)
++    _EVENT[key] = kept
++    return kept
+ 
+ 
+ def event_switched(raw):

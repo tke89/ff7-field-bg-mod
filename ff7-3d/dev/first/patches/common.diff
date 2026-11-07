@@ -1,0 +1,22 @@
+--- live/ff3d/common.py
++++ fixed/ff3d/common.py
+@@ -115,6 +115,10 @@
+             self.raw = decompress(lgp.read(name))
+         secs = _sections(self.raw)
+         self.R, self.T, self.zoom = _camera(secs[1])
++        # R is stored to 1/4096, so it isn't quite a rotation: R.T is no inverse. Unprojecting with it put points
++        # off their camera rays by (R R^T - I)(P - T), up to 7 background px at depth 200 where the camera is ~11000
++        # from the world's origin (blue_1: near rocks slid off their painting, black holes along their edges)
++        self.Rinv = np.linalg.inv(self.R)
+         self.tris = _walkmesh(secs)
+         self.bg = parse_background(name, self.raw)
+         self.mx, self.my, self.w, self.h = canvas_rect(self.bg)
+@@ -174,7 +178,7 @@
+     def unproject(self, bx, by, Z):
+         """Background coords + camera depth -> camera space and world points."""
+         Pc = np.stack([bx * Z / self.zoom, by * Z / self.zoom, Z], -1)
+-        Pw = (Pc.reshape(-1, 3) - self.T) @ self.R
++        Pw = (Pc.reshape(-1, 3) - self.T) @ self.Rinv.T
+         return Pc, Pw.reshape(Pc.shape)
+ 
+     def project(self, pts):

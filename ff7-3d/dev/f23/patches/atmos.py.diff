@@ -1,0 +1,131 @@
+--- a/ff3d/atmos.py
++++ b/ff3d/atmos.py
+@@ -635,25 +635,99 @@
+     return out
+ 
+ 
++NEAR = 0.4        # dust, embers and fireflies nearer the camera than this share of the floor's depth stop growing on
++                  # screen and fade out (gone at half of it; FFNx-3d `near`, the field-wide kind only): sininb41's low
++                  # camera had dust a fifth of the way, big soft blobs
++MASK_CELL = 4     # where on the canvas particles show (FFNx-3d `mask`): cells this many background px, at most MASK_MAX
++MASK_MAX = 192    # across
++FALLING = ("snow", "rain", "blizzard")
++SNOWY = (0.6, 0.35)   # _outdoors: snow on the ground is this bright (HSV value) and this pale (saturation) at least
++SNOWY_CLOSE = 11      # ...its shaded hollows and footprints closed over (background px)
++OUTDOOR_RISE = 24     # ...and the falling snow shows this far above it (background px)
++
++
++def _outdoors(f, kind, feats):
++    """Where falling snow or rain shows in a scene Qwen calls indoors that its description gave them (snmin2, the Icicle
++    Inn house cut away with snow outside: the snowfall came down over the whole room): over the snow on the ground
++    (bright and pale, bluish) for snow, and Qwen's sky, and a little above them (OUTDOOR_RISE). 1x canvas, bool."""
++    from . import life
++    img = cv2.resize(life._render(f), (f.w, f.h), interpolation=cv2.INTER_AREA)
++    out = np.zeros((f.h, f.w), bool)
++    if kind != "rain":
++        hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
++        snowy = (hsv[..., 2] >= SNOWY[0] * 255) & (hsv[..., 1] <= SNOWY[1] * 255) & (img[..., 2] >= img[..., 0])
++        snowy = cv2.morphologyEx(snowy.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
++        close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (SNOWY_CLOSE,) * 2)
++        snowy = cv2.morphologyEx(snowy, cv2.MORPH_CLOSE, close)
++        n, labels, stats, _ = cv2.connectedComponentsWithStats(snowy, connectivity=8)
++        out |= np.isin(labels, [k for k in range(1, n) if stats[k, cv2.CC_STAT_AREA] >= 0.002 * f.w * f.h])
++    for b in feats.get("sky", []):
++        x1, y1, x2, y2 = (int(round(b[k] / f.scale)) for k in ("x1", "y1", "x2", "y2"))
++        out[max(0, y1):y2, max(0, x1):x2] = True
++    up = out.copy()
++    for d in range(1, OUTDOOR_RISE + 1):
++        up[:-d] |= out[d:]
++    return up
++
++
++def _mask_keys(f, masks, near):
++    """FFNx-3d's particle mask lines: the world -> mask cell projection (3x4: cell x = row 0 . [p 1] / row 2 . [p 1],
++    y likewise; row 2 . [p 1] is the camera depth), the grid's size, each mask in `masks` (key: 1x canvas 0..1, or
++    None) as one hex digit a cell (0 none .. f all), and `near` (camera depth, or None)."""
++    cell = max(MASK_CELL, int(np.ceil(max(f.w, f.h) / MASK_MAX)))
++    gw, gh = -(-f.w // cell), -(-f.h // cell)
++    R, T, zoom = np.asarray(f.R, float), np.asarray(f.T, float), float(f.zoom)
++    M = np.vstack([np.append(zoom * R[0] - f.mx * R[2], zoom * T[0] - f.mx * T[2]) / cell,
++                   np.append(zoom * R[1] - f.my * R[2], zoom * T[1] - f.my * T[2]) / cell,
++                   np.append(R[2], T[2])])
++    lines = [f"mask_project = [{', '.join(f'{float(v):.9e}' for v in M.ravel())}]", f"mask_size = [{gw}, {gh}]"]
++    for key, m in masks.items():
++        if m is None or float(m.min()) >= 1:
++            continue
++        pad = np.zeros((gh * cell, gw * cell), np.float32)  # past the canvas: nothing
++        pad[:f.h, :f.w] = m
++        c = np.round(pad.reshape(gh, cell, gw, cell).mean((1, 3)) * 15).astype(int)
++        lines.append(f'{key} = "' + "".join("0123456789abcdef"[v] for v in c.ravel()) + '"')
++    if near:
++        lines.append(f"near = {near:.1f}")
++    return lines
++
++
+ def particles(f, kind, amount, out, sources=()):
+     """The field's particles for FFNx-3d, <field>_particles.toml beside the scene: `kind` (auto: particle_kind),
+     `amount` times its usual number over the walkable ground, sized and moving so they look the same on screen in
+     every field, plus `sources` (life.py's smoke, sparks and birds). No file for none and no sources. Returns the
+-    kind."""
++    kind. All of them only where the scene is on the canvas (not over the black around it: life.void); the floor
++    kinds none nearer than NEAR of the floor's depth; the field-wide snow or rain of a scene Qwen calls indoors only
++    over its outdoor part (_outdoors); and no field-wide kind for a picture framed on black (life.framed) on
++    automatic."""
++    from . import life
+     path = out / f"{f.name}_particles.toml"
+-    kind = particle_kind(f.name) if kind == "auto" else kind
++    auto = kind == "auto"
++    kind = particle_kind(f.name) if auto else kind
++    if auto and kind != "none" and life.framed(f):
++        kind = "none"
+     extra = [line for s in sources for line in _source(s)]
++    s, z = f.project(f.tris)
++    seen_floor = (z > 1).all(1).any()
++    near = NEAR * float(np.median(z[z > 0])) if seen_floor and kind in FLOOR_KINDS else None
++    scene = (~life.void(f)).astype(np.float32)
++    main = None
++    if kind in FALLING and auto and not any(f.name.startswith(p) for p in AUTO_FIELDS.values()):
++        feats = life.cached(f)
++        if (feats.get("scene") or {}).get("indoors"):
++            main = (_outdoors(f, kind, feats) & (scene > 0)).astype(np.float32)
++    head = _mask_keys(f, {"mask": scene, "mask_main": main}, near)
+     if kind not in PARTICLES or amount <= 0:
+         if extra:
+-            path.write_text('kind = "none"\n' + "\n".join(extra) + "\n")
++            path.write_text("\n".join(['kind = "none"'] + head + extra) + "\n", encoding="utf-8")
+         else:
+             path.unlink(missing_ok=True)
+         return "none"
+     p = PARTICLES[kind]
+-    s, z = f.project(f.tris)
+-    if not (z > 1).all(1).any():  # no walkmesh in front of the camera (rootmap): nowhere to put them
++    if not seen_floor:  # no walkmesh in front of the camera (rootmap): nowhere to put them
+         if extra:
+-            path.write_text('kind = "none"\n' + "\n".join(extra) + "\n")
++            path.write_text("\n".join(['kind = "none"'] + head + extra) + "\n", encoding="utf-8")
+         else:
+             path.unlink(missing_ok=True)
+         return "none"
+@@ -677,8 +751,12 @@
+         vis = (z > 1).all(1) & (c[:, 0] >= f.mx) & (c[:, 0] < f.mx + f.w) & (c[:, 1] >= f.my) & (c[:, 1] < f.my + f.h)
+         if not vis.any():
+             vis = (z > 1).all(1)
++        # they start beyond `near` (FFNx-3d fades them out nearer): sininb41's low camera sees mostly near floor, and
++        # nine in ten would have started there
++        start = vis & (z.mean(1) >= near) if near else vis
++        start = start if start.any() else vis
+         rng = np.random.default_rng(0)
+-        pick = rng.choice(np.flatnonzero(vis), FLOOR_POINTS, p=a[vis] / a[vis].sum())
++        pick = rng.choice(np.flatnonzero(start), FLOOR_POINTS, p=a[start] / a[start].sum())
+         u, v = rng.random(FLOOR_POINTS), rng.random(FLOOR_POINTS)
+         flip = u + v > 1
+         u[flip], v[flip] = 1 - u[flip], 1 - v[flip]
+@@ -704,7 +782,7 @@
+              f"speed = {float(np.clip(PARTICLE_PX / ppu, 0.05, 20)):.3f}",
+              f"color = [{', '.join(str(c) for c in p['color'])}]",
+              f"box = [{', '.join(f'{float(v):.1f}' for v in box)}]"] + lines
+-    path.write_text("\n".join(lines + extra) + "\n")
++    path.write_text("\n".join(lines + head + extra) + "\n", encoding="utf-8")
+     return kind
+ 
+ 

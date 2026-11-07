@@ -1,0 +1,357 @@
+--- base/ff3d/build.py	2026-11-02 09:32:50.106693300 +0000
++++ ff3d/build.py	2026-11-02 10:26:13.979653900 +0000
+@@ -27,6 +27,10 @@
+     "uv_tol": 0.25,       # simplified: how far (background pixels) a point's texture may slide
+     "max_level": 5,       # simplified: cells up to 2**5 grid steps
+     "sink": 15.0,         # walkable ground this far (world units) under the walkmesh: the chibi boots reach below it
++    "sink_deep": 15.0,    # ...the walkable ground itself (not what stands at its edge) this much further: kneeling and
++                          # lying models reach further below (ancnt3)
++    "sink_slope": 35.0,   # ...plus this x the slope (tan) where the walkmesh slopes: a foot's half length, its toe or
++                          # heel below the slope's height under the model's middle (all three x the field's model scale)
+     "snap_tol": 110.0,    # within this camera depth of the walkmesh, ground snaps onto it...
+     "snap_rel": 0.03,     # ...or within this share of its depth, whichever is more (far ground: 3% of 5000 = 150)
+     "anchor": 0.04,       # the depth bent onto the walkmesh by a smooth correction this wide (share of the grid; 0: off)
+@@ -200,27 +204,66 @@
+     return unit(np.stack([cv2.GaussianBlur(small[..., k], (0, 0), blur) for k in range(3)], -1))
+ 
+ 
+-def snap_to_walkmesh(f, Z, W, Pc, o, reach=12, up=None):
+-    """Walkable ground onto the walkmesh (sunk by o['sink']), moving points along their camera rays; only surfaces
+-    facing up (`up`, 0..1), so posts and fronts standing just before the walkmesh keep their depth."""
++def walk_slope(f, W, step):
++    """tan of the walkmesh's slope (0 flat, capped at 1) at the walkmesh surface W picks over each grid point; 0 off
++    the walkmesh."""
++    bx, by = depth.grid_bg(f, step)
++    bx, by = bx[:W.shape[0], :W.shape[1]], by[:W.shape[0], :W.shape[1]]
++    t = f.tris
++    nrm = np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0])
++    tan = np.minimum(np.hypot(nrm[:, 0], nrm[:, 1]) / np.maximum(np.abs(nrm[:, 2]), 1e-9), 1.0)
++    s, z = f.project(t.reshape(-1, 3))
++    s, z = s.reshape(-1, 3, 2), z.reshape(-1, 3)
++    out = np.zeros(W.shape, np.float32)
++    for (a, b, c), (za, zb, zc), tn in zip(s, z, tan):
++        if min(za, zb, zc) <= 0 or tn <= 0:
++            continue
++        m = (bx >= min(a[0], b[0], c[0])) & (bx <= max(a[0], b[0], c[0])) & (by >= min(a[1], b[1], c[1])) & \
++            (by <= max(a[1], b[1], c[1]))
++        d = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1])
++        if not m.any() or abs(d) < 1e-9:
++            continue
++        px, py = bx[m], by[m]
++        l1 = ((b[1] - c[1]) * (px - c[0]) + (c[0] - b[0]) * (py - c[1])) / d
++        l2 = ((c[1] - a[1]) * (px - c[0]) + (a[0] - c[0]) * (py - c[1])) / d
++        l3 = 1 - l1 - l2
++        inside = (l1 >= -1e-6) & (l2 >= -1e-6) & (l3 >= -1e-6)
++        zv = 1 / (l1 / za + l2 / zb + l3 / zc)
++        here = inside & (np.abs(zv - W[m]) < 0.01 * zv)  # the surface W picked there, not another under/over it
++        out[m] = np.where(here, np.maximum(out[m], tn), out[m])
++    return out
++
++
++def snap_to_walkmesh(f, Z, W, Pc, o, reach=12, up=None, step=2):
++    """Walkable ground onto the walkmesh (sunk by o['sink'], more where models dip further below it), moving points
++    along their camera rays; only surfaces facing up (`up`, 0..1), so posts and fronts standing just before the
++    walkmesh keep their depth. Which ground is walkable is judged against the walkmesh itself, not the sunk one: at a
++    grazing view a few units of sink are a long way along the ray (ancnt3's altar: 15 units were 60)."""
+     on = ~np.isnan(W)
++    target = edge = W
+     if o["sink"]:
++        # the floor goes under the models' lowest parts: chibi boots reach below the walkmesh, more on a slope (the
++        # feet are set at the slope's height under their middle: ancnt2's ramp hid Cloud's boot), kneeling and lying
++        # ones further (ancnt3: Cloud kneeling, Aerith lying, cut by the altar's top), all with the field's model
++        # scale (ancnt3's 1024). What stands at the floor's edge follows only the usual sink (`spread` below)
++        scale = model_scale(f) / 512
+         u = Pc / np.linalg.norm(Pc, axis=-1, keepdims=True)
+-        down = -(u @ f.R)[..., 2]
+-        W = W + o["sink"] * u[..., 2] / np.maximum(down, 0.15)
++        along = u[..., 2] / np.maximum(-(u @ f.R)[..., 2], 0.15)  # camera depth per world unit down, along the ray
++        target = W + (o["sink"] + o["sink_deep"] + o["sink_slope"] * walk_slope(f, W, step)) * scale * along
++        edge = W + o["sink"] * scale * along
+     tol = np.maximum(o["snap_tol"], o["snap_rel"] * np.nan_to_num(W, nan=0.0))
+     band = tol * 0.55
+-    d = np.where(on, W - Z, 0)
+-    w = np.where(on, np.clip((tol + band - np.abs(d)) / band, 0, 1), 0).astype(np.float32)
++    d = np.where(on, target - Z, 0)
++    w = np.where(on, np.clip((tol + band - np.abs(np.where(on, W - Z, 0))) / band, 0, 1), 0).astype(np.float32)
+     if up is not None:
+         w *= up.astype(np.float32)
+     c = (d * w).astype(np.float32)
+     dist = cv2.distanceTransform((w == 0).astype(np.uint8), cv2.DIST_L2, 3)
+     blur_w = cv2.GaussianBlur(w, (0, 0), reach / 2)
+-    spread = cv2.GaussianBlur(c, (0, 0), reach / 2) / np.maximum(blur_w, 1e-3)
++    spread = cv2.GaussianBlur((np.where(on, edge - Z, 0) * w).astype(np.float32), (0, 0), reach / 2) / np.maximum(blur_w, 1e-3)
+     fade = np.clip(1 - dist / reach, 0, 1) * (blur_w > 1e-3)
+     c = np.where(w > 0, c, spread * fade)
+-    return Z + c, {"snapped": float((w == 1).mean()), "snap_median_shift": float(np.median(np.abs(d[w == 1]))) if (w == 1).any() else 0.0}
++    return Z + c, {"snapped": float((w == 1).mean()), "snap_median_shift": float(np.median(np.abs(d[w == 1]))) if (w == 1).any() else 0.0}, w
+ 
+ 
+ TILE_DEPTH = 4.0  # a background tile's depth value is about camera depth / 4 (the PlayStation's ordering table)
+@@ -260,6 +303,9 @@
+ FLOOR_PATCH_PX = 2   # ...floor narrower than about twice this (original pixels) is a ledge's top, not floor
+ SAME_SURFACE = 0.02  # ...and it does where its depth continues from the covered pixels beside it within this share
+ CLEAR_ROWS = 64      # match_original_hiding tries every point up a character this tall on screen (rows), every q-th beyond
++REACH_SIDE = 1.1     # ...where the original has nothing that covers characters, what a character holds reaches this far
++REACH_DOWN = 0.4     # to its sides and this far below its feet (x its height): the chibi Cloud's sword, out to his side
++                     # and toward the camera (bwhlin: hidden by the bench beside him, which the original never draws over him)
+ 
+ 
+ LADER = 0xC2  # field opcode: climb a ladder to (x, y, z) on a walkmesh triangle (banks, x, y, z, triangle, ...)
+@@ -305,14 +351,130 @@
+     return out
+ 
+ 
+-def match_original_hiding(f, Z, layers, step, up=None):
++CHAR, XYZI, XYI, XYZ, OFST = 0xA1, 0xA5, 0xA6, 0xA7, 0xC3  # field opcodes: the entity's model; place it (banks, x, y,
++# z, triangle / x, y, triangle / x, y, z); offset its model from there (banks, type, x, y, z, speed)
++PROP_UNIT = 4.0  # a prop's model units -> world units at model scale 512 (bigwheel's gondola, a flat picture of one
++                 # at scale 768: ~4 by its size on screen); too big only applies the original's layering wider
++
++
++def field_models(f):
++    """The field's models, in its model list's order: (scale / 512, None for a character (it has bones: CHAR_HEIGHT
++    tall) or a prop's (horizontal, vertical) half size in model units, from its mesh)."""
++    import re
++    from ff7bg.lgp import LgpArchive
++    from .common import _sections
++    s = _sections(f.raw)[2]
++    n = struct.unpack_from("<H", s, 2)[0]
++    p, out = 6, []
++    with LgpArchive(str(common.GAME / "data" / "field" / "char.lgp")) as lgp:
++        names = set(lgp.names())
++        for _ in range(n):
++            p += 2 + struct.unpack_from("<H", s, p)[0] + 2   # name, unknown
++            hrc = s[p:p + 8].decode("latin1").lower()
++            scale = int(s[p + 8:p + 12].split(b"\0")[0] or b"512") / 512
++            anims = struct.unpack_from("<H", s, p + 12)[0]
++            p += 12 + 2 + 30  # hrc, scale, animation count, light
++            for _ in range(anims):
++                p += 2 + struct.unpack_from("<H", s, p)[0] + 2
++            size = None
++            if hrc in names:
++                text = lgp.read(hrc).decode("latin1")
++                bones = re.search(r":BONES\s+(\d+)", text)
++                if bones and int(bones.group(1)) == 0:  # a prop: one mesh at its root
++                    lo, hi = np.full(3, np.inf), np.full(3, -np.inf)
++                    for rsd in re.findall(r"\b([A-Za-z]{4})\b", text.split("root", 1)[-1]):
++                        rn = rsd.lower() + ".rsd"
++                        ply = re.search(r"PLY=(\w+)\.", lgp.read(rn).decode("latin1")) if rn in names else None
++                        pn = ply.group(1).lower() + ".p" if ply else ""
++                        if pn in names:
++                            d = lgp.read(pn)
++                            nv = struct.unpack_from("<I", d, 12)[0]
++                            v = np.frombuffer(d, np.float32, nv * 3, 128).reshape(-1, 3)
++                            lo, hi = np.minimum(lo, v.min(0)), np.maximum(hi, v.max(0))
++                    if np.isfinite(lo).all():
++                        ext = np.maximum(np.abs(lo), np.abs(hi))
++                        size = (float(max(ext[0], ext[2])), float(ext[1]))  # model y is up/down
++            out.append((scale, size))
++    return out
++
++
++def placed_models(f):
++    """Where the field's scripts put its models with coordinates given (XYZI, XYZ, XYI; also on the way to the
++    entity's model offsets, OFST), as [(feet xyz, height, half width)] in world units. A character stands there,
++    CHAR_HEIGHT tall; a prop (bigwheel's gondola: a picture of one, far bigger than a character, its lower half was
++    hidden behind the platform) is its mesh around the spot."""
++    models = field_models(f)
++    ents = {}
++    for sc in palettes.scripts(f.raw):
++        e = ents.setdefault(sc.entity, {"model": None, "at": [], "off": []})
++        for _, op, b in sc.ops():
++            if len(b) < 3 or b[1] or b[2]:  # coordinates from variables
++                if op == CHAR and len(b) >= 2:
++                    e["model"] = b[1]
++                continue
++            if op in (XYZI, XYZ) and len(b) >= 9:
++                e["at"].append(np.array(struct.unpack_from("<hhh", b, 3), float))
++            elif op == XYI and len(b) >= 9:
++                x, y, t = struct.unpack_from("<hhH", b, 3)
++                if t < len(f.tris):
++                    a, b_, c = f.tris[t]
++                    n = np.cross(b_ - a, c - a)
++                    if abs(n[2]) > 1e-6:
++                        e["at"].append(np.array([x, y, a[2] - (n[0] * (x - a[0]) + n[1] * (y - a[1])) / n[2]]))
++            elif op == OFST and len(b) >= 12:
++                e["off"].append(np.array(struct.unpack_from("<hhh", b, 4), float))
++    out = []
++    for e in ents.values():
++        if e["model"] is None or e["model"] >= len(models) or not e["at"]:
++            continue
++        scale, size = models[e["model"]]
++        offs = [np.zeros(3)] + [o * t for o in e["off"] for t in (0.25, 0.5, 0.75, 1.0)]
++        if size is None:
++            height, half, below = CHAR_HEIGHT * scale, 0.17 * CHAR_HEIGHT * scale, 0.0
++        else:
++            height, half, below = 2 * PROP_UNIT * scale * size[1], PROP_UNIT * scale * size[0], PROP_UNIT * scale * size[1]
++        for p in e["at"]:
++            for o in offs:
++                out.append((p + o - np.array([0, 0, below]), height, half))
++    return out
++
++
++def placed_layers(f, step, GH, GW):
++    """placed_models as walkways for match_original_hiding: [((gh, gw) feet depth array, height, half width, whether
++    it's a character)], one array per size (a second where two share a grid point)."""
++    bx, by = depth.grid_bg(f, step)
++    x0, y0 = bx[0, 0], by[0, 0]
++    dx, dy = bx[0, 1] - x0, by[1, 0] - y0
++    groups = {}
++    for feet, height, half in placed_models(f):
++        s, z = f.project(feet[None])
++        col, row, z = int(round((s[0, 0] - x0) / dx)), int(round((s[0, 1] - y0) / dy)), float(z[0])
++        if z <= 1 or not (0 <= col < GW and 0 <= row < GH):
++            continue
++        layers = groups.setdefault((round(height, 1), round(half, 1)), [])
++        for L in layers:
++            if np.isnan(L[row, col]) or abs(L[row, col] - z) < 1:
++                break
++        else:
++            layers.append(np.full((GH, GW), np.nan, np.float32))
++            L = layers[-1]
++        L[row, col] = z
++    # (characters, not props, also reach out: match_original_hiding's REACH_*)
++    return [(L, h, w, abs(w - 0.17 * h) < 0.01 * h) for (h, w), layers in groups.items() for L in layers]
++
++
++def match_original_hiding(f, Z, layers, step, up=None, floor=None):
+     """Characters are hidden where the original game hid them, wherever one can be (`layers`: the walkways from
+-    depth.walkmesh_layers and the ladders, a character on every point): the scene moves along its camera rays
++    depth.walkmesh_layers and the ladders, a character on every point, and the models the scripts place with their own
++    sizes, placed_layers): the scene moves along its camera rays
+     (the picture stays the same) so that, at each grid point, it's in front of every character the original's
+     layer-1 tile there covers and behind every one it shows. Square's artists gave every tile that covers
+     characters a depth for exactly this; the AI's depth puts things a little off (elm: Cloud walked through the
+     machine's pipes, mds7st1: hidden in the open train car, ancnt3: Sephiroth cut by the balustrade). Layer 0 never
+-    covers anyone; the original's rough spots come along too (the farm's near fence is layer 0). Returns (Z, stats)."""
++    covers anyone; the original's rough spots come along too (the farm's near fence is layer 0). Around the bodies, as
++    far as what they hold reaches (REACH_*), the scene goes behind them too where the original has nothing in front of
++    them. `floor`: the ground snap_to_walkmesh put under the walkmesh (sunk, it's further back than the walkway's
++    depth). Returns (Z, stats)."""
+     GH, GW = Z.shape
+     g = f.scale / step  # grid points per background pixel
+     # the original's covering layer: layer 1, the only one with a depth per tile (layer 0 is always behind
+@@ -350,8 +512,10 @@
+     # pipe cut Cloud's head). The foot of an upright thing is at the floor's depth too, but faces the camera. Only
+     # proper patches of floor: a thin up-facing strip is a ledge's top (elm: the panel under the pipe, Cloud's boots
+     # showed through it)
+-    floor = np.zeros((GH, GW), bool)
++    floor = np.zeros((GH, GW), bool) if floor is None else floor[:GH, :GW].copy()
+     for W in layers:
++        if isinstance(W, tuple):  # a placed model's spot, not a walkway
++            continue
+         tol = np.maximum(CLEAR_GAP, 0.005 * W)
+         floor |= np.isfinite(W) & (Z > W - tol) & (Z < W + 4 * tol)
+     if up is not None:
+@@ -367,24 +531,33 @@
+     near = np.full((GH, GW), np.inf, np.float32)
+     far = np.full((GH, GW), -np.inf, np.float32)
+     far_feet = np.full((GH, GW), -np.inf, np.float32)  # the farthest feet: the scene stepping back clears whole bodies
++    far_reach = np.full((GH, GW), -1e9, np.float32)  # the farthest feet of any character whose reach (REACH_*) is there
+     scale = model_scale(f) / 512
+-    height = CHAR_HEIGHT * scale * f.zoom * g  # a character's height on screen x their depth, rows
+     up_dz = float(np.asarray(f.R, float)[2, 2])  # camera depth per world unit up
+     thick = CHAR_DEPTH * scale
+-    for W in layers:
++    for L in layers:
++        # a walkway or ladder (a character on each point: CHAR_HEIGHT tall, about a third as wide), or a model the
++        # scripts place (placed_layers: its own height and half width), world units
++        W, tall, wide, reach = L if isinstance(L, tuple) else (L, CHAR_HEIGHT * scale, 0.17 * CHAR_HEIGHT * scale, True)
+         walk = np.isfinite(W)
+         if not walk.any():
+             continue
+         body = np.zeros((GH, GW), np.float32)
+-        body[walk] = height / W[walk]
+-        feet = np.where(walk, W, np.nan).astype(np.float32)
+-        half = int(round(float(np.median(body[walk])) * 0.17))  # about a third as wide as tall
++        body[walk] = tall * f.zoom * g / W[walk]  # its height on screen, rows
++        half = int(round(float(np.median(wide * f.zoom * g / W[walk]))))
+         # characters on every q-th point up and across (neighbours are nearly the same): close cameras make them
+         # hundreds of rows tall
+         q = max(1, int(np.ceil(float(body.max()) / CLEAR_ROWS)))
+-        ln = np.full((GH, GW), np.inf, np.float32)
+-        lf = np.full((GH, GW), -np.inf, np.float32)
+-        lff = np.full((GH, GW), -np.inf, np.float32)
++        # only the part of the grid they can reach (a placed model is one point)
++        rows, cols = np.nonzero(walk)
++        r0, r1 = max(0, rows.min() - int(np.ceil(body.max())) - q), rows.max() + 1
++        c0, c1 = max(0, cols.min() - half - q), min(GW, cols.max() + half + q + 1)
++        feet = np.where(walk, W, np.nan).astype(np.float32)[r0:r1, c0:c1]
++        body = body[r0:r1, c0:c1]
++        h = r1 - r0
++        ln = np.full((h, c1 - c0), np.inf, np.float32)
++        lf = np.full((h, c1 - c0), -np.inf, np.float32)
++        lff = np.full((h, c1 - c0), -np.inf, np.float32)
+         for dx in range(-(half // q) * q, half + 1, q):
+             fx = np.roll(feet, dx, axis=1)
+             bxs = np.roll(body, dx, axis=1)
+@@ -392,11 +565,11 @@
+                 fx[:, :dx] = np.nan
+             elif dx < 0:
+                 fx[:, dx:] = np.nan
+-            for k in range(0, int(np.ceil(body.max())) + 1, q):
++            for k in range(0, min(int(np.ceil(body.max())), h - 1) + 1, q):
+                 src = fx[k:] if k else fx
+                 ok = ((bxs[k:] if k else bxs) >= k) & np.isfinite(src)
+                 part = src * (1 + up_dz * k / (f.zoom * g))  # the depth of the body k rows above the feet
+-                dst = slice(0, GH - k)
++                dst = slice(0, h - k)
+                 ln[dst] = np.where(ok, np.minimum(ln[dst], part), ln[dst])
+                 lf[dst] = np.where(ok, np.maximum(lf[dst], part), lf[dst])
+                 lff[dst] = np.where(ok, np.maximum(lff[dst], src), lff[dst])
+@@ -408,7 +581,17 @@
+             lf[lf < -1e8] = -np.inf
+             lff = cv2.dilate(np.where(np.isfinite(lff), lff, -1e9).astype(np.float32), k)
+             lff[lff < -1e8] = -np.inf
+-        near, far, far_feet = np.minimum(near, ln), np.maximum(far, lf), np.maximum(far_feet, lff)
++        win = (slice(r0, r1), slice(c0, c1))
++        near[win], far[win], far_feet[win] = np.minimum(near[win], ln), np.maximum(far[win], lf), np.maximum(far_feet[win], lff)
++        if reach:  # a box around each body, by bands of depth, each as big as its nearest one's (only ever too big)
++            edges = np.unique(np.quantile(W[walk], np.linspace(0, 1, 7)))
++            for lo, hi in zip(edges[:-1], edges[1:]) if len(edges) > 1 else [(edges[0], edges[0])]:
++                band = walk & (W >= lo) & (W <= hi)
++                rows = tall * f.zoom * g / lo
++                up_r, down_r, side = int(np.ceil(rows)), int(np.ceil(REACH_DOWN * rows)), int(np.ceil(REACH_SIDE * rows))
++                box = np.ones((up_r + down_r + 1, 2 * side + 1), np.uint8)
++                far_reach = np.maximum(far_reach, cv2.dilate(np.where(band, W, -1e9).astype(np.float32), box,
++                                                             anchor=(side, down_r)))
+     has = np.isfinite(near)
+     out = Z.copy()
+     # every character there in front of the original's tile (or no tile): the scene behind them all (behind the
+@@ -422,7 +605,13 @@
+     # some in front of the tile, some behind: exactly at the tile's depth
+     split = has & ~floor & (near <= front) & (far > front) & np.isfinite(front)
+     out[split] = front[split]
+-    return out, {"shown": float(shown.mean()), "hidden": float(hidden.mean()), "split": float(split.mean())}
++    # around the bodies, within what they hold, where the original has nothing to cover them (or only behind them):
++    # the scene behind them too, but not the floor (it's under them: snap_to_walkmesh)
++    reached = ~(shown | hidden | split) & ~floor & (far_reach > -1e8) & (front > far_reach + CLEAR_GAP) & \
++        (Z < far_reach - CLEAR_GAP)
++    out[reached] = far_reach[reached] + 1.5 * CLEAR_GAP
++    return out, {"shown": float(shown.mean()), "hidden": float(hidden.mean()), "split": float(split.mean()),
++                 "reached": float(reached.mean())}
+ 
+ 
+ OVERLAY_PUSH_CAP = 3.0  # no further back than this (a tile whose z isn't a real depth would fold the scene up)
+@@ -658,7 +847,7 @@
+     bx, by = depth.grid_bg(f, step)
+ 
+     Pc, _ = f.unproject(bx, by, Z)
+-    Z, snap = snap_to_walkmesh(f, Z, W, Pc, o, up=up)
++    Z, snap, snapped = snap_to_walkmesh(f, Z, W, Pc, o, up=up, step=step)
+     report["snap"] = snap
+     Z0 = Z.copy()  # depth breaks are judged before the glow push: that keeps every point on its camera ray
+ 
+@@ -669,9 +858,10 @@
+     Z = push_under(f, Z, plan, step)
+     # characters hidden as in the original (`reveal`); climbers on ladders always (the painting's wall is often
+     # estimated in front of its ladder: mds7st1's train cars)
+-    walkers = ladder_layers(f, step, GH, GW) + (list(depth.walkmesh_layers(f, step)) if o["reveal"] else [])
++    walkers = ladder_layers(f, step, GH, GW) + (list(depth.walkmesh_layers(f, step)) + placed_layers(f, step, GH, GW)
++                                                 if o["reveal"] else [])
+     if walkers:
+-        Z, report["walk_clearance"] = match_original_hiding(f, Z, walkers, step, up=up)
++        Z, report["walk_clearance"] = match_original_hiding(f, Z, walkers, step, up=up, floor=snapped > 0.5)
+     report["glow_layers"] = anim["summary"]
+     report["overlays"] = {"tiles": len(plan["tiles"]), "params": sorted({t.param for t in plan["tiles"]}),
+                           "start_on": len(plan["entry_on"])}

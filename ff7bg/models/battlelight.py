@@ -81,7 +81,7 @@ MANIFEST = WORK / "installed.json"
 GAME = battle.GAME_WORKDIR
 LIGHTING = GAME / "lighting"
 IBL_DIR = LIGHTING / "ibl"
-FF7_3D = Path(os.environ.get("FF7_3D", Path(__file__).resolve().parents[3] / "ff7-3d"))  # the 3D pipeline (ff3d), beside this repo
+FF7_3D = Path(os.environ.get("FF7_3D", Path(__file__).resolve().parents[2] / "ff7-3d"))  # the 3D pipeline (ff3d) in this repo
 
 PARTS = ("light", "haze", "grade", "life", "normals")
 AI_PARTS = ("life", "normals")  # these ask ComfyUI (Qwen, Marigold); life works without it, less well

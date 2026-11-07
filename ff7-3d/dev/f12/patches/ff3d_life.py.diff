@@ -1,0 +1,16 @@
+--- ff7-3d/ff3d/life.py
++++ ff7-3d/ff3d/life.py
+@@ -610,7 +610,12 @@
+     # white clouds): holes, so the drift fades out before it reaches them, as at the sky's edge
+     img = cv2.resize(render, half, interpolation=cv2.INTER_AREA)
+     hard[cv2.dilate(sky_scenery(img, hard, f.scale / 2).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0] = 0
+-    dist = cv2.distanceTransform(hard, cv2.DIST_L2, 5)
++    # the picture's edge on the side the drift pulls from (WIND_SCREEN) is an edge too: past it the shader takes the
++    # scene texture's other side (junone7: a dark sliver down the left edge, the right edge's sky drifting in)
++    sx, sy = np.sign(WIND_SCREEN).astype(int)
++    pad = (int(sy > 0), int(sy < 0), int(sx > 0), int(sx < 0))  # top, bottom, left, right
++    dist = cv2.distanceTransform(cv2.copyMakeBorder(hard, *pad, cv2.BORDER_CONSTANT, value=0), cv2.DIST_L2, 5)
++    dist = dist[pad[0]:pad[0] + hard.shape[0], pad[2]:pad[2] + hard.shape[1]]
+     return np.clip(dist / max(shift, 1.0), 0, 1)
+ 
+ 

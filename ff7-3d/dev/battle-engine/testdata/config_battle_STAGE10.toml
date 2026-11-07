@@ -1,0 +1,26 @@
+# FFNx-3d battle look, TEST values for battle scene oq = STAGE10 (Mako Reactor 1 inside), formation 310
+# (../TESTPLAN.md). Deliberately strong, so every effect is obvious in a screenshot; not a look to keep.
+# Append to lighting/config.toml (it hot-reloads; keep the file's CRLF line endings), remove after testing.
+
+[battle_STAGE10]
+# A: the sun low (30 degrees) from one side, across the screen for formation 310's camera (T2 flips 0 <-> 180)
+light_rotation_vertical = 30.0
+light_rotation_horizontal = 0.0
+# B: haze, strong and blue (T3); battle units from the camera's eye (it sits ~9000 from the fight)
+haze_color = [0.45, 0.55, 0.75]
+haze_strength = 0.7
+haze_start = 6000.0
+haze_density = 0.0004
+haze_scene = 1.0
+# B: the characters' grade, strongly red (T4: the Grunts and the party turn red, the reactor must not)
+char_grade = [1.25, 0.0, 0.0, 0.04,  0.0, 0.85, 0.0, 0.0,  0.0, 0.0, 0.8, 0.0]
+# B: the floor's light on the characters, over the ground's x and z (T6; mesh/battle/STAGE10_floorlight.dds)
+floor_light_rect = [-4000.0, -4000.0, 4000.0, 4000.0]
+floor_light_strength = 1.0
+# C: normal maps (T5; mods/3dtest/battle/STAGE10_T00_00_nml.png, STAGE10_T03_00_nml.png)
+normal_strength = 1.0
+normal_edge = 0.0
+# D: the tall pipes (with the ladder) drift sideways, a twentieth of their texture a second (T7)
+uv_scroll = [ { texture = "STAGE10_T01", u = 0.05, v = 0.0 } ]
+# E: the railings, crate fronts and wall panels round the room sway hard (T7)
+sway = [ { texture = "STAGE10_T02", amount = 1.0, speed = 1.5 } ]

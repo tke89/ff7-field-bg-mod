@@ -1,0 +1,42 @@
+--- base2/ff3d/glow.py	2026-11-02 10:34:47.188187800 +0000
++++ dev2/ff3d/glow.py	2026-11-02 10:51:52.976282500 +0000
+@@ -407,7 +407,8 @@
+ 
+     {"tiles": [...], "vis": {id(tile): how much of it the original shows over the static scene (1x, by the Studio's
+     back-to-front order)}, "entry_on": overlay tiles also in the render (animations that start on: the mesh needs
+-    what's beneath them)}
++    what's beneath them), "lit": the toggled glow layers' tiles (in `glowing`, switched by a script: their frames
++    hold all their light, glow_frames painted=False), which the game draws too, at their tile depth (their "vis" too)}
+ 
+     A solid tile a script switches on (not animated, off in the render) shows whole, as in 2D, where its state's
+     repaint meets the scene without a seam (repaint_seams, REPAINT_CUT): the Studio repaints all a state changes, and
+@@ -423,9 +424,10 @@
+             return False
+         return bool(t.blending) or not in_render(t) or t.param in animated
+     tiles = [t for t in f.bg.tiles if is_overlay(t)]
++    lit = [t for t in f.bg.tiles if t.param and t.blending and (t.tex, t.palette) in glowing and not scrolling(f, t, moving)]
+     # what's painted in the mesh and hides what's drawn before it: solid tiles, static or on in the render
+     solid = [t for t in f.bg.tiles if not t.blending and not is_overlay(t) and (not t.param or in_render(t))]
+-    cache, mine = PageCache(f.bg), {id(t) for t in tiles}
++    cache, mine = PageCache(f.bg), {id(t) for t in tiles + lit}
+     # the original as the mesh shows it, 1x; where animations that start on are, the mesh has their off art instead
+     # (entry_off_art), so a switched tile there always counts as a change
+     shown = _shown(f, solid, cache)
+@@ -438,7 +440,7 @@
+             unknown[t.dst_y - f.my:t.dst_y - f.my + t.size, t.dst_x - f.mx:t.dst_x - f.mx + t.size] = True
+     cover = np.zeros((f.h, f.w), np.float32)
+     vis = {}
+-    for t in reversed(draw_order(tiles + solid)):  # front to back: cover = what's drawn after this tile
++    for t in reversed(draw_order(tiles + lit + solid)):  # front to back: cover = what's drawn after this tile
+         x, y, s = t.dst_x - f.mx, t.dst_y - f.my, t.size
+         tile = cache.tile(t)
+         alpha = tile[..., 3].astype(np.float32) / 255
+@@ -452,7 +454,7 @@
+             vis[id(t)] = v
+         else:
+             cover[y:y + s, x:x + s] = np.maximum(cover[y:y + s, x:x + s], alpha[:f.h - y, :f.w - x])
+-    return {"tiles": tiles, "vis": vis, "entry_on": [t for t in tiles if not t.blending and in_render(t)]}
++    return {"tiles": tiles, "vis": vis, "entry_on": [t for t in tiles if not t.blending and in_render(t)], "lit": lit}
+ 
+ 
+ def studio_pages(f):

@@ -1,0 +1,21 @@
+--- ff3d/life.py (live)
++++ ff3d/life.py (F13)
+@@ -1209,12 +1209,14 @@
+ def _off_backdrop(f, feats):
+     """What Qwen found mostly over a far backdrop seen through a window (glow.through_glass) isn't a screen, mist or a
+     lit window: it's the view (blin66_2's nebula: a screen's glow, shimmer and scan bar, purple mist puffs and a
+-    purple lamp on it, ghosting it pale)."""
++    purple lamp on it, ghosting it pale). Nor over a backdrop the game draws (glow.scene_alpha): it moves apart
++    from the scene, and the scene leaves it out."""
+     from . import glow
+-    glass = glow.through_glass(f) if feats else None
+-    if glass is None:
++    seen = glow.scene_alpha(f) if feats else None
++    glass = glow.through_glass(f) if feats and seen is None else None
++    if glass is None and seen is None:
+         return feats
+-    w = glass[1]
++    w = 1 - seen if seen is not None else glass[1]
+ 
+     def over(b):
+         patch = w[int(b["y1"]):int(np.ceil(b["y2"])), int(b["x1"]):int(np.ceil(b["x2"]))]

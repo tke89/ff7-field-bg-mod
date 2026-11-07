@@ -1,0 +1,1372 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ModInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <ID>3b25060c-c60e-426e-ac46-f85479e983e5</ID>
+  <Name>Ninostyle Chibi Fixes and Additions</Name>
+  <Category>Field Models</Category>
+  <Author>htp314</Author>
+  <Version>2.5</Version>
+  <Description>This mod adds various fixes and additions to the Ninostyle Chibi mod. Use it as an Add-on. 
+
+It makes the Ninostyle Chibi models compatible with Shinra Archaeology Cut's Advanced Facial Animation option.
+
+This mod now includes fixes and additions for the Dynamic Weapons and adds new options for Alternative outfits.
+
+-Corrected and updated all the Ninostyle eye textures for compatibility with 
+ Shinra Archaeology Cut's Advanced Facial Animation option
+-Fixed the "train monitor scene" in SAC's Archaeology Mode, adding eyes and 
+ the correct outfit to the Ninostyle Jessie model
+-Fixed the clipping problems with Dynamic Weapons
+-Fixed several scenes that has the Dynamic Weapon appear where it shouldn't
+-Increased the size of the Dynamic Weapons in the Motorcycle Minigame
+-Added parachute on Red XIII before the Highwind jump
+-Added the Umbrella as a Dynamic Weapon for Aerith
+-Option to disable the Dynamic Weapons individually for each characters
+-Option for Buster Sword Only Dynamic Weapon
+-Option for an alternative Battle Model Buster Sword
+-Option for an alternative Field Model Buster Sword
+  </Description>
+  <ReleaseNotes>Added the Fusion Sword.
+Added Remake Cloud Outfit.
+Fixed Chocobo colors.</ReleaseNotes>
+  <ReleaseDate>2025-12-15</ReleaseDate>
+  <Link> </Link>
+  <DonationLink />
+  <PreviewFile>Preview\Preview.gif</PreviewFile>
+
+
+==============================================================================================================
+//Buster Sword Only
+==============================================================================================================
+
+<ModFolder Folder="Buster Sword Only" ActiveWhen="dwcloud = 2" />
+
+==============================================================================================================
+//Fusion Sword Only
+==============================================================================================================
+
+<ModFolder Folder="Fusion Sword Only" ActiveWhen="dwcloud = 3" />
+
+==============================================================================================================
+//Dynamic Weapon Battle Minigame
+==============================================================================================================
+
+ <!-- Dynamic Weapon Battle Minigame -->
+  <Conditional Folder="Dynamic Weapons\Cloud\DW Battle Minigame" >
+	<ActiveWhen>
+			<Option>dwcloud = 1</Option>
+    </ActiveWhen>
+	<Or>
+		<RuntimeVar Var="FieldID" Values="502" />
+	</Or>
+  </Conditional>
+
+==============================================================================================================
+//Buster Sword
+==============================================================================================================
+
+<ModFolder Folder="Buster Sword Battle Model" ActiveWhen="Buster Sword B = 0" />
+
+<ModFolder Folder="Buster Sword Battle Model (Alternative)" ActiveWhen="Buster Sword B = 1" />
+
+<ModFolder Folder="Buster Sword Field Model" ActiveWhen="Buster Sword F = 0" />
+
+<ModFolder Folder="Buster Sword Field Model (Alternative)" ActiveWhen="Buster Sword F = 1" />
+
+
+==============================================================================================================
+//Culling Scene Fix Conditionals
+==============================================================================================================
+
+<!-- Culling Scene Fix -->
+  <Conditional Folder="Dynamic Weapons\Scene Fixes\Culling Scene Fix" >
+	<ActiveWhen>
+		<Or>
+			<Option>fb = 0</Option> 
+		</Or>
+    </ActiveWhen>
+	<Or>
+                <RuntimeVar Var="FieldID" Values="611" />
+	</Or>
+  </Conditional>
+
+==============================================================================================================
+//Dynamic Weapons Main
+==============================================================================================================
+
+<ModFolder Folder="Dynamic Weapons\Chibi" >
+    <ActiveWhen>
+		<Or>
+			<Option>dwcloud = 1</Option>
+			<Option>dwaeris = 1</Option>
+                        <Option>dwbarret = 1</Option>
+                        <Option>dwcid = 1</Option>
+		</Or>
+    </ActiveWhen>
+</ModFolder>
+
+==============================================================================================================
+//Alt. Field Models
+==============================================================================================================
+
+<ModFolder Folder="Alt Outfits\Advent Children Cloud"  ActiveWhen="Cloud = 1" />
+
+<ModFolder Folder="Alt Outfits\Kingdom Hearts Cloud"  ActiveWhen="Cloud = 2" />
+
+<ModFolder Folder="Alt Outfits\RE Cloud"  ActiveWhen="Cloud = 3" />
+
+<ModFolder Folder="Alt Outfits\Trooper Cloud"  ActiveWhen="Cloud = 4" />
+
+<ModFolder Folder="Alt Outfits\Vanilla Cloud"  ActiveWhen="Cloud = 5" />
+ 
+<ModFolder Folder="Alt Outfits\Advent Children Tifa"  ActiveWhen="Tifa = 1" />
+
+<ModFolder Folder="Alt Outfits\Cowgirl Tifa"  ActiveWhen="Tifa = 2" />
+
+<ModFolder Folder="Alt Outfits\Remake Tifa"  ActiveWhen="Tifa = 3" />
+
+<ModFolder Folder="Alt Outfits\Advent Children Barret"  ActiveWhen="Barret = 1" />
+
+<ModFolder Folder="Alt Outfits\RE Barret"  ActiveWhen="Barret = 2" />
+
+<ModFolder Folder="Alt Outfits\Vanilla Barret"  ActiveWhen="Barret = 3" />
+
+<ModFolder Folder="Alt Outfits\Red Yuffie"  ActiveWhen="Yuffie = 1" />
+
+<ModFolder Folder="Alt Outfits\Remake Yuffie"  ActiveWhen="Yuffie = 2" />
+
+<ModFolder Folder="Alt Outfits\Scarecrow Yuffie"  ActiveWhen="Yuffie = 3" />
+
+<ModFolder Folder="Alt Outfits\Misc B"  ActiveWhen="Barret = 0" />
+
+<ModFolder Folder="Alt Outfits\Misc T"  ActiveWhen="Tifa = 0" />
+
+==============================================================================================================
+//Advanced Facial Animation Fix
+==============================================================================================================
+
+<ModFolder Folder="fb" ActiveWhen="fb = 0" />
+<ModFolder Folder="no change" ActiveWhen="fb = 1" />
+
+==============================================================================================================
+//Cloud
+==============================================================================================================
+
+==============================================================================================================
+//Buster Sword Only Conditionals
+==============================================================================================================
+
+ <!-- Dynamic Weapon Battle Minigame -->
+  <Conditional Folder="Buster Sword Only\Cloud\DW Battle Minigame" >
+	<ActiveWhen>
+			<Option>dwcloud = 2</Option>
+    </ActiveWhen>
+	<Or>
+		<RuntimeVar Var="FieldID" Values="502" />
+	</Or>
+  </Conditional>
+
+  <Conditional Folder="Buster Sword Only\Cloud\Field" >
+	<ActiveWhen>
+		<And>
+			<Option>dwcloud = 2</Option>
+		</And>		
+    </ActiveWhen>
+	<Not>
+		<Or>
+		        <RuntimeVar Var="FieldID" Values="723..727" />
+			<RuntimeVar Var="FieldID" Values="115,295,716,782" />
+			<And>
+			        <RuntimeVar Var="PPV" Values="293" />
+				<RuntimeVar Var="FieldID" Values="258" />
+			</And>	
+                        <And>
+			        <RuntimeVar Var="PPV" Values="290..293" />
+				<RuntimeVar Var="FieldID" Values="266,267" />
+			</And>	
+	                <And>
+			        <RuntimeVar Var="PPV" Values="1100..1184" />
+				<RuntimeVar Var="FieldID" Values="280,289" />
+			</And>	
+			<And>
+				<RuntimeVar Var="PPV" Values="1..168" />
+				<RuntimeVar Var="FieldID" Values="276" />
+			</And>		
+                        <And>
+				<RuntimeVar Var="PPV" Values="164..170" />
+				<RuntimeVar Var="FieldID" Values="190" />
+			</And>	
+                        <And>
+				<RuntimeVar Var="FieldID" Values="489,490" />
+			</And>	
+                        <And>
+			        <RuntimeVar Var="PPV" Values="630..639" />
+                                <RuntimeVar Var="FieldID" Values="618" />
+			</And>	
+                        <And>
+				<RuntimeVar Var="PPV" Values="638..639" />
+				<RuntimeVar Var="FieldID" Values="522" />
+			</And>	
+                        <And>
+				<RuntimeVar Var="PPV" Values="1..673" />
+				<RuntimeVar Var="FieldID" Values="648" />
+			</And>	
+
+                        <And>
+				<RuntimeVar Var="PPV" Values="673..674" />
+				<RuntimeVar Var="FieldID" Values="649" />
+			</And>	
+                        <And>
+				<RuntimeVar Var="PPV" Values="673..674" />
+				<RuntimeVar Var="FieldID" Values="641" />
+			</And>	 
+                        <And>
+				<RuntimeVar Var="PPV" Values="1100..1181" />
+				<RuntimeVar Var="FieldID" Values="283" />
+			</And>	
+	                <And>
+				<RuntimeVar Var="FieldID" Values="77,771" />
+			</And>
+			<RuntimeVar Var="PPV" Values="589..598" />
+		</Or>
+	</Not>
+  </Conditional>
+
+  <Conditional Folder="Buster Sword Only\Cloud\01 - Buster Sword" >
+	<ActiveWhen>
+	  <And>
+		<Option>dwcloud = 2</Option>
+	  </And>
+	</ActiveWhen>
+	<Or>
+		<And>
+			<RuntimeVar Var="PPV" Values="1..385" />
+			<Or>
+				<RuntimeVar Var="FieldID" Values="270,271,272,273,274,276,277,279,282,286,287" />
+				<RuntimeVar Var="FieldID" Values="311,312,313,314,315,316,318,319,320,322,323,325" />
+				<RuntimeVar Var="FieldID" Values="297,298,299,301,302,303,304,307,309" />
+				<RuntimeVar Var="FieldID" Values="290,291,292,293,300,326" />
+			</Or>
+		</And>
+		<And>
+			<RuntimeVar Var="PPV" Values="1120..1186" />
+			<Or>
+		                <RuntimeVar Var="FieldID" Values="319" />
+			        <RuntimeVar Var="FieldID" Values="322" />
+			</Or>
+		</And>
+		<RuntimeVar Var="FieldID" Values="278,324,327,780,781,782,784" />
+		<RuntimeVar Var="CloudWeapon" Values="0" />
+	</Or>
+  </Conditional>
+
+
+  <!-- Hardedge use of Motorbike minigame in story mode -->
+  <Conditional Folder="Buster Sword Only\Cloud\HardEdgeMotorbikeStory" >
+	<And>
+		<RuntimeVar Var="PPV" Values="1..386" />
+		<RuntimeVar Var="CloudWeapon" Values="2" />
+	</And>
+  </Conditional> 
+
+
+==============================================================================================================
+//Dynamic Weapons Buster Sword Only
+==============================================================================================================
+
+<Conditional Folder="Buster Sword Only\Cloud\02 - Mythril Saber" ActiveWhen="dwcloud = 2" >
+	<RuntimeVar Var="CloudWeapon" Values="1" />
+</Conditional>
+
+<Conditional Folder="Buster Sword Only\Cloud\03 - Hardedge" ActiveWhen="dwcloud = 2" >
+	<RuntimeVar Var="CloudWeapon" Values="2" />
+</Conditional>
+
+<Conditional Folder="Buster Sword Only\Cloud\04 - Butterfly Edge" ActiveWhen="dwcloud = 2" >
+	<RuntimeVar Var="CloudWeapon" Values="3" />
+</Conditional>
+
+<Conditional Folder="Buster Sword Only\Cloud\05 - Enhance Sword" ActiveWhen="dwcloud = 2">
+	<RuntimeVar Var="CloudWeapon" Values="4" />
+</Conditional>
+
+<Conditional Folder="Buster Sword Only\Cloud\06 - Organix" ActiveWhen="dwcloud = 2" >
+	<RuntimeVar Var="CloudWeapon" Values="5" />
+</Conditional>
+
+<Conditional Folder="Buster Sword Only\Cloud\07 - Crystal Sword" ActiveWhen="dwcloud = 2" >
+	<RuntimeVar Var="CloudWeapon" Values="6" />
+</Conditional>
+
+<Conditional Folder="Buster Sword Only\Cloud\08 - Force Stealer" ActiveWhen="dwcloud = 2" >
+	<RuntimeVar Var="CloudWeapon" Values="7" />
+</Conditional>
+
+<Conditional Folder="Buster Sword Only\Cloud\09 - Rune Blade" ActiveWhen="dwcloud = 2" >
+	<RuntimeVar Var="CloudWeapon" Values="8" />
+</Conditional>
+
+<Conditional Folder="Buster Sword Only\Cloud\10 - Murasama" ActiveWhen="dwcloud = 2" >
+	<RuntimeVar Var="CloudWeapon" Values="9" />
+</Conditional>
+
+<Conditional Folder="Buster Sword Only\Cloud\11 - Nail Bat" ActiveWhen="dwcloud = 2" >
+	<RuntimeVar Var="CloudWeapon" Values="10" />
+</Conditional>
+
+<Conditional Folder="Buster Sword Only\Cloud\12 - Yoshiyuki" ActiveWhen="dwcloud = 2" >
+	<RuntimeVar Var="CloudWeapon" Values="11" />
+</Conditional>
+
+<Conditional Folder="Buster Sword Only\Cloud\13 - Apocalypse" ActiveWhen="dwcloud = 2" >
+	<RuntimeVar Var="CloudWeapon" Values="12" />
+</Conditional>
+
+<Conditional Folder="Buster Sword Only\Cloud\14 - Heavens Cloud" ActiveWhen="dwcloud = 2" >
+	<RuntimeVar Var="CloudWeapon" Values="13" />
+</Conditional>
+
+<Conditional Folder="Buster Sword Only\Cloud\15 - Ragnarok" ActiveWhen="dwcloud = 2" >
+	<RuntimeVar Var="CloudWeapon" Values="14" />
+</Conditional>
+
+<Conditional Folder="Buster Sword Only\Cloud\16 - Ultima Weapon" ActiveWhen="dwcloud = 2" >
+	<RuntimeVar Var="CloudWeapon" Values="15" />
+</Conditional>
+
+
+==============================================================================================================
+//Fusion Sword Only Conditionals
+==============================================================================================================
+
+ <!-- Dynamic Weapon Battle Minigame -->
+  <Conditional Folder="Fusion Sword Only\Cloud\DW Battle Minigame" >
+	<ActiveWhen>
+			<Option>dwcloud = 3</Option>
+    </ActiveWhen>
+	<Or>
+		<RuntimeVar Var="FieldID" Values="502" />
+	</Or>
+  </Conditional>
+
+  <Conditional Folder="Fusion Sword Only\Cloud\Field" >
+	<ActiveWhen>
+		<And>
+			<Option>dwcloud = 3</Option>
+		</And>		
+    </ActiveWhen>
+	<Not>
+		<Or>
+		        <RuntimeVar Var="FieldID" Values="723..727" />
+			<RuntimeVar Var="FieldID" Values="115,295,716,782" />
+			<And>
+			        <RuntimeVar Var="PPV" Values="293" />
+				<RuntimeVar Var="FieldID" Values="258" />
+			</And>	
+                        <And>
+			        <RuntimeVar Var="PPV" Values="290..293" />
+				<RuntimeVar Var="FieldID" Values="266,267" />
+			</And>	
+	                <And>
+			        <RuntimeVar Var="PPV" Values="1100..1184" />
+				<RuntimeVar Var="FieldID" Values="280,289" />
+			</And>	
+			<And>
+				<RuntimeVar Var="PPV" Values="1..168" />
+				<RuntimeVar Var="FieldID" Values="276" />
+			</And>		
+                        <And>
+				<RuntimeVar Var="PPV" Values="164..170" />
+				<RuntimeVar Var="FieldID" Values="190" />
+			</And>	
+                        <And>
+				<RuntimeVar Var="FieldID" Values="489,490" />
+			</And>	
+                        <And>
+			        <RuntimeVar Var="PPV" Values="630..639" />
+                                <RuntimeVar Var="FieldID" Values="618" />
+			</And>	
+                        <And>
+				<RuntimeVar Var="PPV" Values="638..639" />
+				<RuntimeVar Var="FieldID" Values="522" />
+			</And>	
+                        <And>
+				<RuntimeVar Var="PPV" Values="1..673" />
+				<RuntimeVar Var="FieldID" Values="648" />
+			</And>	
+
+                        <And>
+				<RuntimeVar Var="PPV" Values="673..674" />
+				<RuntimeVar Var="FieldID" Values="649" />
+			</And>	
+                        <And>
+				<RuntimeVar Var="PPV" Values="673..674" />
+				<RuntimeVar Var="FieldID" Values="641" />
+			</And>	 
+                        <And>
+				<RuntimeVar Var="PPV" Values="1100..1181" />
+				<RuntimeVar Var="FieldID" Values="283" />
+			</And>	
+	                <And>
+				<RuntimeVar Var="FieldID" Values="77,771" />
+			</And>
+			<RuntimeVar Var="PPV" Values="589..598" />
+		</Or>
+	</Not>
+  </Conditional>
+
+  <Conditional Folder="Fusion Sword Only\Cloud\01 - Buster Sword" >
+	<ActiveWhen>
+	  <And>
+		<Option>dwcloud = 3</Option>
+	  </And>
+	</ActiveWhen>
+	<Or>
+		<And>
+			<RuntimeVar Var="PPV" Values="1..385" />
+			<Or>
+				<RuntimeVar Var="FieldID" Values="270,271,272,273,274,276,277,279,282,286,287" />
+				<RuntimeVar Var="FieldID" Values="311,312,313,314,315,316,318,319,320,322,323,325" />
+				<RuntimeVar Var="FieldID" Values="297,298,299,301,302,303,304,307,309" />
+				<RuntimeVar Var="FieldID" Values="290,291,292,293,300,326" />
+			</Or>
+		</And>
+		<And>
+			<RuntimeVar Var="PPV" Values="1120..1186" />
+			<Or>
+		                <RuntimeVar Var="FieldID" Values="319" />
+			        <RuntimeVar Var="FieldID" Values="322" />
+			</Or>
+		</And>
+		<RuntimeVar Var="FieldID" Values="278,324,327,780,781,782,784" />
+		<RuntimeVar Var="CloudWeapon" Values="0" />
+	</Or>
+  </Conditional>
+
+
+  <!-- Hardedge use of Motorbike minigame in story mode -->
+  <Conditional Folder="Fusion Sword Only\Cloud\HardEdgeMotorbikeStory" >
+	<And>
+		<RuntimeVar Var="PPV" Values="1..386" />
+		<RuntimeVar Var="CloudWeapon" Values="2" />
+	</And>
+  </Conditional> 
+
+
+==============================================================================================================
+//Dynamic Weapons Fusion Sword Only
+==============================================================================================================
+
+<Conditional Folder="Fusion Sword Only\Cloud\02 - Mythril Saber" ActiveWhen="dwcloud = 3" >
+	<RuntimeVar Var="CloudWeapon" Values="1" />
+</Conditional>
+
+<Conditional Folder="Fusion Sword Only\Cloud\03 - Hardedge" ActiveWhen="dwcloud = 3" >
+	<RuntimeVar Var="CloudWeapon" Values="2" />
+</Conditional>
+
+<Conditional Folder="Fusion Sword Only\Cloud\04 - Butterfly Edge" ActiveWhen="dwcloud = 3" >
+	<RuntimeVar Var="CloudWeapon" Values="3" />
+</Conditional>
+
+<Conditional Folder="Fusion Sword Only\Cloud\05 - Enhance Sword" ActiveWhen="dwcloud = 3">
+	<RuntimeVar Var="CloudWeapon" Values="4" />
+</Conditional>
+
+<Conditional Folder="Fusion Sword Only\Cloud\06 - Organix" ActiveWhen="dwcloud = 3" >
+	<RuntimeVar Var="CloudWeapon" Values="5" />
+</Conditional>
+
+<Conditional Folder="Fusion Sword Only\Cloud\07 - Crystal Sword" ActiveWhen="dwcloud = 3" >
+	<RuntimeVar Var="CloudWeapon" Values="6" />
+</Conditional>
+
+<Conditional Folder="Fusion Sword Only\Cloud\08 - Force Stealer" ActiveWhen="dwcloud = 3" >
+	<RuntimeVar Var="CloudWeapon" Values="7" />
+</Conditional>
+
+<Conditional Folder="Fusion Sword Only\Cloud\09 - Rune Blade" ActiveWhen="dwcloud = 3" >
+	<RuntimeVar Var="CloudWeapon" Values="8" />
+</Conditional>
+
+<Conditional Folder="Fusion Sword Only\Cloud\10 - Murasama" ActiveWhen="dwcloud = 3" >
+	<RuntimeVar Var="CloudWeapon" Values="9" />
+</Conditional>
+
+<Conditional Folder="Fusion Sword Only\Cloud\11 - Nail Bat" ActiveWhen="dwcloud = 3" >
+	<RuntimeVar Var="CloudWeapon" Values="10" />
+</Conditional>
+
+<Conditional Folder="Fusion Sword Only\Cloud\12 - Yoshiyuki" ActiveWhen="dwcloud = 3" >
+	<RuntimeVar Var="CloudWeapon" Values="11" />
+</Conditional>
+
+<Conditional Folder="Fusion Sword Only\Cloud\13 - Apocalypse" ActiveWhen="dwcloud = 3" >
+	<RuntimeVar Var="CloudWeapon" Values="12" />
+</Conditional>
+
+<Conditional Folder="Fusion Sword Only\Cloud\14 - Heavens Cloud" ActiveWhen="dwcloud = 3" >
+	<RuntimeVar Var="CloudWeapon" Values="13" />
+</Conditional>
+
+<Conditional Folder="Fusion Sword Only\Cloud\15 - Ragnarok" ActiveWhen="dwcloud = 3" >
+	<RuntimeVar Var="CloudWeapon" Values="14" />
+</Conditional>
+
+<Conditional Folder="Fusion Sword Only\Cloud\16 - Ultima Weapon" ActiveWhen="dwcloud = 3" >
+	<RuntimeVar Var="CloudWeapon" Values="15" />
+</Conditional>
+
+
+==============================================================================================================
+//Dynamic Weapons Buster Conditionals
+==============================================================================================================
+  <!-- Flashbacks Cloud and his mom (276) -->
+  <!-- Flashbacks in Tifa And Cloud falling into the Lifestream scenes (CLOUD WITHOUT BUSTER) -->
+  <!-- Flashback 3 Part 1, Falling place (723-724) and Lifestream place (725-727) -->
+  <!-- Flashback 3 Part 3, Cloud's past with Tifa young in Nibelheim, 2nd memory (295) -->
+  <!-- Flashback 3 Part 4, Cloud's past Tifa's house (289) -->
+  <!-- Flashback 3 Part 5, Cloud's past little Tifa and Father (115) -->
+  <!-- Flashback 3 Part 6.1, Cloud's past Nibelheim, 3rd time (283) -->
+  <!-- Flashback 3 Part 8, Cloud's present out of Lifestream/Saved (716) -->
+
+  <!-- Aerith's room (190) -->
+  <!-- Shinra Building, captive (258,266,267) -->
+  <!-- Gold Saucer dating scenario (489,490) -->
+  <!-- Sleeping Forest Scene with Aerith  (618) -->
+  <!-- Cloud wakes up in Gongaga (522) -->
+  <!-- Aerith's death scene (648) -->
+  <!-- Special Scene Zack & Cloud (CLOUD WITHOUT BUSTER) -->
+  <!-- Zack with Buster and Cloud without weapon (782) -->  
+  <!-- Jump from Highwind with Parachute (731) -->
+  <!-- Romance sequence (589..598) -->
+  <!-- Under the Highwind scene (771) -->
+  <Conditional Folder="Dynamic Weapons\Cloud\Field" >
+	<ActiveWhen>
+		<And>
+			<Option>dwcloud = 1</Option>
+		</And>		
+    </ActiveWhen>
+	<Not>
+		<Or>
+		        <RuntimeVar Var="FieldID" Values="723..727" />
+			<RuntimeVar Var="FieldID" Values="115,295,716,782" />
+			<And>
+			        <RuntimeVar Var="PPV" Values="293" />
+				<RuntimeVar Var="FieldID" Values="258" />
+			</And>	
+                        <And>
+			        <RuntimeVar Var="PPV" Values="290..293" />
+				<RuntimeVar Var="FieldID" Values="266,267" />
+			</And>	
+	                <And>
+			        <RuntimeVar Var="PPV" Values="1100..1184" />
+				<RuntimeVar Var="FieldID" Values="280,289" />
+			</And>	
+			<And>
+				<RuntimeVar Var="PPV" Values="1..168" />
+				<RuntimeVar Var="FieldID" Values="276" />
+			</And>		
+                        <And>
+				<RuntimeVar Var="PPV" Values="164..170" />
+				<RuntimeVar Var="FieldID" Values="190" />
+			</And>	
+                        <And>
+				<RuntimeVar Var="FieldID" Values="489,490" />
+			</And>	
+                        <And>
+			        <RuntimeVar Var="PPV" Values="630..639" />
+                                <RuntimeVar Var="FieldID" Values="618" />
+			</And>	
+                        <And>
+				<RuntimeVar Var="PPV" Values="638..639" />
+				<RuntimeVar Var="FieldID" Values="522" />
+			</And>	
+                        <And>
+				<RuntimeVar Var="PPV" Values="1..673" />
+				<RuntimeVar Var="FieldID" Values="648" />
+			</And>	
+
+                        <And>
+				<RuntimeVar Var="PPV" Values="673..674" />
+				<RuntimeVar Var="FieldID" Values="649" />
+			</And>	
+                        <And>
+				<RuntimeVar Var="PPV" Values="673..674" />
+				<RuntimeVar Var="FieldID" Values="641" />
+			</And>	 
+                        <And>
+				<RuntimeVar Var="PPV" Values="1100..1181" />
+				<RuntimeVar Var="FieldID" Values="283" />
+			</And>	
+	                <And>
+				<RuntimeVar Var="FieldID" Values="77,771" />
+			</And>
+			<RuntimeVar Var="PPV" Values="589..598" />
+		</Or>
+	</Not>
+  </Conditional>
+
+
+  <!-- We need to put here the conditionals for checking the use of the Buster. --> 
+  <!-- Flashbacks in Kalm scenes (CLOUD WITH BUSTER) -->  
+  <!-- Flashback 1 Part 1, Arrival 270,271,272,273,274,276,277,279,282,286,287 -->
+  <!-- Flashback 1 Part 2, Mt Nibel & Reactor 311,312,313,314,315,316,318,319,320,322,323,325 -->
+  <!-- Flashback 1 Part 3, Shinra Mansion 297,298,299,301,302,303,304,307,309 -->
+  <!-- Flashback 1 Part 4, Mad Sephirot 290,291,292,293,300,324,326      (327 -> all flashbacks) -->	
+  <!-- Flashback 2 Train Station, Cloud & Tifa encounter (781) -->
+
+  <!-- Flashbacks in Tifa And Cloud falling into the Lifestream scenes (CLOUD WITH BUSTER) -->  
+  <!-- Flashback 3 Part 2, Cloud past Nibelheim, 2nd time (280) -->
+  <!-- 	 				 - Cloud coming with Sephirot (GM < 1126) - Buster Weapon	(Model 5) -->
+  <!-- Flashback 3 Part 6.2, Cloud's past in Reactor with Zack has Buster (324,327) -->
+  <!-- Flashback 3 Part 7, Cloud's past Mount Nibel with Zack and Buster (319) -->
+  <!-- Flashback 3 Part 8, Cloud's past Truck with Zack and Buster and Cloud Soldier (278) -->
+  <!-- Flashback 3 Part 9, Cloud's past, with Soldier Uniform and Buster (322) -->
+  
+  <!-- Special Scene Zack & Cloud (CLOUD WITH BUSTER) -->
+  <!-- Zack with Buster in two tanks scene (780) -->
+  <!-- Zack with Buster going out of Nibelheim, (784) -->
+  <Conditional Folder="Dynamic Weapons\Cloud\01 - Buster Sword" >
+	<ActiveWhen>
+	  <And>
+		<Option>dwcloud = 1</Option>
+	  </And>
+	</ActiveWhen>
+	<Or>
+		<And>
+			<RuntimeVar Var="PPV" Values="1..385" />
+			<Or>
+				<RuntimeVar Var="FieldID" Values="270,271,272,273,274,276,277,279,282,286,287" />
+				<RuntimeVar Var="FieldID" Values="311,312,313,314,315,316,318,319,320,322,323,325" />
+				<RuntimeVar Var="FieldID" Values="297,298,299,301,302,303,304,307,309" />
+				<RuntimeVar Var="FieldID" Values="290,291,292,293,300,326" />
+			</Or>
+		</And>
+		<And>
+			<RuntimeVar Var="PPV" Values="1120..1186" />
+			<Or>
+		                <RuntimeVar Var="FieldID" Values="319" />
+			        <RuntimeVar Var="FieldID" Values="322" />
+			</Or>
+		</And>
+		<RuntimeVar Var="FieldID" Values="278,324,327,780,781,782,784" />
+		<RuntimeVar Var="CloudWeapon" Values="0" />
+	</Or>
+  </Conditional>
+
+
+  <!-- Hardedge use of Motorbike minigame in story mode -->
+  <Conditional Folder="Dynamic Weapons\Cloud\HardEdgeMotorbikeStory" >
+	<And>
+		<RuntimeVar Var="PPV" Values="1..386" />
+		<RuntimeVar Var="CloudWeapon" Values="2" />
+	</And>
+  </Conditional> 
+
+
+==============================================================================================================
+//Aerith
+==============================================================================================================
+
+==============================================================================================================
+//Dynamic Weapons Aerith NO WEAPON Conditionals
+==============================================================================================================
+  <!-- This case is when the PCs are in an event where they don't need the weapon -->
+  <!-- Situations: -->
+  <!-- Cloud meets Aerith (182..183) -->
+  <!-- Aerith's room (190) -->
+  <!-- Aerith captured (160) -->
+  <!-- Shinra Building Aerith's rescue (262,263) -->
+  <!-- Shinra Building, captive (258) -->
+  <!-- Gold Saucer dating scenario (488..490) -->
+  <!-- * Romance sequence (589..598) -->
+  <!-- Sleeping Forest Scene with Cloud (618) -->
+  <!-- Aerith's death scene (648) -->
+  <Conditional Folder="Dynamic Weapons\Aerith\Field" >
+	<ActiveWhen>
+		<And>
+			<Option>dwaeris = 1</Option>
+		</And>		
+    </ActiveWhen>
+	<Not>
+	       <Or>		       
+                       <RuntimeVar Var="PPV" Values="589..598" />  
+                       <And>      
+                               <RuntimeVar Var="FieldID" Values="160" />
+                       </And>
+                       <And>
+			       <RuntimeVar Var="PPV" Values="164..170" />
+			       <RuntimeVar Var="FieldID" Values="190" />
+		       </And>	
+                       <And>
+			       <RuntimeVar Var="PPV" Values="1..143" />
+			       <RuntimeVar Var="FieldID" Values="182" />
+		       </And>	
+                       <And>      
+                               <RuntimeVar Var="FieldID" Values="183" />
+                       </And>
+                       <And>      
+                               <RuntimeVar Var="FieldID" Values="488,489,490" />
+                       </And>
+                       <And>
+			       <RuntimeVar Var="PPV" Values="200..284" />
+                               <RuntimeVar Var="FieldID" Values="262" />
+		       </And>	
+                       <And>
+			       <RuntimeVar Var="PPV" Values="200..302" />
+                               <RuntimeVar Var="FieldID" Values="263" />
+		       </And>	
+                       <And>
+			       <RuntimeVar Var="PPV" Values="200..302" />
+                               <RuntimeVar Var="FieldID" Values="258" />
+		       </And>	
+                       <And>    
+                               <RuntimeVar Var="FieldID" Values="618" />
+	               </And>
+                       <And>	   
+			       <RuntimeVar Var="FieldID" Values="641,646,647,648,649" />
+		       </And>	
+               </Or>
+       </Not>
+ </Conditional>
+
+
+==============================================================================================================
+//Cid
+==============================================================================================================
+
+==============================================================================================================
+//Dynamic Weapons Cid NO WEAPON Conditionals
+==============================================================================================================
+  <!-- This case is when the PCs are in an event where they don't need the weapon -->
+  <!-- Situations: -->
+  <!-- Gold Saucer dating scenario (488..490) -->
+  <Conditional Folder="Dynamic Weapons\Cid\Field" >
+	<ActiveWhen>
+			<Option>dwcid = 1</Option>
+    </ActiveWhen>
+	<Or>
+		<RuntimeVar Var="FieldID" Values="488,489,490,641,649" />
+	</Or>
+  </Conditional>
+
+
+==============================================================================================================
+//Red XIII
+==============================================================================================================
+
+==============================================================================================================
+//Red XIII Parachute Conditionals
+==============================================================================================================
+  <!-- This case is when the PCs are in an event where they don't need the weapon -->
+  <!-- Situations: -->
+  <!-- Parachute jump (67) -->
+  <Conditional Folder="Dynamic Weapons\Red XIII\Field" >
+        <ActiveWhen>
+		<Or>
+			<Option>dwcloud = 0</Option>
+                        <Option>dwcloud = 1</Option>
+                        <Option>dwcloud = 2</Option>
+			<Option>dwaeris = 1</Option>
+                        <Option>dwcid = 1</Option>
+		</Or>
+    </ActiveWhen>
+	<Or>
+                <RuntimeVar Var="FieldID" Values="67" />
+	</Or>
+  </Conditional>
+
+
+==============================================================================================================
+//Zack
+==============================================================================================================
+
+==============================================================================================================
+//Zack NO WEAPON Conditionals
+==============================================================================================================
+  <!-- This case is when the PCs are in an event where they don't need the weapon -->
+  <!-- Situations: -->
+  <!-- Reactor scene (324) -->
+  <Conditional Folder="Dynamic Weapons\Zack\Field" >
+	<ActiveWhen>
+		<Or>
+			<Option>dwcloud = 0</Option>
+                        <Option>dwcloud = 1</Option>
+                        <Option>dwcloud = 2</Option>
+			<Option>dwaeris = 1</Option>
+                        <Option>dwcid = 1</Option>
+		</Or>
+    </ActiveWhen>
+	<Or>
+                <RuntimeVar Var="PPV" Values="1185..1186" />
+	</Or>
+  </Conditional>
+
+
+==============================================================================================================
+//Scene Fixes
+==============================================================================================================
+
+==============================================================================================================
+//Wonder Square
+==============================================================================================================
+  <!-- This case is when the PCs are in an event where they don't need the weapon -->
+  <!-- Situations: -->
+  <!-- Wonder Square (505) -->
+  <Conditional Folder="Dynamic Weapons\Scene Fixes\Wonder Square" >
+        <ActiveWhen>
+		<Or>
+			<Option>dwcloud = 0</Option>
+                        <Option>dwcloud = 1</Option>
+                        <Option>dwcloud = 2</Option>
+			<Option>dwaeris = 1</Option>
+                        <Option>dwcid = 1</Option>
+		</Or>
+    </ActiveWhen>
+	<Or>
+                <RuntimeVar Var="FieldID" Values="505" />
+	</Or>
+  </Conditional>
+
+==============================================================================================================
+//Aerith City of The Ancients Conditionals
+==============================================================================================================
+  <!-- This case is when the PCs are in an event where they don't need the weapon -->
+  <!-- Situations: -->
+  <!-- Aerith Fate (648) -->
+  <Conditional Folder="Dynamic Weapons\Scene Fixes\City of The Ancients" >
+        <ActiveWhen>
+		<Or>
+			<Option>dwcloud = 0</Option>
+                        <Option>dwcloud = 1</Option>
+                        <Option>dwcloud = 2</Option>
+			<Option>dwaeris = 1</Option>
+                        <Option>dwcid = 1</Option>
+		</Or>
+    </ActiveWhen>
+	<Or>
+                <RuntimeVar Var="FieldID" Values="641,648,649" />
+	</Or>
+  </Conditional>
+
+
+==============================================================================================================
+//Escape from the Soliders Sector 8
+==============================================================================================================
+  <!-- This case is when the PCs are in an event where they don't need the weapon -->
+  <!-- Situations: -->
+  <!-- Escape from the Soliders Sector 8 (137) -->
+  <Conditional Folder="Dynamic Weapons\Scene Fixes\Sector 8" >
+        <ActiveWhen>
+		<Or>
+			<Option>dwcloud = 0</Option>
+                        <Option>dwcloud = 1</Option>
+                        <Option>dwcloud = 2</Option>
+			<Option>dwaeris = 1</Option>
+                        <Option>dwcid = 1</Option>
+		</Or>
+    </ActiveWhen>
+	<Or>
+                <RuntimeVar Var="FieldID" Values="137" />
+	</Or>
+  </Conditional>
+
+
+==============================================================================================================
+//Sector 7 Weapon Shop
+==============================================================================================================
+  <!-- This case is when the PCs are in an event where they don't need the weapon -->
+  <!-- Situations: -->
+  <!-- Sector 7 Weapon Shop (148) -->
+  <Conditional Folder="Dynamic Weapons\Scene Fixes\Sector 7 Weapon Shop" >
+        <ActiveWhen>
+		<Or>
+			<Option>dwcloud = 0</Option>
+                        <Option>dwcloud = 1</Option>
+                        <Option>dwcloud = 2</Option>
+			<Option>dwaeris = 1</Option>
+                        <Option>dwcid = 1</Option>
+		</Or>
+    </ActiveWhen>
+	<Or>
+                <RuntimeVar Var="FieldID" Values="148" />
+	</Or>
+  </Conditional>
+
+
+==============================================================================================================
+//Mt. Corel Barret's Flashback
+==============================================================================================================
+  <!-- This case is when the PCs are in an event where they don't need the weapon -->
+  <!-- Situations: -->
+  <!-- Mt. Corel Barret's Flashback (461) -->
+  <Conditional Folder="Dynamic Weapons\Scene Fixes\Mt. Corel" >
+        <ActiveWhen>
+		<Or>
+			<Option>dwcloud = 0</Option>
+                        <Option>dwcloud = 1</Option>
+                        <Option>dwcloud = 2</Option>
+			<Option>dwaeris = 1</Option>
+                        <Option>dwcid = 1</Option>
+		</Or>
+    </ActiveWhen>
+	<Or>
+                <RuntimeVar Var="FieldID" Values="461" />
+	</Or>
+  </Conditional>
+
+
+==============================================================================================================
+//Nibelheim Flashback Truck
+==============================================================================================================
+  <!-- This case is when the PCs are in an event where they don't need the weapon -->
+  <!-- Situations: -->
+  <!-- Nibelheim Flashback Truck (277,278) -->
+  <Conditional Folder="Dynamic Weapons\Scene Fixes\Truck" >
+        <ActiveWhen>
+		<Or>
+			<Option>dwcloud = 0</Option>
+                        <Option>dwcloud = 1</Option>
+                        <Option>dwcloud = 2</Option>
+			<Option>dwaeris = 1</Option>
+                        <Option>dwcid = 1</Option>
+		</Or>
+    </ActiveWhen>
+	<Or>
+                <RuntimeVar Var="FieldID" Values="277,278" />
+	</Or>
+  </Conditional>
+
+
+==============================================================================================================
+//Monitor Scene DW off
+==============================================================================================================
+  <!-- This case is when the PCs are in an event where they don't need the weapon -->
+  <!-- Situations: -->
+  <!-- Monitor Scene with DW off (143) -->
+  <Conditional Folder="Dynamic Weapons\Scene Fixes\Monitor DW off" >
+        <ActiveWhen>
+		<Or>
+			<Option>dwcloud = 0</Option>
+                </Or>
+    </ActiveWhen>
+	<Or>
+                <RuntimeVar Var="FieldID" Values="143" />
+	</Or>
+  </Conditional>
+
+
+==============================================================================================================
+//Dynamic Weapons Cloud
+==============================================================================================================
+
+<Conditional Folder="Dynamic Weapons\Cloud\02 - Mythril Saber" ActiveWhen="dwcloud = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="1" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\03 - Hardedge" ActiveWhen="dwcloud = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="2" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\04 - Butterfly Edge" ActiveWhen="dwcloud = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="3" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\05 - Enhance Sword" ActiveWhen="dwcloud = 1">
+	<RuntimeVar Var="CloudWeapon" Values="4" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\06 - Organix" ActiveWhen="dwcloud = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="5" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\07 - Crystal Sword" ActiveWhen="dwcloud = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="6" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\08 - Force Stealer" ActiveWhen="dwcloud = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="7" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\09 - Rune Blade" ActiveWhen="dwcloud = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="8" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\10 - Murasama" ActiveWhen="dwcloud = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="9" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\11 - Nail Bat" ActiveWhen="dwcloud = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="10" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\12 - Yoshiyuki" ActiveWhen="dwcloud = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="11" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\13 - Apocalypse" ActiveWhen="dwcloud = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="12" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\14 - Heavens Cloud" ActiveWhen="dwcloud = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="13" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\15 - Ragnarok" ActiveWhen="dwcloud = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="14" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cloud\16 - Ultima Weapon" ActiveWhen="dwcloud = 1" >
+	<RuntimeVar Var="CloudWeapon" Values="15" />
+</Conditional>
+
+
+==============================================================================================================
+//Dynamic Weapons Aerith
+==============================================================================================================
+
+<Conditional Folder="Dynamic Weapons\Aerith\00 - Guard Stick" ActiveWhen="dwaeris = 1" >
+	<RuntimeVar Var="AerisWeapon" Values="62" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Aerith\01 - Mythril Rod" ActiveWhen="dwaeris = 1" >
+	<RuntimeVar Var="AerisWeapon" Values="63" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Aerith\02 - Full Metal Staff" ActiveWhen="dwaeris = 1" >
+	<RuntimeVar Var="AerisWeapon" Values="64" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Aerith\03 - Striking Staff" ActiveWhen="dwaeris = 1" >
+	<RuntimeVar Var="AerisWeapon" Values="65" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Aerith\04 - Prism Staff" ActiveWhen="dwaeris = 1" >
+	<RuntimeVar Var="AerisWeapon" Values="66" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Aerith\05 - Aurora Rod" ActiveWhen="dwaeris = 1" >
+	<RuntimeVar Var="AerisWeapon" Values="67" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Aerith\06 - Wizard Staff" ActiveWhen="dwaeris = 1" >
+	<RuntimeVar Var="AerisWeapon" Values="68" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Aerith\07 - Wizer Staff" ActiveWhen="dwaeris = 1" >
+	<RuntimeVar Var="AerisWeapon" Values="69" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Aerith\08 - Fairy Tale" ActiveWhen="dwaeris = 1" >
+	<RuntimeVar Var="AerisWeapon" Values="70" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Aerith\09 - Umbrella" ActiveWhen="dwaeris = 1" >
+	<RuntimeVar Var="AerisWeapon" Values="71" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Aerith\10 - Princess Guard" ActiveWhen="dwaeris = 1" >
+	<RuntimeVar Var="AerisWeapon" Values="72" />
+</Conditional>
+
+
+==============================================================================================================
+//Dynamic Weapons Cid
+==============================================================================================================
+
+<Conditional Folder="Dynamic Weapons\Cid\01 - Spear" ActiveWhen="dwcid = 1" >
+	<RuntimeVar Var="CidWeapon" Values="73" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\02 - Slash Lance" ActiveWhen="dwcid = 1" >
+	<RuntimeVar Var="CidWeapon" Values="74" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\03 - Trident" ActiveWhen="dwcid = 1" >
+	<RuntimeVar Var="CidWeapon" Values="75" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\04 - Mast Ax" ActiveWhen="dwcid = 1" >
+	<RuntimeVar Var="CidWeapon" Values="76" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\05 - Partisan" ActiveWhen="dwcid = 1">
+	<RuntimeVar Var="CidWeapon" Values="77" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\06 - Viper Halberd" ActiveWhen="dwcid = 1" >
+	<RuntimeVar Var="CidWeapon" Values="78" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\07 - Javelin" ActiveWhen="dwcid = 1" >
+	<RuntimeVar Var="CidWeapon" Values="79" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\08 - Grow lance" ActiveWhen="dwcid = 1" >
+	<RuntimeVar Var="CidWeapon" Values="80" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\09 - Mop" ActiveWhen="dwcid = 1" >
+	<RuntimeVar Var="CidWeapon" Values="81" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\10 - Dragoon Lance" ActiveWhen="dwcid = 1" >
+	<RuntimeVar Var="CidWeapon" Values="82" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\11 - Scimitar" ActiveWhen="dwcid = 1" >
+	<RuntimeVar Var="CidWeapon" Values="83" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\12 - Flayer" ActiveWhen="dwcid = 1" >
+	<RuntimeVar Var="CidWeapon" Values="84" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\13 - Spirit Lance" ActiveWhen="dwcid = 1" >
+	<RuntimeVar Var="CidWeapon" Values="85" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Cid\14 - Venus Gospel" ActiveWhen="dwcid = 1" >
+	<RuntimeVar Var="CidWeapon" Values="86" />
+</Conditional>
+
+
+==============================================================================================================
+//Dynamic Weapons Barret
+==============================================================================================================
+
+<Conditional Folder="Dynamic Weapons\Barret\01 - Gatling Gun" ActiveWhen="dwbarret = 1" >
+	<RuntimeVar Var="BarretWeapon" Values="32" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Barret\02 - Assault Gun" ActiveWhen="dwbarret = 1" >
+	<RuntimeVar Var="BarretWeapon" Values="33" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Barret\03 - Cannon Ball" ActiveWhen="dwbarret = 1" >
+	<RuntimeVar Var="BarretWeapon" Values="34" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Barret\04 - Atomic Scissors" ActiveWhen="dwbarret = 1" >
+	<RuntimeVar Var="BarretWeapon" Values="35" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Barret\05 - Heavy Vulcan" ActiveWhen="dwbarret = 1">
+	<RuntimeVar Var="BarretWeapon" Values="36" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Barret\06 - Chainsaw" ActiveWhen="dwbarret = 1" >
+	<RuntimeVar Var="BarretWeapon" Values="37" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Barret\07 - Microlaser" ActiveWhen="dwbarret = 1" >
+	<RuntimeVar Var="BarretWeapon" Values="38" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Barret\08 - AM Cannon" ActiveWhen="dwbarret = 1" >
+	<RuntimeVar Var="BarretWeapon" Values="39" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Barret\09 - W Machine Gun" ActiveWhen="dwbarret = 1" >
+	<RuntimeVar Var="BarretWeapon" Values="40" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Barret\10 - Drill Arm" ActiveWhen="dwbarret = 1" >
+	<RuntimeVar Var="BarretWeapon" Values="41" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Barret\11 - Solid Bazooka" ActiveWhen="dwbarret = 1" >
+	<RuntimeVar Var="BarretWeapon" Values="42" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Barret\12 - Rocket Punch" ActiveWhen="dwbarret = 1" >
+	<RuntimeVar Var="BarretWeapon" Values="43" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Barret\13 - Enemy Launcher" ActiveWhen="dwbarret = 1" >
+	<RuntimeVar Var="BarretWeapon" Values="44" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Barret\14 - Pile Banger" ActiveWhen="dwbarret = 1" >
+	<RuntimeVar Var="BarretWeapon" Values="45" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Barret\15 - Max Ray" ActiveWhen="dwbarret = 1" >
+	<RuntimeVar Var="BarretWeapon" Values="46" />
+</Conditional>
+
+<Conditional Folder="Dynamic Weapons\Barret\16 - Missing Score" ActiveWhen="dwbarret = 1" >
+	<RuntimeVar Var="BarretWeapon" Values="47" />
+</Conditional>
+
+
+==============================================================================================================
+//Advanced Facial Animation Config
+==============================================================================================================
+  
+<ConfigOption>
+    <Type>List</Type>
+    <Default>0</Default>
+    <ID>fb</ID>
+    <Name>Facial Animation</Name>
+    <Description>Enable Facial Animation Compatibility with Shinra Archaeology Cut.</Description>
+    <Option Value="0" Name="On" PreviewFile="Preview\FA On.png"/>
+    <Option Value="1" Name="Off" PreviewFile="Preview\FA Off.png"/>
+  </ConfigOption>
+
+==============================================================================================================
+//Dynamic Weapons config
+==============================================================================================================
+
+<ConfigOption>
+    <Type>Bool</Type>
+    <Default>1</Default>
+    <ID>dwaeris</ID>
+    <Name>Dynamic Weapons Aerith</Name>
+    <Description>Enable Dynamic Weapons on Aerith.</Description>
+    <Option Value="0" Name="" PreviewFile="Off.png" />
+    <Option Value="1" Name="" PreviewFile="On.png" />
+</ConfigOption>
+<ConfigOption>
+    <Type>Bool</Type>
+    <Default>1</Default>
+    <ID>dwbarret</ID>
+    <Name>Dynamic Weapons Barret</Name>
+    <Description>Enable Dynamic Weapons on Barret.</Description>
+    <Option Value="0" Name="" PreviewFile="Off.png" />
+    <Option Value="1" Name="" PreviewFile="On.png" />
+</ConfigOption>
+<ConfigOption>
+    <Type>Bool</Type>
+    <Default>1</Default>
+    <ID>dwcid</ID>
+    <Name>Dynamic Weapons Cid</Name>
+    <Description>Enable Dynamic Weapons on Cid.</Description>
+    <Option Value="0" Name="" PreviewFile="Off.png" />
+    <Option Value="1" Name="" PreviewFile="On.png" />
+</ConfigOption>
+<ConfigOption>
+    <Type>List</Type>
+    <Default>1</Default>
+    <ID>dwcloud</ID>
+    <Name>Dynamic Weapons Cloud</Name>
+    <Description>Options:</Description>
+    <Option Value="0" Name="Off" PreviewFile="Preview\Off.png" />
+    <Option Value="1" Name="Enable Dynamic Weapons" PreviewFile="Preview\DW Preview.gif"/>
+    <Option Value="2" Name="Enable Buster Sword Only" PreviewFile="Preview\Buster Only.png" />
+    <Option Value="3" Name="Enable Fusion Sword Only" PreviewFile="Preview\Fusion Only.png" />
+</ConfigOption>
+
+==============================================================================================================
+//Buster Sword config 
+==============================================================================================================
+
+<ConfigOption>
+    <Type>List</Type>
+    <Default>0</Default>
+    <ID>Buster Sword F</ID>
+    <Name>Buster Sword (Field Model)</Name>
+    <Description>Change to an alternative Field Model Buster Sword.</Description>   
+    <Option Value="0" Name="Default" PreviewFile="Preview\F1.png"/>
+    <Option Value="1" Name="Alt." PreviewFile="Preview\F2.png"/>
+  </ConfigOption>  
+
+<ConfigOption>
+    <Type>List</Type>
+    <Default>0</Default>
+    <ID>Buster Sword B</ID>
+    <Name>Buster Sword (Battle Model)</Name>
+    <Description>Change to an alternative Battle Model Buster Sword.</Description>   
+    <Option Value="0" Name="Default" PreviewFile="Preview\B1.png"/>
+    <Option Value="1" Name="Alt." PreviewFile="Preview\B2.png"/>
+  </ConfigOption>  
+
+==============================================================================================================
+//Alt. Outfit Config Options
+==============================================================================================================
+
+<ConfigOption>
+    <Type>List</Type>
+    <Default>0</Default>
+    <Option Value="0" Name="No Change" PreviewFile="Preview\No Change.png" />
+    <Option Value="1" Name="AC Barret" PreviewFile="Preview\AC Barret.png" />
+    <Option Value="2" Name="Remake Barret" PreviewFile="Preview\Remake Barret.png" />
+    <Option Value="3" Name="Vanilla Barret" PreviewFile="Preview\Vanilla Barret.png" />
+    <Name>Barret's Alt. Outfits</Name>
+    <ID>Barret</ID>
+    <Description>Replace Barret's Field and Battle Model with alt. outfits.</Description>
+</ConfigOption>
+
+<ConfigOption>
+    <Type>List</Type>
+    <Default>0</Default>
+    <Option Value="0" Name="No Change" PreviewFile="Preview\No Change.png" />
+    <Option Value="1" Name="AC Cloud" PreviewFile="Preview\AC Cloud.png" />
+    <Option Value="2" Name="KH Cloud" PreviewFile="Preview\KH Cloud.png" />
+    <Option Value="3" Name="RE Cloud" PreviewFile="Preview\RE Cloud.png" />
+    <Option Value="4" Name="Trooper Cloud" PreviewFile="Preview\Trooper Cloud.png" />
+    <Option Value="5" Name="Vanilla Cloud" PreviewFile="Preview\Vanilla Cloud.png" />
+    <Name>Cloud's Alt. Outfits</Name>
+    <ID>Cloud</ID>
+    <Description>Replace Cloud's Field and Battle Model with alt. outfits.</Description>
+</ConfigOption>
+
+<ConfigOption>
+    <Type>List</Type>
+    <Default>0</Default>
+    <Option Value="0" Name="No Change" PreviewFile="Preview\No Change.png" />
+    <Option Value="1" Name="AC Tifa" PreviewFile="Preview\AC Tifa.png" />
+    <Option Value="2" Name="Cowgirl Tifa" PreviewFile="Preview\Cowgirl Tifa.png" />
+    <Option Value="3" Name="Remake Tifa" PreviewFile="Preview\Remake Tifa.png" />
+    <Name>Tifa's Alt. Outfits</Name>
+    <ID>Tifa</ID>
+    <Description>Replace Tifa's Field and Battle Model with alt. outfits.</Description>
+</ConfigOption>
+
+<ConfigOption>
+    <Type>List</Type>
+    <Default>0</Default>
+    <Option Value="0" Name="No Change" PreviewFile="Preview\No Change.png" />
+    <Option Value="1" Name="Red Yuffie" PreviewFile="Preview\Red Yuffie.png" />
+    <Option Value="2" Name="Remake Yuffie" PreviewFile="Preview\Remake Yuffie.png" />
+    <Option Value="3" Name="Scarecrow Yuffie" PreviewFile="Preview\SC Yuffie.png" />
+    <Name>Yuffie's Alt. Outfits</Name>
+    <ID>Yuffie</ID>
+    <Description>Replace Yuffie's Field and Battle Model with alt. outfits.</Description>
+</ConfigOption>
+
+==============================================================================================================
+//Compatibility Settings 
+==============================================================================================================
+
+<!-- Ninostyle Chibi -->
+	
+<Compatibility>
+        <Require ModID="2b25060c-c60e-426e-ac46-f85439e903e2">Ninostyle Chibi</Require>
+
+	<Setting>
+	    <MyID>fb</MyID>
+	    <MyValue>0</MyValue>
+	    <ModID>2b25060c-c60e-426e-ac46-f85439e903e2</ModID>
+	    <TheirID>lazaro</TheirID>
+	    <Require>0</Require>
+	</Setting>
+</Compatibility>
+
+==============================================================================================================
+
+==============================================================================================================
+
+<OrderConstraints>
+<Before>bc4f77b2-f3ce-4378-bd13-7fcc7e55960c</Before>
+</OrderConstraints>
+
+<OrderConstraints>
+<Before>2b25060c-c60e-426e-ac46-f85439e903e3</Before>
+</OrderConstraints>
+
+<OrderConstraints>
+<Before>2b25060c-c60e-426e-ac46-f85439e903e2</Before>
+</OrderConstraints>
+
+</ModInfo>

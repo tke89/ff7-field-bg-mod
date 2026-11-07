@@ -1,0 +1,103 @@
+--- base3/ff3d/glow.py	2026-11-02 11:51:25.886293100 +0000
++++ dev3/ff3d/glow.py	2026-11-02 12:00:35.646307000 +0000
+@@ -414,7 +414,15 @@
+     {"tiles": [...], "vis": {id(tile): how much of it the original shows over the static scene (1x, by the Studio's
+     back-to-front order)}, "entry_on": overlay tiles also in the render (animations that start on: the mesh needs
+     what's beneath them), "lit": the toggled glow layers' tiles (in `glowing`, switched by a script: their frames
+-    hold all their light, glow_frames painted=False), which the game draws too, at their tile depth (their "vis" too)}
++    hold all their light, glow_frames painted=False), which the game draws too, at their tile depth (their "vis" too),
++    "baked": one frame of a backdrop animation the render lacks, painted into the scene instead (entry_off_art)}
++
++    Solid tiles on the backdrop layer (2) are never overlays: the game draws that layer fixed to the screen, not
++    scrolled with the field, so over the scene, cut to what covers it at the canvas's own place, it slid off as soon
++    as the camera moved (fship_22/24: the Highwind's sky through the bridge's window, 80 of its 480 frame tiles on in
++    the render, was drawn over the dome, the railing and the machinery, with their cut-outs as black arcs over the
++    sky). The scene keeps the render's state of it (still: no clouds drifting by); one the render lacks gets its
++    animation's first frame painted in.
+ 
+     A solid tile a script switches on (not animated, off in the render) shows whole, as in 2D, where its state's
+     repaint meets the scene without a seam (repaint_seams, REPAINT_CUT): the Studio repaints all a state changes, and
+@@ -425,15 +433,26 @@
+     in_render, animated = entry_states(f)
+     moving = scrolling_layers(f)
+ 
++    def backdrop(t):
++        return t.layer == 2 and not t.blending
++
+     def is_overlay(t):
+-        if not t.param or (t.tex, t.palette) in glowing or scrolling(f, t, moving):
++        if not t.param or (t.tex, t.palette) in glowing or scrolling(f, t, moving) or backdrop(t):
+             return False
+         return bool(t.blending) or not in_render(t) or t.param in animated
+     tiles = [t for t in f.bg.tiles if is_overlay(t)]
++    order = json.loads((common.STUDIO / "ai" / "jobs.json").read_text())[f.name].get("animations", {})
++    baked = []
++    for p in sorted({t.param for t in f.bg.tiles if backdrop(t) and t.param in animated}):
++        mine_p = [t for t in f.bg.tiles if backdrop(t) and t.param == p]
++        if any(in_render(t) for t in mine_p):
++            continue
++        frames = [s for s in order.get(str(p), {}).get("order", []) if s] or sorted({t.state for t in mine_p})
++        baked += [t for t in mine_p if t.state == frames[0]]
+     lit = [t for t in f.bg.tiles if t.param and t.blending and (t.tex, t.palette) in glowing and not scrolling(f, t, moving)]
+     # what's painted in the mesh and hides what's drawn before it: solid tiles, static or on in the render
+     solid = [t for t in f.bg.tiles if not t.blending and not is_overlay(t) and (not t.param or in_render(t))]
+-    cache, mine = PageCache(f.bg), {id(t) for t in tiles + lit}
++    cache, mine = PageCache(f.bg), {id(t) for t in tiles + lit + baked}
+     # the original as the mesh shows it, 1x; where animations that start on are, the mesh has their off art instead
+     # (entry_off_art), so a switched tile there always counts as a change
+     shown = _shown(f, solid, cache)
+@@ -446,7 +465,7 @@
+             unknown[t.dst_y - f.my:t.dst_y - f.my + t.size, t.dst_x - f.mx:t.dst_x - f.mx + t.size] = True
+     cover = np.zeros((f.h, f.w), np.float32)
+     vis = {}
+-    for t in reversed(draw_order(tiles + lit + solid)):  # front to back: cover = what's drawn after this tile
++    for t in reversed(draw_order(tiles + lit + baked + solid)):  # front to back: cover = what's drawn after this tile
+         x, y, s = t.dst_x - f.mx, t.dst_y - f.my, t.size
+         tile = cache.tile(t)
+         alpha = tile[..., 3].astype(np.float32) / 255
+@@ -460,7 +479,8 @@
+             vis[id(t)] = v
+         else:
+             cover[y:y + s, x:x + s] = np.maximum(cover[y:y + s, x:x + s], alpha[:f.h - y, :f.w - x])
+-    return {"tiles": tiles, "vis": vis, "entry_on": [t for t in tiles if not t.blending and in_render(t)], "lit": lit}
++    return {"tiles": tiles, "vis": vis, "entry_on": [t for t in tiles if not t.blending and in_render(t)], "lit": lit,
++            "baked": baked}
+ 
+ 
+ def studio_pages(f):
+@@ -627,23 +647,29 @@
+ 
+ def entry_off_art(f, plan):
+     """Where tiles also in the render are drawn by the game instead (animations that start on), the scene beneath
+-    them from the version's pages, which the Studio paints for when they switch off: (RGB uint8, weight) at render
+-    size, or None."""
++    them from the version's pages, which the Studio paints for when they switch off; where a backdrop frame is baked
++    in (plan["baked"]), that frame from the pages, where the original shows it: (RGB uint8, weight) at render size,
++    or None."""
+     studio = studio_pages(f)
+-    if not plan["entry_on"] or not studio or not all(t.tex in studio for t in f.bg.tiles):
++    baked = {id(t) for t in plan.get("baked", [])}
++    if not (plan["entry_on"] or baked) or not studio or not all(t.tex in studio for t in f.bg.tiles):
+         return None
+     S = f.scale
+     view = np.asarray(render_composite(f.bg, (f.mx, f.my, f.w, f.h), page_tile_source(studio, S), S,
+-                                       include=lambda t: not t.param))
++                                       include=lambda t: not t.param or id(t) in baked))
+     M = page_colours(f, studio)  # in the scene's colours, like the overlays drawn over it
+     if M is not None:
+         rgb = np.concatenate([view.reshape(-1, 3).astype(np.float32), np.ones((view.shape[0] * view.shape[1], 1), np.float32)], 1)
+         view = np.clip(np.round(rgb @ M), 0, 255).astype(np.uint8).reshape(view.shape)
+     weight = np.zeros((f.h * S, f.w * S), np.float32)
+     cache = PageCache(f.bg)
+-    for t in plan["entry_on"]:
++    for t in plan["entry_on"] + plan.get("baked", []):
+         x, y, sz = (t.dst_x - f.mx) * S, (t.dst_y - f.my) * S, t.size * S
+-        weight[y:y + sz, x:x + sz] = np.maximum(weight[y:y + sz, x:x + sz], tile_alpha(cache.tile(t), S) / 255)
++        a = tile_alpha(cache.tile(t), S) / 255
++        if id(t) in baked:  # only where the original shows it
++            a = a * cv2.resize(plan["vis"][id(t)].astype(np.float32), (sz, sz), interpolation=cv2.INTER_LINEAR)[:a.shape[0], :a.shape[1]]
++        a = a[:weight.shape[0] - y, :weight.shape[1] - x]
++        weight[y:y + a.shape[0], x:x + a.shape[1]] = np.maximum(weight[y:y + a.shape[0], x:x + a.shape[1]], a)
+     return view, weight
+ 
+ 

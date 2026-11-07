@@ -1,0 +1,189 @@
+--- base/ff3d/glow.py	2026-11-02 09:32:57.192080200 +0000
++++ ff3d/glow.py	2026-11-02 10:22:28.744364600 +0000
+@@ -253,6 +253,103 @@
+ OVERLAY_SAME = 24  # a switched tile's pixel this close to what's under it is the same picture: a layer drawn with its
+                    # own palette repeats the sky around it a few levels off, as speckle (del1's ship: 65% of its
+                    # area differs at all, 47% by more than 16, and that share holds to 48)
++REPAINT_CUT = 0.2  # a state's repaint is shown whole when no more than this share of its spot's edge (where the
++                   # original repeats the scene) steps off the scene by more than OVERLAY_SAME (repaint_seams): blin63_t's
++                   # lit panels 0 to 0.11, del1's ship 0.77; cut blocks at 0.27 and up (convil_1's square by the well
++                   # 0.34, ithill, ghotel, anfrst_4, bugin2, gaiin_3, clsin2_3)
++REPAINT_EDGE = 32  # ... and only with this much of such edge to judge by (background px)
++
++
++def _shown(f, solid, cache):
++    """The original as the mesh shows it (`solid`: the solid tiles it holds), 1x RGB."""
++    shown = np.zeros((f.h, f.w, 3), np.uint8)
++    for t in draw_order(solid):
++        x, y, s = t.dst_x - f.mx, t.dst_y - f.my, t.size
++        tile = cache.tile(t)[:f.h - y, :f.w - x]
++        on = tile[..., 3] > 0
++        shown[y:y + s, x:x + s][on] = tile[..., :3][on]
++    return shown
++
++
++def repaint_seams(f, tiles, shown=None):
++    """How each state's repaint meets the scene: the solid switched `tiles` (off in the render) grouped by state into
++    spots (tiles touching), and for each, the seam the version's pages (in the scene's colours) make along the spot's
++    outer tile edges, where the original's tile repeats what's around it (within OVERLAY_SAME; an object's own outline
++    there is no seam): the page's edge row against the render's row just outside, less the render's own step there.
++    [{"ids": {id(tile)}, "param", "state", "x", "y", "tiles", "samples" (edge px x scale), "seam": their median,
++    "cut": the share over OVERLAY_SAME}]; [] without pages.
++
++    The Studio's states pass repaints all a state changes in the original, however little (speckle included), and
++    blends it into the scene at the edges (Poisson). Where that worked, the repaint is a thing of its own inside the
++    spot: blin63_t's panels, which the original only lights a few levels (4-24) and the AI painted as lit "1"/"2"
++    panels and hazard stripes. Where it didn't, it runs to the tile edges and stops there, cut square: del1's ship
++    layer is whole tiles with sky between its cranes, its repaint changed that sky (77% of its edge meets the
++    scene's sky more than OVERLAY_SAME off, median 27 and 45 levels in its two versions; blin63_t's 0-11%), and in
++    3D it showed as pale blocks."""
++    studio = studio_pages(f)
++    tiles = [t for t in tiles if t.tex in studio]
++    if not tiles:
++        return []
++    cache = PageCache(f.bg)
++    if shown is None:
++        in_render, _ = entry_states(f)
++        shown = _shown(f, [t for t in f.bg.tiles if not t.blending and (not t.param or in_render(t))], cache)
++    M = page_colours(f, studio)
++    R = np.asarray(Image.open(f.render).convert("RGB")).astype(np.float32)
++    S = f.scale
++    occ = {}
++    for t in tiles:
++        g = occ.setdefault((t.param, t.state), np.zeros((f.h, f.w), np.uint8))
++        g[max(0, t.dst_y - f.my):t.dst_y - f.my + t.size, max(0, t.dst_x - f.mx):t.dst_x - f.mx + t.size] = 1
++    samples = {}
++    for t in tiles:
++        x, y, s = t.dst_x - f.mx, t.dst_y - f.my, t.size
++        if x < 0 or y < 0 or x + s > f.w or y + s > f.h:
++            samples[id(t)] = np.zeros(0, np.float32)
++            continue
++        tile = cache.tile(t)
++        mag = np.abs(tile[..., :3].astype(np.int16) - shown[y:y + s, x:x + s]).max(2)
++        repeats = (mag <= OVERLAY_SAME) & (tile[..., 3] > 0)
++        sz = s * S
++        blk = studio[t.tex][t.src_y * S:t.src_y * S + sz, t.src_x * S:t.src_x * S + sz]
++        if blk.shape[:2] != (sz, sz):
++            samples[id(t)] = np.zeros(0, np.float32)
++            continue
++        rgb = blk[..., :3].astype(np.float32)
++        if M is not None:
++            rgb = (np.concatenate([rgb.reshape(-1, 3), np.ones((sz * sz, 1), np.float32)], 1) @ M).reshape(sz, sz, 3)
++        Y, X = (y + f.frame[1]) * S, (x + f.frame[0]) * S
++        g = occ[(t.param, t.state)]
++        got = []
++        for side in "LRTB":  # (inner page line, render just outside, render just inside, the original's edge line)
++            if side == "L" and x > 0 and not g[y:y + s, x - 1].any():
++                line = rgb[:, 0], R[Y:Y + sz, X - 1], R[Y:Y + sz, X], repeats[:, 0]
++            elif side == "R" and x + s < f.w and not g[y:y + s, x + s].any():
++                line = rgb[:, -1], R[Y:Y + sz, X + sz], R[Y:Y + sz, X + sz - 1], repeats[:, -1]
++            elif side == "T" and y > 0 and not g[y - 1, x:x + s].any():
++                line = rgb[0], R[Y - 1, X:X + sz], R[Y, X:X + sz], repeats[0]
++            elif side == "B" and y + s < f.h and not g[y + s, x:x + s].any():
++                line = rgb[-1], R[Y + sz, X:X + sz], R[Y + sz - 1, X:X + sz], repeats[-1]
++            else:
++                continue
++            inner, outer, ref, ok = line
++            step = np.abs(inner - outer).max(1) - np.abs(ref - outer).max(1)
++            got.append(np.maximum(step, 0)[np.repeat(ok, S)])
++        samples[id(t)] = np.concatenate(got) if got else np.zeros(0, np.float32)
++    out = []
++    for (p, st), g in sorted(occ.items()):
++        n, lab = cv2.connectedComponents(g, connectivity=8)
++        for k in range(1, n):
++            mine = [t for t in tiles if (t.param, t.state) == (p, st)
++                    and lab[min(f.h - 1, max(0, t.dst_y - f.my)), min(f.w - 1, max(0, t.dst_x - f.mx))] == k]
++            if not mine:
++                continue
++            al = np.concatenate([samples[id(t)] for t in mine])
++            out.append({"ids": {id(t) for t in mine}, "param": p, "state": st, "tiles": len(mine), "samples": len(al),
++                        "x": min(t.dst_x for t in mine) - f.mx, "y": min(t.dst_y for t in mine) - f.my,
++                        "seam": float(np.median(al)) if len(al) else -1.0,
++                        "cut": float((al > OVERLAY_SAME).mean()) if len(al) else 1.0})
++    return out
+ 
+ 
+ def overlay_plan(f, glowing):
+@@ -267,10 +364,12 @@
+     back-to-front order)}, "entry_on": overlay tiles also in the render (animations that start on: the mesh needs
+     what's beneath them)}
+ 
+-    A solid tile a script switches on (not animated, off in the render) shows only where it changes what the
+-    original shows without it, as the Studio's states pass repaints only there: elsewhere the scene has the same
+-    picture, at its true depth. del1's ship layer is whole tiles, sky between its cranes included, and the pages'
+-    sky there came out a little lighter than the render's: pale blocks over the 3D sky."""
++    A solid tile a script switches on (not animated, off in the render) shows whole, as in 2D, where its state's
++    repaint meets the scene without a seam (repaint_seams, REPAINT_CUT): the Studio repaints all a state changes, and
++    blin63_t's lit "1"/"2" panels are where the original changes only 4-24 levels. Elsewhere it shows only where it
++    changes what the original shows without it (OVERLAY_SAME), and the scene shows the rest, at its true depth:
++    del1's ship layer is whole tiles, sky between its cranes included, its repaint changed that sky, and shown whole
++    it made pale blocks over the 3D sky."""
+     in_render, animated = entry_states(f)
+     moving = scrolling_layers(f)
+ 
+@@ -284,12 +383,10 @@
+     cache, mine = PageCache(f.bg), {id(t) for t in tiles}
+     # the original as the mesh shows it, 1x; where animations that start on are, the mesh has their off art instead
+     # (entry_off_art), so a switched tile there always counts as a change
+-    shown = np.zeros((f.h, f.w, 3), np.uint8)
+-    for t in draw_order(solid):
+-        x, y, s = t.dst_x - f.mx, t.dst_y - f.my, t.size
+-        tile = cache.tile(t)[:f.h - y, :f.w - x]
+-        on = tile[..., 3] > 0
+-        shown[y:y + s, x:x + s][on] = tile[..., :3][on]
++    shown = _shown(f, solid, cache)
++    switched = [t for t in tiles if not t.blending and not in_render(t) and t.param not in animated]
++    whole = set().union(*[g["ids"] for g in repaint_seams(f, switched, shown)
++                          if g["samples"] >= REPAINT_EDGE * f.scale and g["cut"] <= REPAINT_CUT])
+     unknown = np.zeros((f.h, f.w), bool)
+     for t in tiles:
+         if not t.blending and in_render(t):
+@@ -302,7 +399,7 @@
+         alpha = tile[..., 3].astype(np.float32) / 255
+         if id(t) in mine:
+             v = (1 - cover[y:y + s, x:x + s]) * (alpha > 0)[:f.h - y, :f.w - x]
+-            if not t.blending and not in_render(t) and t.param not in animated:
++            if not t.blending and not in_render(t) and t.param not in animated and id(t) not in whole:
+                 diff = np.abs(tile[:f.h - y, :f.w - x, :3].astype(np.int16) - shown[y:y + s, x:x + s]).max(2)
+                 same = (diff <= OVERLAY_SAME) & ~unknown[y:y + s, x:x + s]
+                 change = cv2.dilate((~same).astype(np.uint8), np.ones((3, 3), np.uint8))  # grown 1px, as the Studio's
+@@ -323,14 +420,18 @@
+ 
+ 
+ PAGE_FIT_LEFT = 0.4  # page_colours: the share of the pages' difference from the render a fit may leave and be used
++PAGE_FIT_KEEP = 80   # page_colours: fitted again on the best this many percent, as the Studio fits its colour pass
+ 
+ 
+ def page_colours(f, studio):
+     """How the scene's colours follow from the version's pages' (a 3x4 on [r, g, b, 1], or None): the Studio cuts
+-    its pages after a colour pass, so they're a few levels off the render the scene shows (del1: +4 red, +2 green;
+-    elm and cos_top: about 6 levels either way). Fitted on the static solid tiles, where both show the same picture;
+-    the fit leaves 0.3 to 1.3 levels. Used only when it explains the difference (under PAGE_FIT_LEFT of it left):
+-    corel1's pages differ from its render place by place, and a fit there only mixed its channels about."""
++    its pages after a colour pass (keep_colors: one 3x4 for the whole picture), so they're off the render the scene
++    shows (del1: +4 red, +2 green; elm and cos_top: about 6 levels either way; corel1 at keep 0.8: 6, up to 30).
++    Fitted on the static solid tiles, where both show the same picture, trimmed to the best PAGE_FIT_KEEP percent:
++    some static tiles hold other art (corel1's beneath its smoke, which is on in the render: the Studio's "all off"
++    repaint), and an untrimmed fit there mixed corel1's channels wildly and was dropped, so its smoke frames' sky
++    came out as pale tile blocks beside the column. The trimmed fit leaves 0.3 to 0.8 levels on the median pixel.
++    Used only when it explains the difference where it fits (under PAGE_FIT_LEFT of it left)."""
+     scene = np.asarray(Image.open(f.render).convert("RGB")).astype(np.float32)
+     s = f.scale
+     src, dst = [], []
+@@ -350,9 +451,13 @@
+         return None
+     A, B = np.concatenate(src), np.concatenate(dst)
+     X = np.hstack([A, np.ones((len(A), 1), np.float32)])
+-    M = np.linalg.lstsq(X, B, rcond=None)[0]
+-    before, after = np.abs(A - B).mean(), np.abs(X @ M - B).mean()
+-    return M if before > 1.0 and after < PAGE_FIT_LEFT * before else None
++    keep = np.ones(len(A), bool)
++    for _ in range(4):
++        M = np.linalg.lstsq(X[keep], B[keep], rcond=None)[0]
++        err = np.abs(X @ M - B).max(1)
++        keep = err <= np.percentile(err, PAGE_FIT_KEEP)
++    before, after = np.abs(A - B)[keep].mean(), np.abs(X @ M - B)[keep].mean()  # on what it fits
++    return M if np.abs(A - B).mean() > 1.0 and after < PAGE_FIT_LEFT * before else None
+ 
+ 
+ def write_overlays(f, plan, out):

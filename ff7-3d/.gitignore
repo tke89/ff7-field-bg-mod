@@ -1,0 +1,43 @@
+# The 3D pipeline: code, notes and patches. Never committed: anything made from the game (renders, textures, depth,
+# meshes, review shots, test textures), the fix agents' working copies, settings, and the FFNx engine's own code
+# (the FFNx-3d fork stays local, and so do its diffs here).
+
+# the repo's tools/ rule is for outside tools; these are ours
+!/tools/
+/studio_settings.json
+
+# made from the game
+/work/
+/report/*
+!/report/review/
+/report/review/*
+!/report/review/findings.md
+
+# the fix agents' working folders: their own scripts and notes, and the pipeline's patches
+/dev/*/*
+!/dev/*/*.py
+!/dev/*/*.md
+!/dev/*/patches/
+/dev/*/patches/**
+!/dev/*/patches/**/
+!/dev/*/patches/**/*.diff
+!/dev/*/patches/**/*.py
+!/dev/*/patches/**/*.md
+/dev/*/patches/**/files/
+!/dev/battle-engine/testdata/
+/dev/battle-engine/testdata/*/
+/dev/*/run.py
+/dev/*/run_orig.py
+/dev/*/studio_plugin.py
+/dev/*/README.md
+
+# the FFNx engine's code (local only)
+/dev/battle-engine/patches/battle_look.diff
+/dev/f13/patches/engine_FFNx-3d.diff
+/dev/f13/patches/layer3/engine_layer3_FFNx-3d.diff
+/dev/f14/patches/engine_F14.diff
+/dev/f14/patches/engine_F16.diff
+/dev/f15/patches/engine_F15.diff
+/dev/f20/patches/ffnx3d_glow_over_scene.diff
+/dev/f23/patches/engine_F23_particles.diff
+/dev/f24/patches/engine_f24.diff

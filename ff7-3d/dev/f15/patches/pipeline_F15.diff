@@ -1,0 +1,80 @@
+--- a/ff3d/atmos.py
++++ b/ff3d/atmos.py
+@@ -386,6 +386,66 @@
+     return round(OUTLINE_MAX / zoom, 6)
+ 
+ 
++def model_lights(raw):
++    """The field's models (its model loader, section 3) with the light the game gives each: [(name, global colour,
++    [(lamp colour, lamp direction) x 3])], colours as bytes, directions 4096 long."""
++    import struct
++    from ff7bg.field import _sections  # noqa: E402
++    s = _sections(raw)[2]
++    p, out = 6, []
++    for _ in range(struct.unpack_from("<H", s, 2)[0]):
++        (n,) = struct.unpack_from("<H", s, p)
++        name = s[p + 2:p + 2 + n].split(b"\0")[0].decode("ascii", "replace")
++        anims = struct.unpack_from("<H", s, p + 2 + n + 14)[0]
++        p += 2 + n + 16  # name, then: 2 unknown, the HRC's name (8), its scale (4), how many animations (2)
++        lamps = []
++        for _ in range(3):
++            lamps.append((tuple(s[p:p + 3]), struct.unpack_from("<3h", s, p + 3)))
++            p += 9
++        out.append((name, tuple(s[p:p + 3]), lamps))
++        p += 3
++        for _ in range(anims):  # each: its name's length, the name, 2 unknown
++            p += 2 + struct.unpack_from("<H", s, p)[0] + 2
++    return out
++
++
++def _sphere(n=256):
++    """`n` directions spread evenly over the sphere."""
++    i = np.arange(n) + 0.5
++    z = 1 - 2 * i / n
++    a = np.pi * (1 + 5 ** 0.5) * i
++    r = np.sqrt(1 - z * z)
++    return np.stack([r * np.cos(a), r * np.sin(a), z], 1)
++
++
++def game_light_colour(glob, lamps):
++    """How colourful a model's own game light gets ((max - min) / max), summed as FFNx.lighting.frag does (linear;
++    each lamp x its cosine squared) toward most directions (the 90th percentile over the sphere)."""
++    lin = lambda c: (np.asarray(c, float) / 255) ** 2.2
++    N = _sphere()
++    tot = lin(glob)[None] + sum(lin(c)[None] * np.clip(N @ (-np.asarray(d, float) / 4096), 0, None)[:, None] ** 2
++                                for c, d in lamps)
++    hi, lo = tot.max(1), tot.min(1)
++    return float(np.percentile(np.where(hi > 0, (hi - lo) / np.maximum(hi, 1e-9), 0.0), 90))
++
++
++def game_light(f):
++    """FFNx-3d's game_light_saturation for a field that lights its characters in a strong colour (hill's green and
++    yellow lamps, the Forgotten City's blue, burning Nibelheim's red): the game's own light on its party (models
++    named main_*; every model without them) more colourful than ibl.CHAR_SAT_MAX caps it at that, on every model of
++    the field, brightness kept (F15, user 2026-11-03: "cap it": characters aren't dyed by a strongly coloured scene).
++    Fields that light their party neutrally keep the game's colours, so what it colours on purpose with its lights
++    there keeps them: farm's chocobos, the golden key, the Ancients' guide."""
++    try:
++        models = model_lights(f.raw)
++    except Exception:  # noqa: BLE001 (a model loader we don't read: the game's colours)
++        return {}
++    party = [m for m in models if "main_" in m[0]] or models
++    if party and max(game_light_colour(g, lamps) for _, g, lamps in party) > ibl.CHAR_SAT_MAX:
++        return {"game_light_saturation": ibl.CHAR_SAT_MAX}
++    return {}
++
++
+ def fields_settings(o, ambient):
+     """The characters' game-wide settings as FFNx-3d's [fields] keys (every field takes them unless its own section
+     says otherwise): shadows, haze, colour match, light where they stand, outline strength, softness, the shadow
+--- a/ff3d/build.py
++++ b/ff3d/build.py
+@@ -932,7 +932,7 @@
+         "light_rotation_vertical": vertical, "light_rotation_horizontal": horizontal,
+         "scene_shadow_strength": 0.0,  # not on the scene's ground: off from the walkmesh, the shadows slide away
+         "haze_color": haze_colour, "haze_density": haze_density, "haze_start": haze_start,
+-        "char_grade_full": char_grade, **floor, **atmos.char_style(f),
++        "char_grade_full": char_grade, **floor, **atmos.char_style(f), **atmos.game_light(f),
+         "water_motion": round(2 * float(o["water_motion"]), 3),
+         "walkmesh_extrude": round(atmos.BORDER_PX / atmos.floor_px(f), 1),
+         **atmos.shadow_reach(f, atmos.BORDER_PX / atmos.floor_px(f)),

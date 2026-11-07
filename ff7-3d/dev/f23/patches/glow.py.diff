@@ -1,0 +1,13 @@
+--- a/ff3d/glow.py
++++ b/ff3d/glow.py
+@@ -724,7 +724,9 @@
+                                         or backdrop_motion(f, 2) > BACKDROP_MOVE):
+         out.add(2)
+     three = [t for t in f.bg.tiles if t.layer == 3 and not t.blending]
+-    if three and layer3_depth(f) is not None and backdrop_motion(f, 3) > BACKDROP_MOVE:
++    # no script setting its depth at all: the game draws it at 1, in front of everything (onna_5's keyhole, fixed to
++    # the screen: baked at its canvas place, the room showed in a strip beside it and the characters in front; F23)
++    if three and (layer3_depth(f) is not None or not depth_set(f, 3)) and backdrop_motion(f, 3) > BACKDROP_MOVE:
+         if not GAME_LAYER3:  # the backdrop alone showed through where layer 3 belongs (crater_1's sky over its wall)
+             return set()
+         out.add(3)

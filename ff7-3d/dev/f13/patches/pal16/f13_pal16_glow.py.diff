@@ -1,0 +1,71 @@
+--- ff3d/glow.py (live)
++++ ff3d/glow.py (F13 16-bit pages)
+@@ -609,7 +609,7 @@
+     if a is None:
+         return None
+     drawn = drawn_layers(f)
+-    need = {(t.tex, t.palette) for t in f.bg.tiles if t.layer in drawn and not t.blending}
++    need = {(t.tex, page_palette(f, t)) for t in f.bg.tiles if t.layer in drawn and not t.blending}
+     have = all((common.PAGES / f.name / f"{f.name}_{p:02d}_{q:02d}.png").exists() for p, q in need)
+     return a if have else None
+ 
+@@ -708,6 +708,13 @@
+             "baked": baked, "backdrop": back, "painted": [t for t in back if t.layer == 3 and not t.param and not t.blending]}
+ 
+ 
++def page_palette(f, t):
++    """The palette number in the name of the override page FFNx draws a tile with (<field>_<page>_<palette>.png): the
++    tile's, but 0 on a 16-bit (direct colour) page, which has no palettes. sky's backdrop is on two (27, 28): written
++    as _27_07, the game never used it (it fell back to the blank _27_00) and the scene's cut-out stayed black."""
++    return t.palette if f.bg.pages[t.tex].depth < 2 else 0
++
++
+ def studio_pages(f):
+     """The version's own pages {page: RGBA at the render's scale} (restyled states, original effects), if built."""
+     d = f.raw_render.parent / "pages" / "field" / f.name
+@@ -844,7 +851,7 @@
+             block = cache.tile(t)
+         if block.shape[:2] != (sz, sz):
+             continue
+-        img = pages.setdefault((t.tex, t.palette), np.zeros((256 * s, 256 * s, 4), np.uint8))
++        img = pages.setdefault((t.tex, page_palette(f, t)), np.zeros((256 * s, 256 * s, 4), np.uint8))
+         v = cv2.resize(plan["vis"][id(t)], (sz, sz), interpolation=cv2.INTER_LINEAR)
+         dst = img[t.src_y * s:t.src_y * s + sz, t.src_x * s:t.src_x * s + sz]
+         alpha = np.round(block[..., 3] * np.clip(v, 0, 1)).astype(np.uint8)
+@@ -863,17 +870,32 @@
+     out = common.PAGES / f.name
+     speeds = scroll_speeds(f)
+     tiles = [t for t in f.bg.tiles if scrolling(f, t, speeds)]
+-    for page, pal in {(t.tex, t.palette) for t in tiles}:
+-        (out / f"{f.name}_{page:02d}_{pal:02d}.png").unlink(missing_ok=True)
++    s, pages = f.scale, {}
++    for page, pal in {(t.tex, page_palette(f, t)) for t in tiles}:
++        path = out / f"{f.name}_{page:02d}_{pal:02d}.png"
++        if pal:
++            path.unlink(missing_ok=True)
++            continue
++        # a _00 page is every other palette's fallback (the blank that hides them) and all of a 16-bit page's tiles
++        # (backdrop, overlays): only these tiles' places in it are written again, emptied first
++        img = np.asarray(Image.open(path).convert("RGBA")).copy() if path.exists() else None
++        if img is None or img.shape[0] != 256 * s:
++            img = np.zeros((256 * s, 256 * s, 4), np.uint8)
++        for t in tiles:
++            if (t.tex, page_palette(f, t)) == (page, pal):
++                img[t.src_y * s:t.src_y * s + t.size * s, t.src_x * s:t.src_x * s + t.size * s] = 0
++        pages[(page, pal)] = img
+     if not show or not tiles:
++        out.mkdir(parents=True, exist_ok=True)
++        for (page, pal), img in pages.items():
++            Image.fromarray(img, "RGBA").save(out / f"{f.name}_{page:02d}_{pal:02d}.png")
+         return 0
+-    s, pages = f.scale, {}
+     for lay in sorted({t.layer for t in tiles}):
+         mine = [t for t in tiles if t.layer == lay]
+         art, (x0, y0) = scrolling_art(f, mine, s, speeds[lay], SCROLL_GRAIN if grain else 0.0)
+         for t in mine:
+             sz, ax, ay = t.size * s, (t.dst_x - x0) * s, (t.dst_y - y0) * s
+-            img = pages.setdefault((t.tex, t.palette), np.zeros((256 * s, 256 * s, 4), np.uint8))
++            img = pages.setdefault((t.tex, page_palette(f, t)), np.zeros((256 * s, 256 * s, 4), np.uint8))
+             img[t.src_y * s:t.src_y * s + sz, t.src_x * s:t.src_x * s + sz] = art[ay:ay + sz, ax:ax + sz]
+     out.mkdir(parents=True, exist_ok=True)
+     for (page, pal), img in pages.items():

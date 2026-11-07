@@ -1,0 +1,71 @@
+--- ff3d/build.py (live, F13 merged)
++++ ff3d/build.py (F13 layer 3)
+@@ -672,6 +672,51 @@
+     return out, float((Z > FAR_KNEE).mean())
+ 
+ 
++PARALLAX_MARGIN = 0.08  # parallax_order: the scene this much (of the depth) in front of or behind layer 3
++
++
++def parallax_order(f, Z, step):
++    """Where a layer 3 the game draws (glow.drawn_layers: at the depth a script set, layer3_depth) can come over the
++    scene, the scene's depth in front of it or behind it as the original's tiles are in 2D, along the camera rays (the
++    picture is the same): a layer-1 tile nearer than the layer hides it (crater_1's cliff, at 1, in front of its wall
++    at 3840), layer 0, a farther layer-1 tile and layer 2 don't (hill's ground, layer 0 and 4094, under its Highwind
++    at 512: 46% of it within the Highwind's reach was estimated nearer). Only within the layer's reach, its canvas
++    footprint grown by how far the camera moves it (glow.layer_reach; a script's scroll isn't). For the mesh's depth
++    (Zm). Returns (Z, {"behind", "front": share of the grid moved}) or (Z, None)."""
++    drawn = glow.drawn_layers(f)
++    if 3 not in drawn or glow.backdrop_alpha(f) is None:
++        return Z, None
++    d3 = glow.layer3_depth(f)
++    zt = TILE_DEPTH * d3
++    in_render, animated = glow.entry_states(f)
++    cache = PageCache(f.bg)
++    key = np.full((f.h, f.w), np.inf, np.float32)  # the front scene tile's place in the game's order (tile depths)
++    reach = np.zeros((f.h, f.w), np.uint8)
++    for t in f.bg.tiles:
++        if t.blending:
++            continue
++        x, y, s = t.dst_x - f.mx, t.dst_y - f.my, t.size
++        a = cache.tile(t)[..., 3][:f.h - y, :f.w - x] > 0
++        if t.layer == 3:
++            reach[y:y + s, x:x + s][a] = 1
++        elif t.layer not in drawn and (not t.param or (in_render(t) and t.param not in animated)):
++            k = {0: 5000.0, 2: 6000.0}.get(t.layer, float(t.z))  # layer 0 (z 0.9997) and 2 (0.9998) behind any layer 1
++            blk = key[y:y + s, x:x + s]
++            blk[a] = np.minimum(blk[a], k)
++    rx, ry = glow.layer_reach(f, 3)
++    reach = cv2.dilate(reach, np.ones((2 * int(np.ceil(ry)) + 1, 2 * int(np.ceil(rx)) + 1), np.uint8)) > 0
++    GH, GW = Z.shape
++    g = lambda m: cv2.resize(m.astype(np.uint8), (GW, GH), interpolation=cv2.INTER_NEAREST) > 0
++    held = g(np.isfinite(key) & reach)
++    front = g(key < d3) & held
++    behind = held & ~front
++    out = Z.copy()
++    far, near = zt * (1 + PARALLAX_MARGIN), zt * (1 - PARALLAX_MARGIN)
++    push, pull = behind & (out < far), front & (out > near)
++    out[push], out[pull] = far, near
++    return out, {"behind": float(push.mean()), "front": float(pull.mean())}
++
++
+ OVERLAY_PUSH_CAP = 3.0  # no further back than this (a tile whose z isn't a real depth would fold the scene up)
+ LIT_PUSH_CAP = 6.0      # ...behind a toggled glow layer's tiles (plan["lit"]): blin3_1's message board is at a
+                         # quarter of its tiles' depth (z 3810 x TILE_DEPTH: x4.4), and with no painted message left in
+@@ -829,7 +874,7 @@
+     added = glow.light_added(f, float(o["static_glow"]))
+     if added is not None:
+         colour = colour + added
+-    # where the game draws the backdrop (it moves apart from the scene: glow.backdrop_by_game), the scene is
++    # where the game draws a parallax layer (it moves apart from the scene: glow.drawn_layers), the scene is
+     # transparent: FFNx-3d skips it there and the game's tiles show wherever nothing nearer is in front
+     seen = glow.scene_alpha(f)
+     alpha = np.full((f.RH, f.RW), 255, np.uint8)
+@@ -965,6 +1010,7 @@
+     # for the haze, the sun, life and surface) keeps the scene's own
+     Zm, report["near_plane"] = clear_near_plane(Z, bodies)
+     Zm, report["far_plane"] = clear_far_plane(Zm)
++    Zm, report["parallax_order"] = parallax_order(f, Zm, step)  # a layer 3 the game draws among the scene
+     report["glow_layers"] = anim["summary"]
+     report["overlays"] = {"tiles": len(plan["tiles"]), "params": sorted({t.param for t in plan["tiles"]}),
+                           "start_on": len(plan["entry_on"]), "backdrop": len(plan.get("backdrop", []))}

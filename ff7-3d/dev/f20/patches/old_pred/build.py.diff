@@ -1,0 +1,47 @@
+--- a/ff3d/build.py
++++ b/ff3d/build.py
+@@ -735,8 +735,8 @@
+                         # the render, the board hid every message the game drew. zz4's crystal glow (z 4094 over the
+                         # crystal at a seventh of that: x6.9) lost 68% of its light at 6, and fship_4, junonr1, kuro_5,
+                         # tunnel_5, hyou5_2, ghotin_2, gon_i, crater_2 (x6.3-8.3) all of it. blin65_2's room lights
+-                        # (z 4087: x11-16, most of the room) and the 20-odd fields like it still need the engine to draw
+-                        # such tiles over the scene (F19)
++                        # (z 4087: x11-16, most of the room) and the 20-odd fields like it: FFNx-3d draws such layers
++                        # over the scene (glow.over_scene, F20)
+ 
+ 
+ def push_under(f, Z, plan, step):
+@@ -927,6 +927,9 @@
+     if floor.get("floor_light_strength", 0.0) > 0:
+         floor.pop("floor_light_strength")
+     haze_colour, haze_density, haze_start = atmos.haze(f)
++    # the light layers the game draws over the scene (glow.over_scene: the build's list, its pages cut to match)
++    over = f.work / "over_scene.json"
++    over = {"glow_over_scene": [n for pq in json.loads(over.read_text()) for n in pq]} if over.exists() else {}
+     ibl.lighting_section(f, extent, {
+         **lights(look, ll["shading"], ll["brightness"]),
+         "light_rotation_vertical": vertical, "light_rotation_horizontal": horizontal,
+@@ -936,7 +939,7 @@
+         "water_motion": round(2 * float(o["water_motion"]), 3),
+         "walkmesh_extrude": round(atmos.BORDER_PX / atmos.floor_px(f), 1),
+         **atmos.shadow_reach(f, atmos.BORDER_PX / atmos.floor_px(f)),
+-        **atmos.clouds(f, float(o["clouds"]), extent), **atmos.grass(float(o["grass"])), **fx, **relit})
++        **atmos.clouds(f, float(o["clouds"]), extent), **atmos.grass(float(o["grass"])), **fx, **relit, **over})
+     write_fields_section()
+     kind = atmos.particles(f, o["particles"], float(o["particle_amount"]), out, sources)
+     if not f.variant:  # the game draws the original's scrolling layers (glow.write_scrolling); with the blizzard's
+@@ -1026,6 +1029,14 @@
+     Zm, report["near_plane"] = clear_near_plane(Z, bodies)
+     Zm, report["far_plane"] = clear_far_plane(Zm)
+     Zm, report["parallax_order"] = parallax_order(f, Zm, step)  # a layer 3 the game draws among the scene
++    # light layers the mesh still hides where the original shows them (tiles far behind it): the game draws them over
++    # the scene (glow.over_scene; the look step lists them in the lighting section)
++    plan["over"] = glow.over_scene(f, anim, plan, Zm, step, lambda t: TILE_DEPTH * t.z)
++    report["glow_over_scene"] = {f"{p}_{q}": share for (p, q), share in sorted(plan["over"].items())}
++    if plan["over"]:
++        (f.work / "over_scene.json").write_text(json.dumps(sorted(plan["over"])), encoding="utf-8")
++    else:
++        (f.work / "over_scene.json").unlink(missing_ok=True)
+     report["glow_layers"] = anim["summary"]
+     report["overlays"] = {"tiles": len(plan["tiles"]), "params": sorted({t.param for t in plan["tiles"]}),
+                           "start_on": len(plan["entry_on"]), "backdrop": len(plan.get("backdrop", []))}

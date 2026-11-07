@@ -1,0 +1,20 @@
+--- live/studio_plugin.py
++++ fixed/studio_plugin.py
+@@ -15,6 +15,7 @@
+ import time
+ from pathlib import Path
+ 
++import numpy as np
+ from flask import Blueprint, abort, jsonify, request, send_file
+ from PIL import Image
+ 
+@@ -414,7 +415,8 @@
+         if not built(name):
+             return jsonify(built=False, current=project.current(name))
+         R, T, zoom, rect = common.camera(name)
+-        return jsonify(built=True, R=R.tolist(), T=T.tolist(), zoom=zoom, rect=list(rect),
++        C = -np.linalg.solve(R, T)  # where the camera is (R isn't quite a rotation: common.Field.Rinv)
++        return jsonify(built=True, R=R.tolist(), T=T.tolist(), C=C.tolist(), zoom=zoom, rect=list(rect),
+                        stamp=(common.MESH / name / "scene.gltf").stat().st_mtime, version=source_of(name)[0],
+                        up_to_date=up_to_date(name), current=project.current(name))
+ 

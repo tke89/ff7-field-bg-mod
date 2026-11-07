@@ -1,0 +1,125 @@
+--- a/ff3d/life.py
++++ b/ff3d/life.py
+@@ -116,6 +116,9 @@
+ SPILL_PX = 22.0
+ SPILL = 0.45
+ SCREEN_EMIT = 0.35  # screens and indicator lights: extra glow over what the painting has
++SCREEN_V = (0.35, 0.6)  # screens: a pixel this bright (max channel) glows, all of it from the second
++SCREEN_EDGE = 0.2   # screens: their glow fades out over this share of the box's shorter side at its edges
++SCREEN_GAIN = 2.0   # screens: shaped by the painting, a box's glow up to this much brighter where it's brightest
+ LED_EMIT = 1.5
+ LEDS = 120
+ MOTES = {"per": 60, "size": 0.45, "alpha": 0.9, "spread": 3.0, "drift": 1.2, "life": (6.0, 12.0)}
+@@ -424,6 +427,64 @@
+     return np.asarray(Image.open(f.render).convert("RGB"))
+ 
+ 
++# --- where the scene is (F23) ---
++
++VOID_DARK = 16      # void: the render this dark (max channel) where the original shows nothing (no tile, or pure black)
++VOID_OPEN = 0.02    # ...in patches this wide at least (share of the canvas's shorter side: not a gap between shelves)
++VOID_SHARE = 0.01   # ...joined to the canvas's edge, in pieces this big at least (share of the canvas)
++FRAMED_VOID = 0.15  # framed: the black around the scene this much of the canvas at least, on all four sides of it,
++FRAMED_FILL = 0.92  # ...the scene filling its bounding box this much (a picture's rectangle),
++FRAMED_SCREEN = 0.94  # ...and smaller than the screen (320 x 240) this much each way: black on screen all round it
++                      # (rcktin7's rocket, one screen of a wide black canvas, is a scene)
++_VOID = {}
++
++
++def void(f):
++    """The black around the scene, at 1x (bool, canvas size): where the original shows nothing (no tile, or pure black)
++    and the render is near-black too, in wide pieces (an opening VOID_OPEN across) joined to the canvas's edge and at
++    least VOID_SHARE of it. A cut-away room's outside (niv_ti1, mds7pb_1, snmin2's corner), the dark around Gaea's
++    Cliff's caves (gaiin_1), a framed photograph's border (nivl_e3). Shadows and the gaps between the mansion library's
++    shelves (sininb41: pure black in the original too) are narrower, or closed in: they stay scene."""
++    key = (f.name, str(f.render), f.raw_render.stat().st_mtime)
++    if key not in _VOID:
++        from ff7bg.sheets import PageCache, render_composite
++        cache = PageCache(f.bg)
++        cov = np.zeros((f.h, f.w), bool)
++        for t in f.bg.tiles:
++            x, y, s = t.dst_x - f.mx, t.dst_y - f.my, t.size
++            cov[y:y + s, x:x + s] |= cache.tile(t)[..., 3][:f.h - y, :f.w - x] > 0
++        orig = np.asarray(render_composite(f.bg, (f.mx, f.my, f.w, f.h), cache.tile)).max(2)
++        art = cv2.resize(_render(f), (f.w, f.h), interpolation=cv2.INTER_AREA).max(2)
++        dark = (((orig == 0) | ~cov) & (art <= VOID_DARK)).astype(np.uint8)
++        r = max(3, int(round(min(f.w, f.h) * VOID_OPEN)))
++        dark = cv2.morphologyEx(dark, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1,) * 2))
++        n, labels, stats, _ = cv2.connectedComponentsWithStats(dark, connectivity=8)
++        edge = set(np.unique(np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]]).tolist())) - {0}
++        _VOID.clear()
++        _VOID[key] = np.isin(labels, [k for k in edge if stats[k, cv2.CC_STAT_AREA] >= VOID_SHARE * f.w * f.h])
++    return _VOID[key]
++
++
++def framed(f):
++    """Is the scene a picture framed on black (nivl_e3: the photograph of Nibelheim in the middle of the screen)? The
++    black around it (void) is at least FRAMED_VOID of the canvas, on all four sides of it, it fills its bounding
++    box (FRAMED_FILL) and it is smaller than the screen (FRAMED_SCREEN). Life is for scenes, not for pictures of them:
++    Qwen took the photo for a real town (smoke and sparks rose from its painted chimneys past its edge into the
++    black). Of the 670 built fields only nivl_e3 is one (2026-11-03)."""
++    v = void(f)
++    if v.mean() < FRAMED_VOID:
++        return False
++    ys, xs = np.nonzero(~v)
++    if not len(xs):
++        return False
++    y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
++    if x0 == 0 or y0 == 0 or x1 == f.w or y1 == f.h:
++        return False
++    if x1 - x0 > FRAMED_SCREEN * 320 or y1 - y0 > FRAMED_SCREEN * 240:
++        return False
++    return float((~v[y0:y1, x0:x1]).mean()) >= FRAMED_FILL
++
++
+ def _fmt(v, nd=1):
+     return round(float(v), nd)
+ 
+@@ -795,7 +856,10 @@
+ 
+ def screens(f, feats, render):
+     """Qwen's lit screens and signs as light sources at half size: their bright pixels in their own colour (already
+-    bright in the painting: a soft extra glow), each with a slow shimmer and a scan bar rolling down it."""
++    bright in the painting: a soft extra glow), each with a slow shimmer and a scan bar rolling down it. Each pixel by
++    how bright it is (SCREEN_V), fading out toward the box's edges (SCREEN_EDGE): until 2026-11-03 every pixel over
++    0.35 in the box glowed alike, and a round lamp Qwen boxed as a screen (nvmkin21's cyan lamp over the Jenova door,
++    its painted halo filling the box) lit up as a hard square."""
+     hw, hh = f.RW // 2, f.RH // 2
+     small = cv2.resize(render, (hw, hh), interpolation=cv2.INTER_AREA)
+     v = small.max(2).astype(np.float32) / 255
+@@ -805,11 +869,22 @@
+         X1, Y1, X2, Y2 = (int(round(b[k] / 2)) for k in ("x1", "y1", "x2", "y2"))
+         if X2 - X1 < 2 or Y2 - Y1 < 2:
+             continue
+-        ys, xs = np.nonzero(v[Y1:Y2, X1:X2] > 0.35)
++        patch = v[Y1:Y2, X1:X2]
++        ys, xs = np.nonzero(patch > SCREEN_V[0])
+         if len(xs) < 4:
+             continue
++        h, w = patch.shape
++        # above what the box's edge shows (a lamp's halo the box cuts through: none there, all at its hot middle; a
++        # screen's dark frame: about as before), and nothing right at the edge
++        ring = np.concatenate([patch[0], patch[-1], patch[:, 0], patch[:, -1]])
++        lo, hi = max(SCREEN_V[0], float(np.median(ring))), float(np.percentile(patch, 98))
++        edge = np.minimum(np.minimum(xs + 0.5, w - xs - 0.5), np.minimum(ys + 0.5, h - ys - 0.5))
++        shape = _ramp(patch[ys, xs], lo, max(hi, lo + 0.05)) * _ramp(patch[ys, xs], *SCREEN_V) * \
++            np.clip(edge / max(1.0, SCREEN_EDGE * min(w, h)), 0, 1)
++        # as much light as before (every pixel at SCREEN_EMIT), shaped so (up to SCREEN_GAIN times as bright)
++        weight = SCREEN_EMIT * shape * min(SCREEN_GAIN, len(xs) / max(float(shape.sum()), 1e-6))
+         ys, xs = ys + Y1, xs + X1
+-        out.append((ys, xs, np.full(len(xs), SCREEN_EMIT, np.float32), lin[ys, xs].mean(0), 0.0, "screen"))
++        out.append((ys, xs, weight.astype(np.float32), lin[ys, xs].mean(0), 0.0, "screen"))
+     return out
+ 
+ 
+@@ -1283,6 +1358,10 @@
+     path = out / f"{f.name}_scene_fx.dds"
+     get = lambda k: float(o.get(k, 0.0) or 0.0)
+     render = _render(f)
++    if feats and framed(f):  # a picture framed on black (nivl_e3): none of it
++        summary = {**(feats.get("scene") or {}), "framed": True}
++        (f.work / "life.json").write_text(json.dumps(summary), encoding="utf-8")
++        feats = {}
+     if not feats or not (f.work / "simplify_in.npz").exists():
+         write_fx(f, path, render, [None, None, None])
+         return [], {}, None, {}

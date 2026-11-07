@@ -1,0 +1,250 @@
+--- ff3d/glow.py (live)
++++ ff3d/glow.py (F13)
+@@ -4,8 +4,12 @@
+   in the mesh;
+ - its overlays: toggled effects (smoke, haze, light shafts) and toggled tiles the render doesn't hold (animation
+   frames, things that appear later), which the game keeps drawing and switching as in 2D, and blended layers a
+-  script keeps scrolling (the Great Glacier's blizzard, mist, waves), which the game keeps moving."""
++  script keeps scrolling (the Great Glacier's blizzard, mist, waves), which the game keeps moving;
++- its far backdrop where that moves apart from the scene (backdrop_by_game), which the game draws behind the scene
++  at its parallax place while the scene leaves it out (backdrop_alpha)."""
+ import json
++import math
++import os
+ import struct
+ 
+ import cv2
+@@ -453,6 +457,121 @@
+     return out
+ 
+ 
++# The far backdrop (solid layer-2 tiles: Mt. Corel's rocks and clouds, the sea under the Highwind, the view from the
++# Ferris wheel) is drawn by the game, as in 2D, where it moves apart from the scene; the scene leaves it out.
++# Needs FFNx-3d to draw those tiles depth-tested behind the scene (deferred.cpp draw_scene_overlays; before that it
++# drew every solid field tile over the scene, which would cover all of it): set FF3D_GAME_BACKDROP=0 to keep the
++# backdrop baked into the scene as before.
++GAME_BACKDROP = os.environ.get("FF3D_GAME_BACKDROP", "0") != "0"
++BACKDROP_MOVE = 2.0  # background px: a backdrop that gets no further than this from its canvas place stays baked
++
++
++def parallax(f):
++    """The field's parallax layers (triggers section): {"range": the camera's centre range (x0, x1, y0, y1),
++    2: (width, height, x, y, x speed, y speed) of layer 2's scroll (the game's bg3), 3: the same of layer 3}."""
++    t = common._sections(f.raw)[7]
++    left, top, right, bottom = struct.unpack_from("<4h", t, 12)
++    w3, h3, w4, h4, p3x, p3y, p4x, p4y, s3x, s3y, s4x, s4y = struct.unpack_from("<12h", t, 0x18)
++    x0, y0 = left + 160, top + 120  # as FFNx clips the camera (field_clip_with_camera_range_float)
++    return {"range": (x0, max(x0, right - 160), y0, max(y0, bottom - 120)),
++            2: (w3, h3, p3x, p3y, s3x, s3y), 3: (w4, h4, p4x, p4y, s4x, s4y)}
++
++
++def backdrop_motion(f, layer=2):
++    """How far (background px) the layer gets from its canvas place, relative to the scene, as the camera goes over
++    its range: the game draws layers 2-3 at bg3_pos/16 + bg3_speed x camera / 256, wrapped at the layer's size
++    (FFNx background.cpp set_world_and_background_positions), the scene at the camera. Mt. Corel's trestles: 180
++    (mtcrl_5, a quarter of the camera's speed) and 304 (mtcrl_4); the Highwind's sky, fixed to the screen: 136."""
++    p = parallax(f)
++    x0, x1, y0, y1 = p["range"]
++    w, h, px, py, sx, sy = p[layer]
++    dx = [x - math.remainder(px / 16 + sx * x / 256, w or 1024) for x in np.linspace(x0, x1, 33)]
++    dy = [y - math.remainder(py / 16 + sy * y / 256, h or 1024) for y in np.linspace(y0, y1, 33)]
++    return float(max(np.abs(dx).max(), np.abs(dy).max()))
++
++
++BGPDH = 0x2C  # field opcode: set a background layer's depth (banks, layer, depth)
++
++
++def depth_set(f, layer):
++    """Does a field script set the layer's depth (BGPDH)? The game draws layer 2 at the back (z 0.9998) unless one
++    does (junonl2: 433, among the scene's tiles)."""
++    return any(op == BGPDH and len(b) >= 3 and b[2] == layer for s in palettes.scripts(f.raw) for _, op, b in s.ops())
++
++
++def backdrop_by_game(f):
++    """Does the game draw the field's backdrop (its solid layer-2 tiles) in the 3D view, the scene leaving it out
++    (backdrop_alpha)? Where it moves apart from the scene (backdrop_motion over BACKDROP_MOVE, or a script scrolls
++    it: BGSCR) or a script switches or animates it (the Highwind's sky): a copy at its canvas place slid off the
++    scene (mtcrl_4's sky where 2D has its rocks), left the canvas's empty parts black where 2D has the backdrop
++    (mtcrl_5, mds5_4), and stood still where 2D animates it. One that never moves stays baked: the same picture."""
++    if not GAME_BACKDROP or f.variant:
++        return False
++    tiles = [t for t in f.bg.tiles if t.layer == 2 and not t.blending]
++    if not tiles or depth_set(f, 2):  # a script puts the layer among the scene: FFNx-3d doesn't take it for backdrop
++        return False
++    return any(t.param for t in tiles) or 2 in scroll_speeds(f) or backdrop_motion(f) > BACKDROP_MOVE
++
++
++def _in_scene(f, in_render, animated):
++    """The solid tiles the scene holds in front of the backdrop: layers 0, 1 and 3, static or on in the render and
++    not animated (an overlay the game switches has the backdrop beneath it in 2D when it's off)."""
++    return lambda t: (not t.blending and t.layer != 2 and
++                      (not t.param or (in_render(t) and t.param not in animated)))
++
++
++def scene_cover(f):
++    """The original's cover of what the scene holds (_in_scene), 1x (0..1): where it's 0 the original shows the
++    backdrop, or nothing at all."""
++    in_render, animated = entry_states(f)
++    keep = _in_scene(f, in_render, animated)
++    cache = PageCache(f.bg)
++    cov = np.zeros((f.h, f.w), np.float32)
++    for t in f.bg.tiles:
++        if keep(t):
++            x, y, s = t.dst_x - f.mx, t.dst_y - f.my, t.size
++            a = cache.tile(t)[..., 3][:f.h - y, :f.w - x].astype(np.float32) / 255
++            cov[y:y + s, x:x + s] = np.maximum(cov[y:y + s, x:x + s], a)
++    return cov
++
++
++_ALPHA = {}
++
++
++def backdrop_alpha(f):
++    """Where the scene is (1) and where it leaves the backdrop to the game (0): the original's cover of the scene's
++    tiles (scene_cover), upscaled smoothly to the render (a 1-px beam or gap survives; diagonal edges don't come out
++    as the tiles' stairs), at render size (float32, 0 or 1), or None when the backdrop stays baked
++    (backdrop_by_game). The scene's texture takes it as alpha and FFNx-3d skips what's transparent, so the game's
++    backdrop tiles show there, at their parallax place, wherever nothing of the scene is in front."""
++    key = (f.name, str(f.raw_render), f.raw_render.stat().st_mtime)
++    if key not in _ALPHA:
++        _ALPHA.clear()
++        a = None
++        if backdrop_by_game(f):
++            S = f.scale
++            up = cv2.resize(scene_cover(f), (f.w * S, f.h * S), interpolation=cv2.INTER_LINEAR)
++            up = (cv2.GaussianBlur(up, (0, 0), 0.5 * S) >= 0.5).astype(np.float32)
++            a = np.ones((f.RH, f.RW), np.float32)
++            y0, x0 = f.frame[1] * S, f.frame[0] * S
++            a[y0:y0 + up.shape[0], x0:x0 + up.shape[1]] = up[: f.RH - y0, : f.RW - x0]
++            if a.min() >= 1:  # covered everywhere (fship_3): nothing to leave out
++                a = None
++        _ALPHA[key] = a
++    return _ALPHA[key]
++
++
++def scene_alpha(f):
++    """backdrop_alpha for the look step: only once the build has given the game the backdrop's pages (a look applied
++    to a scene built before would leave holes with nothing behind them: rebuild it)."""
++    a = backdrop_alpha(f)
++    if a is None:
++        return None
++    need = {(t.tex, t.palette) for t in f.bg.tiles if t.layer == 2 and not t.blending}
++    have = all((common.PAGES / f.name / f"{f.name}_{p:02d}_{q:02d}.png").exists() for p, q in need)
++    return a if have else None
++
++
+ def overlay_plan(f, glowing):
+     """What the game keeps drawing over the 3D scene, as in 2D, since the mesh holds the picture as it was rendered:
+     every toggled effect (smoke, haze, light shafts: blended tiles a script switches or animates), and every toggled
+@@ -465,14 +584,16 @@
+     back-to-front order)}, "entry_on": overlay tiles also in the render (animations that start on: the mesh needs
+     what's beneath them), "lit": the toggled glow layers' tiles (in `glowing`, switched by a script: their frames
+     hold all their light, glow_frames painted=False), which the game draws too, at their tile depth (their "vis" too),
+-    "baked": one frame of a backdrop animation the render lacks, painted into the scene instead (entry_off_art)}
++    "baked": one frame of a backdrop animation the render lacks, painted into the scene instead (entry_off_art),
++    "backdrop": the backdrop's tiles when the game draws them (backdrop_by_game), every state of them}
+ 
+     Solid tiles on the backdrop layer (2) are never overlays: the game draws that layer fixed to the screen, not
+     scrolled with the field, so over the scene, cut to what covers it at the canvas's own place, it slid off as soon
+     as the camera moved (fship_22/24: the Highwind's sky through the bridge's window, 80 of its 480 frame tiles on in
+     the render, was drawn over the dome, the railing and the machinery, with their cut-outs as black arcs over the
+-    sky). The scene keeps the render's state of it (still: no clouds drifting by); one the render lacks gets its
+-    animation's first frame painted in.
++    sky). Where it moves (backdrop_by_game), the game draws all of it, behind the scene, which leaves it out
++    (backdrop_alpha); elsewhere the scene keeps the render's state of it (still: no clouds drifting by), and one the
++    render lacks gets its animation's first frame painted in.
+ 
+     A solid tile a script switches on (not animated, off in the render) shows whole, as in 2D, where its state's
+     repaint meets the scene without a seam (repaint_seams, REPAINT_CUT): the Studio repaints all a state changes, and
+@@ -482,18 +603,22 @@
+     it made pale blocks over the 3D sky."""
+     in_render, animated = entry_states(f)
+     moving = scrolling_layers(f)
++    by_game = backdrop_alpha(f) is not None
+ 
+     def backdrop(t):
+         return t.layer == 2 and not t.blending
+ 
++    def drawn_back(t):  # the game draws it with the backdrop, whole: its effects too (glow frames and scrolling aside)
++        return by_game and t.layer == 2 and (t.tex, t.palette) not in glowing and not scrolling(f, t, moving)
++
+     def is_overlay(t):
+-        if not t.param or (t.tex, t.palette) in glowing or scrolling(f, t, moving) or backdrop(t):
++        if not t.param or (t.tex, t.palette) in glowing or scrolling(f, t, moving) or backdrop(t) or drawn_back(t):
+             return False
+         return bool(t.blending) or not in_render(t) or t.param in animated
+     tiles = [t for t in f.bg.tiles if is_overlay(t)]
+     order = json.loads((common.STUDIO / "ai" / "jobs.json").read_text())[f.name].get("animations", {})
+     baked = []
+-    for p in sorted({t.param for t in f.bg.tiles if backdrop(t) and t.param in animated}):
++    for p in sorted({t.param for t in f.bg.tiles if backdrop(t) and t.param in animated and not by_game}):
+         mine_p = [t for t in f.bg.tiles if backdrop(t) and t.param == p]
+         if any(in_render(t) for t in mine_p):
+             continue
+@@ -513,6 +638,9 @@
+     for t in tiles:
+         if not t.blending and in_render(t):
+             unknown[t.dst_y - f.my:t.dst_y - f.my + t.size, t.dst_x - f.mx:t.dst_x - f.mx + t.size] = True
++    # where the scene leaves the backdrop to the game, what's under a switched tile is the backdrop wherever it has
++    # moved to, not its canvas copy: the tile shows whole there, as in 2D
++    held = scene_cover(f) >= 0.5 if by_game else np.ones((f.h, f.w), bool)
+     cover = np.zeros((f.h, f.w), np.float32)
+     vis = {}
+     for t in reversed(draw_order(tiles + lit + baked + solid)):  # front to back: cover = what's drawn after this tile
+@@ -523,14 +651,17 @@
+             v = (1 - cover[y:y + s, x:x + s]) * (alpha > 0)[:f.h - y, :f.w - x]
+             if not t.blending and not in_render(t) and t.param not in animated and id(t) not in whole:
+                 diff = np.abs(tile[:f.h - y, :f.w - x, :3].astype(np.int16) - shown[y:y + s, x:x + s]).max(2)
+-                same = (diff <= OVERLAY_SAME) & ~unknown[y:y + s, x:x + s]
++                same = (diff <= OVERLAY_SAME) & ~unknown[y:y + s, x:x + s] & held[y:y + s, x:x + s]
+                 change = cv2.dilate((~same).astype(np.uint8), np.ones((3, 3), np.uint8))  # grown 1px, as the Studio's
+                 v = v * change
+             vis[id(t)] = v
+         else:
+             cover[y:y + s, x:x + s] = np.maximum(cover[y:y + s, x:x + s], alpha[:f.h - y, :f.w - x])
++    back = [t for t in f.bg.tiles if drawn_back(t)]
++    for t in back:  # all of each, every state: the game switches them, and the scene in front hides them
++        vis[id(t)] = np.ones((t.size, t.size), np.float32)
+     return {"tiles": tiles, "vis": vis, "entry_on": [t for t in tiles if not t.blending and in_render(t)], "lit": lit,
+-            "baked": baked}
++            "baked": baked, "backdrop": back}
+ 
+ 
+ def studio_pages(f):
+@@ -628,12 +759,16 @@
+     """Each overlay tile in its own page and palette (`<field>_<page>_<palette>.png`, which FFNx prefers to the
+     blank _00): the version's art where it has pages, else the original's, showing only where the original does.
+     Solid tiles from the version's pages take the scene's colours (page_colours), so where they meet the scene the
+-    sky doesn't change shade at a tile's edge."""
++    sky doesn't change shade at a tile's edge. With them the backdrop's tiles when the game draws it (plan
++    "backdrop"): what AI 2D shows (the Studio keeps the original's art, upscaled, for layers 2-3), as opaque as the
++    original's tile (the Studio upscales a tile with what's around it on the canvas, so where the layer ends its
++    edge came out part transparent: a dark seam where a wrapping layer meets itself, fship_1's sea)."""
+     studio = studio_pages(f)
+     cache = PageCache(f.bg)  # the original's tiles, any colour depth (16-bit pages have no palette)
+     M = page_colours(f, studio) if studio else None
++    back = {id(t) for t in plan.get("backdrop", [])}
+     pages = {}
+-    for t in plan["tiles"]:
++    for t in plan["tiles"] + plan.get("backdrop", []):
+         s = f.scale if t.tex in studio else 1
+         sz = t.size * s
+         if t.tex in studio:
+@@ -641,6 +776,8 @@
+             if M is not None and not t.blending and block.shape[:2] == (sz, sz):
+                 rgb = np.concatenate([block[..., :3].reshape(-1, 3).astype(np.float32), np.ones((sz * sz, 1), np.float32)], 1)
+                 block = np.dstack([np.clip(np.round(rgb @ M), 0, 255).astype(np.uint8).reshape(sz, sz, 3), block[..., 3]])
++            if id(t) in back and not t.blending and block.shape[:2] == (sz, sz):
++                block = np.dstack([block[..., :3], tile_alpha(cache.tile(t), s)])
+         else:
+             block = cache.tile(t)
+         if block.shape[:2] != (sz, sz):
+@@ -700,6 +837,8 @@
+ 
+ 
+ def _through_glass(f):
++    if scene_alpha(f) is not None:  # the game draws the backdrop there, the scene leaves it out
++        return None
+     static = [t for t in f.bg.tiles if not t.param]
+     glass = [t for t in static if t.blending and t.type_trans == 0]
+     if not glass or not any(t.layer >= 2 and not t.blending for t in static):

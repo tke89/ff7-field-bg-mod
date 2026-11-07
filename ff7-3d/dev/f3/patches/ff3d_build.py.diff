@@ -1,0 +1,19 @@
+--- a/ff3d/build.py
++++ b/ff3d/build.py
+@@ -544,10 +544,15 @@
+         d = np.load(off)
+         w = d["weight"].astype(np.float32)[..., None]
+         colour = colour * (1 - w) + d["rgb"].astype(np.float32) * w
++    glass = glow.through_glass(f)  # a backdrop AI 2D shows without the glass the render has painted over it
++    if glass is not None:
++        colour = colour * (1 - glass[1][..., None]) + glass[0].astype(np.float32) * glass[1][..., None]
+     if ll["saturation"] != 1:
+         colour = saturate(colour, ll["saturation"])
+     # light shafts, haze, lamp halos: only what the render lacks of them (the AI saw them and mostly painted them)
+-    colour = colour + glow.static_light(f) * max(0.0, float(o["static_glow"]) - glow.light_kept(f))
++    added = glow.light_added(f, float(o["static_glow"]))
++    if added is not None:
++        colour = colour + added
+     rgba = np.dstack([np.clip(colour, 0, 255).astype(np.uint8), np.full((f.RH, f.RW), 255, np.uint8)])
+     gltfout.write_dds(out / f"{tex}.dds", rgba)
+     Image.fromarray(rgba[..., :3]).save(f.work / "colour.jpg", quality=88)

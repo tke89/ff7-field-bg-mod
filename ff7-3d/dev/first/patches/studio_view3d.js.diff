@@ -1,0 +1,11 @@
+--- live/studio_view3d.js
++++ fixed/studio_view3d.js
+@@ -191,7 +191,7 @@
+   // The camera after the viewer's turns: rows (right, down, forward) and position, in the field's world.
+   function camera() {
+     const { R, T } = V.info, P = V.gpu.pivot;
+-    const C0 = scale(mulT(R, T), -1);
++    const C0 = V.info.C || scale(mulT(R, T), -1);  // C: the exact camera position (R isn't quite a rotation)
+     // the world's up: the axis the game camera's "down" points most against (z, in FF7's fields)
+     const k = [0, 1, 2].reduce((m, i) => (Math.abs(R[1][i]) > Math.abs(R[1][m]) ? i : m), 0);
+     const up = [0, 0, 0];

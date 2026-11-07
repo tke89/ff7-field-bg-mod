@@ -1,0 +1,26 @@
+--- live/ff3d/atmos.py
++++ fixed/ff3d/atmos.py
+@@ -142,14 +142,19 @@
+ 
+ 
+ def light_map(f):
+-    """Every additive layer of the original art (lamps, signs, screens, light shafts: where its artists put light),
+-    static or animated, in its stored colours, at render size (RGB 0..1)."""
+-    pals = sorted({t.palette for t in f.bg.tiles if t.blending and t.type_trans in originals.ADDITIVE and t.z > 0})
++    """Every additive layer of the original art that's lit in the painting (lamps, signs, screens, light shafts:
++    where its artists put light), static or animated, in its stored colours, at render size (RGB 0..1). Layers a
++    script switches that were off when the render was made aren't in it: the game draws them when they come on
++    (glow.overlay_plan / glow frames). Until 2026-11-01 they counted, and blin65_2's room lights, off until an
++    event, lit its black pit yellow for good."""
++    in_render, _ = originals.entry_states(f)
++    keep = lambda t: t.z > 0 and (not t.param or in_render(t))
++    pals = sorted({t.palette for t in f.bg.tiles if t.blending and t.type_trans in originals.ADDITIVE and keep(t)})
+     canvas = np.zeros((f.h, f.w, 3), np.float32)
+     file_pal = palettes.file_palettes(f.raw)
+     for pal in pals:
+         transparent = f.bg.transparency[pal] if pal < len(f.bg.transparency) else True
+-        canvas += originals.layer(f, pal, tuple(file_pal[pal]), transparent, lambda t: t.z > 0)
++        canvas += originals.layer(f, pal, tuple(file_pal[pal]), transparent, keep)
+     S = f.scale
+     up = cv2.resize(canvas, (f.w * S, f.h * S), interpolation=cv2.INTER_CUBIC)
+     out = np.zeros((f.RH, f.RW, 3), np.float32)

@@ -1,0 +1,127 @@
+--- ff7-3d/ff3d/build.py
++++ ff7-3d/ff3d/build.py
+@@ -482,7 +482,7 @@
+     return [(L, h, w, abs(w - 0.17 * h) < 0.01 * h) for (h, w), layers in groups.items() for L in layers]
+ 
+ 
+-def match_original_hiding(f, Z, layers, step, up=None, floor=None):
++def match_original_hiding(f, Z, layers, step, up=None, floor=None, bodies=None):
+     """Characters are hidden where the original game hid them, wherever one can be (`layers`: the walkways from
+     depth.walkmesh_layers and the ladders, a character on every point, and the models the scripts place with their own
+     sizes, placed_layers): the scene moves along its camera rays
+@@ -493,7 +493,8 @@
+     covers anyone; the original's rough spots come along too (the farm's near fence is layer 0). Around the bodies, as
+     far as what they hold reaches (REACH_*), the scene goes behind them too where the original has nothing in front of
+     them. `floor`: the ground snap_to_walkmesh put under the walkmesh (sunk, it's further back than the walkway's
+-    depth). Returns (Z, stats)."""
++    depth). `bodies` (a dict) gets the nearest and farthest body depth that can cover each grid point ("near",
++    "far": inf / -inf where none can) and their thickness ("thick"). Returns (Z, stats)."""
+     GH, GW = Z.shape
+     g = f.scale / step  # grid points per background pixel
+     # the original's covering layer: layer 1, the only one with a depth per tile (layer 0 is always behind
+@@ -629,10 +630,48 @@
+     reached = ~(shown | hidden | split) & ~floor & (far_reach > -1e8) & (front > far_reach + CLEAR_GAP) & \
+         (Z < far_reach - CLEAR_GAP)
+     out[reached] = far_reach[reached] + 1.5 * CLEAR_GAP
++    if bodies is not None:
++        bodies.update(near=near, far=far, thick=thick)
+     return out, {"shown": float(shown.mean()), "hidden": float(hidden.mean()), "split": float(split.mean()),
+                  "reached": float(reached.mean())}
+ 
+ 
++# The game draws field models, and FFNx-3d the scene mesh, with the field's projection, read from the game's memory
++# (2026-11-02): near plane 512 camera units in some fields (hyou10-12, icedun_1/2, junbin3, mds7pb_1), 50 in others
++# (no field data found that tells which), far plane about 32000 (31195-32386 across 20 fields). Scenery past either was
++# cut away and the clear colour showed: black shapes (hyou11's rock, junbin3's ceiling fixture: nearer than 512;
++# junone7's "fish" on the horizon: farther than 32000).
++NEAR_PLANE = 512.0
++NEAR_CLEAR = 1.04 * NEAR_PLANE  # clear_near_plane moves scenery at least this far
++FAR_CLEAR = 28000.0             # clear_far_plane: nothing farther (10% inside the nearest far plane seen)
++FAR_KNEE = 18000.0              # ...and depths from here on brought in smoothly, in order
++
++
++def clear_near_plane(Z, bodies=None):
++    """Scenery nearer than the game's near plane (NEAR_PLANE) moved back along its camera rays to NEAR_CLEAR: the
++    picture stays the same. Where a character can stand behind it (bodies: match_original_hiding's nearest body that
++    can cover each grid point), only as far as just in front of them, so it still hides them; where they can only be
++    in front of it, any distance. Fields whose near plane is 50 look the same. Returns (Z, stats: share of the grid
++    moved, share still nearer)."""
++    near = bodies["near"] if bodies else np.full(Z.shape, np.inf, np.float32)
++    far = bodies["far"] if bodies else np.full(Z.shape, -np.inf, np.float32)
++    thick = bodies["thick"] if bodies else 0.0
++    to = np.full(Z.shape, NEAR_CLEAR, np.float32)
++    ahead = Z < near  # in front of every character there (or none can be there)
++    to[ahead] = np.minimum(NEAR_CLEAR, near[ahead] - thick - 0.5 * CLEAR_GAP)
++    to[~ahead & ~(Z > far)] = -np.inf  # characters on both sides of it: it stays
++    out = np.where(Z < NEAR_CLEAR, np.maximum(Z, to), Z)
++    return out, {"moved": float((out > Z).mean()), "left": float((out < NEAR_PLANE).mean())}
++
++
++def clear_far_plane(Z):
++    """Depths past FAR_KNEE brought in along their camera rays, smoothly and in order, to under FAR_CLEAR (inside the
++    game's far plane): the far sea and sky, nothing anyone walks on. Returns (Z, share of the grid moved)."""
++    span = FAR_CLEAR - FAR_KNEE
++    out = np.where(Z > FAR_KNEE, FAR_KNEE + span * (1 - np.exp(-(Z - FAR_KNEE) / span)), Z)
++    return out, float((Z > FAR_KNEE).mean())
++
++
+ OVERLAY_PUSH_CAP = 3.0  # no further back than this (a tile whose z isn't a real depth would fold the scene up)
+ LIT_PUSH_CAP = 6.0      # ...behind a toggled glow layer's tiles (plan["lit"]): blin3_1's message board is at a
+                         # quarter of its tiles' depth (z 3810 x TILE_DEPTH: x4.4), and with no painted message left in
+@@ -890,12 +929,19 @@
+     # estimated in front of its ladder: mds7st1's train cars)
+     walkers = ladder_layers(f, step, GH, GW) + (list(depth.walkmesh_layers(f, step)) + placed_layers(f, step, GH, GW)
+                                                  if o["reveal"] else [])
++    bodies = {}
+     if walkers:
+-        Z, report["walk_clearance"] = match_original_hiding(f, Z, walkers, step, up=up, floor=snapped > 0.5)
++        Z, report["walk_clearance"] = match_original_hiding(f, Z, walkers, step, up=up, floor=snapped > 0.5,
++                                                            bodies=bodies)
++    # the mesh's depth: inside the game's near and far planes; the rest (contact shadows, the extent, simplify_in.npz
++    # for the haze, the sun, life and surface) keeps the scene's own
++    Zm, report["near_plane"] = clear_near_plane(Z, bodies)
++    Zm, report["far_plane"] = clear_far_plane(Zm)
+     report["glow_layers"] = anim["summary"]
+     report["overlays"] = {"tiles": len(plan["tiles"]), "params": sorted({t.param for t in plan["tiles"]}),
+                           "start_on": len(plan["entry_on"])}
+     Pc, Pw = f.unproject(bx, by, Z)
++    Pcm, Pm = f.unproject(bx, by, Zm)
+ 
+     n = marigold_normals(f, (GH, GW))
+     stage(0.55, "contact shadows")
+@@ -929,7 +975,7 @@
+     # simplified: big flat cells where they do, the full grid's triangles (and cracks) elsewhere
+     level = np.zeros((GH - 1, GW - 1), np.int16)
+     if o["simplify"]:
+-        level = simplify.cell_levels(Z, cut0 | cut1, ww.reshape(GH, GW, 4) if o["sway"] else None, o["depth_tol"],
++        level = simplify.cell_levels(Zm, cut0 | cut1, ww.reshape(GH, GW, 4) if o["sway"] else None, o["depth_tol"],
+                                      o["uv_tol"] * f.scale / step, max_level=o["max_level"])
+     unit_cell = np.tile((level == 0).reshape(-1), 2)
+     gaps = tris[unit_cell & cut]
+@@ -944,7 +990,7 @@
+     # vertex normals: Marigold's as they are on the full grid; smoothed on a simplified mesh, whose normal map
+     # puts the detail back
+     nv = unit(np.stack([cv2.GaussianBlur(n[..., k], (0, 0), 4) for k in range(3)], -1)) if o["simplify"] else n
+-    pw, nw = Pw.reshape(-1, 3), nv.reshape(-1, 3)
++    pw, nw = Pm.reshape(-1, 3), nv.reshape(-1, 3)
+     used = np.unique(tris)
+     remap = np.zeros(GH * GW, np.int64)
+     remap[used] = np.arange(len(used))
+@@ -955,7 +1001,7 @@
+     # cracks: each gap triangle as its own copy, corners slid back along their rays to the farthest corner's depth,
+     # so it sits behind the near object and shows the painting there
+     if len(gaps):
+-        Zf, Pcf = Z.reshape(-1), Pc.reshape(-1, 3)
++        Zf, Pcf = Zm.reshape(-1), Pcm.reshape(-1, 3)
+         zg = Zf[gaps]
+         back = (Pcf[gaps] * (zg.max(1, keepdims=True) / zg)[..., None]).reshape(-1, 3)
+         far = gaps[np.arange(len(gaps)), zg.argmax(1)]
+@@ -975,7 +1021,7 @@
+     if o["simplify"]:
+         stage(0.75, "normal map")
+         want = marigold_normals(f, (f.RH // 2, f.RW // 2))
+-        nml = simplify.normal_map(level, cut0, cut1, Pw, nv, want, step, f.RW, f.RH)
++        nml = simplify.normal_map(level, cut0, cut1, Pm, nv, want, step, f.RW, f.RH)
+         gltfout.write_dds(out / f"{tex}_nml.dds", nml)
+         gltfout.write_dds(f.work / "scene_nml_base.dds", nml)  # bump (surface.write_normals) starts from it
+     gltfout.write(out / "scene.gltf", [{"pos": pw, "nrm": nw, "uv": uv, "idx": tris.reshape(-1), "image": 0,
