@@ -226,6 +226,70 @@ textures on 3D objects, and to the battle scenes". Their choices:
 - **Test tooling:** god mode now gives the battle's Defense and MDefense 511, so a one-hit kill does about 1 damage.
   A Game Over happened before this fix. Peerless was tried and pulses the party gold.
 
+## Painted textures for untextured battle models (2026-11-07)
+The user wants battles to look like a 2D anime: the target is an AI repaint of formation 469's frame
+(`work/models/battle/target2d/target2d_55.png`; painterly at repaint 0.55). Shaders were rejected, so the drawing has
+to live in the models' textures, drawn with flat light. Most battle models are vertex-coloured: Midgar Zolom (`dd`,
+ENEMY081) has no texture at all. FFNx-3d draws a part from a per-model atlas when it finds one. The format is in
+`ff7-3d/dev/battle-atlas/FORMAT.md`; the data side is `ff7bg/models/battleatlas.py`.
+- **Commands:** `python -m ff7bg.models.battleatlas build|paint|check|install|uninstall|status <id> [--version V]`.
+  - `build` makes the unpainted atlas (the game's own colours); `paint` restyles it (it refuses while the game runs).
+  - Builds go to `work/models/battle/atlas/<id>/<version>/`: `<MODEL>.png`, `<MODEL>.P<nn>.uv`, info.json and
+    preview/.
+  - `install` copies one into the game's `mesh/battle/atlas/` with a manifest (`work/models/battle/atlas/installed.json`).
+    It refuses files that aren't its own; `uninstall` removes exactly what it wrote.
+- **Part names:** the game loads part `<MODEL>.P<nn>` with nn the bone index (battle.lgp's `<id>` + role `am`+nn),
+  skipping bones without a part. Checked against FFNx.log's "reading p file" lines:
+  - the Grunt (ENEMY019, 21 parts: P00 P01 P02 P05 ... P34) and Zolom (39 parts: P00-P43 without P07 P09 P11 P36 P40)
+    load exactly the bones whose header has a part.
+  - Each `.uv` holds the `.p` header's own numverts/numpolys and every polygon in the `.p` table's order
+    (`poly_index`: groups' offpoly ranges); `check` re-reads them against the `.p` files.
+- **Atlas:** `atlas.build` on the model in part space (`part_space`: parts are rigid, so any pose and animation fits),
+  2048 px. Zolom: 280 charts, 0.23 texels per unit, about 1.6x what a 720-line battle view shows of it.
+- **Identity check** (`identity`, formation 469's camera, the model alone): mean 0.64 levels, p99 2, 99.3% within 3,
+  99.7% within 8. The rest are pixels on triangle edges where neighbouring triangles have different vertex colours
+  (bilinear filtering across the edge). Picture: `work/models/battle/atlas/dd/identity/preview/identity.png`.
+  - The Grunt (175 textured triangles) against a bilinear original: mean 0.7, p99 4. Against render.shade's
+    nearest-texel original it's p99 50: that's the original's sampling, not the atlas.
+- **Painting** (`paint`, the projected method with its own view loop):
+  - Zolom stands at formation 469's enemy position, turned to face the party (yaw 180). It's checked against the
+    in-game frame; the game's idle pose differs a little, since only frame 0 is decoded.
+  - Views: the formation's 3 battle cameras with oo behind; then 6 views all round and 3 of the head, with a plain
+    gradient of the battle's sky behind.
+  - Each view is restyled with painterly at 0.55 and the spec's words, then projected (paint.Painter).
+  - About 60 s for 12 views.
+- **What the variants showed** (v1-v7; previews in each version's preview/: `vs_target.jpg`, `turntable.jpg`,
+  `battle.jpg`):
+  - **Projecting every pixel was wrong:** the ground hides the coils' undersides, and the views' edge pixels carry the
+    background. A dry run with an identity restyle came back at mean 4.2 and p99 74 from the battle camera.
+    `projectable()` now takes only pixels in front of the scene, and weights pixels at the outline and occlusion edges
+    down to 0. The dry run is now mean 1.4, p99 8.
+  - **The scene behind the round views** (v1-v2) put the olive ground behind the coils. The AI painted the sides like
+    camouflage, and the back view got a face painted on the back of the hood. Fixed with a sky gradient and a few
+    words per view (`VIEW_HINTS`).
+  - **Repaint 0.62-0.7** (v2, v7) paints an open, fanged mouth on the closed face. **0.55** keeps it.
+  - "Red-brown stripes/plates down its sides" in the words gave brown patches all over (v3-v5); v6 leaves it out.
+  - Lifting the round views' darks toward the battle view's median (`lift`) made the back a little lighter (v4).
+  - The battle cameras' paint is kept unless a view sees it 2x better than BETTER (`KEEP_BATTLE`).
+  - The AI's colours, held to the original's by keep_colors, came out lighter and yellower than the target (Lab L 63
+    against 51). `target_grade` matches Zolom's pixels in the target's framing to the target's mean and spread in Lab.
+- **Result, v6** (`work/models/battle/atlas/dd/v6/`, to install):
+  - From the battle camera Zolom reads as drawn, in the target's colours: flat greens, painted shadow shapes on the
+    hood and belly plates, thin dark lines between plates and on the hood's ribs, eyes, fangs and tongue. It holds up at
+    1440 lines.
+  - Short of the target: fewer and weaker outlines, some soft gradients left on the hood, and the low-poly outline is
+    unchanged (a texture can't draw silhouette lines).
+  - Sides and back are darker and patchier (olive with brown patches, faceted) than the front, which shows when the
+    camera swings round.
+  - `identity` is also built: the atlas with the game's own colours, for checking the engine path (it should look like
+    the game without it).
+  - In game it needs FORMAT.md's flat light (`toon = 1`, `toon_shadow_color = [1, 1, 1]`, no rim, highlight or
+    outline, in `[bat_469]` or `[battles]`). `install` doesn't write that.
+- **Not done:**
+  - party weapons, which the game names apart;
+  - wiring into the Models plug-in.
+  - Every pose and formation uses the same atlas (parts are rigid); only the painting views come from formation 469.
+
 ## Order
 Shared core first (formats, mesh, renderer), then battle scenes end to end (static, unlit, real cameras), then
 battle models (posed), then field models (posed; generated UVs and glTF for untextured parts).
