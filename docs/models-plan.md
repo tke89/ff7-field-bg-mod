@@ -359,6 +359,76 @@ ENEMY081) has no texture at all. FFNx-3d draws a part from a per-model atlas whe
   - Zolom's coils are still faceted in lightness, and the party is small from the battle cameras, so the 2D look shows
     most on Zolom.
 
+## Painted field models: the field atlas (2026-11-07)
+The battle atlas for the models the game draws on the fields: `ff7bg/models/fieldatlas.py`. FFNx-3d (main session)
+treats field parts like battle parts under `mesh/field/atlas/`, one texture per part.
+- **Files** (per part, named as the game loads it: FFNx.log "reading p file: char/AAAC.P", upper case):
+  - `<P>.png`: the part's own RGBA texture, named by the part file's stem (`AAAC.P` -> `AAAC.png`). Field parts don't
+    share a model name the way battle parts do, so the model's atlas is cut per part, texel for texel
+    (`field._part_texture`, as `export_part` does for external meshes).
+  - `<P>.P.uv`: FORMAT.md's FFUV v1 against that texture; numverts/numpolys of the .p the game loads (direct/char).
+  - Light is the engine's (flat light for painted parts, char_round): nothing here writes lighting settings.
+- **The game's model:** the user's chibi field models in `workingdir/direct/char` replace char.lgp, so `field.py` now
+  reads direct/char first (`field.char_read`, as `battle.read_file` does for direct/battle; the catalogue's cache key
+  includes direct/char). Note this also changes what the Studio's field models show: the chibi models, not
+  char.lgp's (the 2026-11-06 choice was the original's).
+  - `pfile.read` takes the chibi parts' endings: all 3853 direct/char .p files end in the per-vertex normal index
+    table (0..nv-1), flagged or not, and 2939 of them in a u32 0 after it. Before, half the models failed to load
+    with direct/char first; now all 396 load, and battle.lgp's files read as .p are the same 8979.
+- **Cloud, `AAAA`:** posed with ACFE frame 0 (the standing pose most fields start him on). 16 parts, exactly the 16 the
+  log shows the game loading: AAAC AAAE AAAE1 (the Buster Sword on his back) AABA (head) AABF AACB AACD AACF AADB AADD
+  AADF AAEB AAED AAEF AAFB AAFD; counts e.g. AAAC 38/72, AABA 442/522.
+  - The head is two layers of the same 257 polygons: group 0 untextured (peach vertex colours) and group 4 textured
+    (CL: hair and face), with the eye and mouth decals (groups 1-3, 70-96% cut out) between. FFNx draws groups in
+    order with LEQUAL, so the later layer shows; render.rasterize's strict test speckled the two. `twins()` finds such
+    layers; renders and painting leave the earlier one out (`FieldAtlas.seen`) and `copy_twins` paints it like its twin.
+- **Atlas:** 2048 (33.6 texels per unit; the mod's own textures give the model 19-46, the face 46). Identity (atlas
+  against the original, bilinear x vertex colours): body mean 0.9, p99 5; head close-up mean 1.5, p99 12 (the face's
+  texture resampled). The exported per-part files against the atlas: exact (max 1 level). `check()` re-reads the game's
+  .p counts and samples every polygon's middle in its part PNG against the atlas.
+- **Painting** (`paint`, battleatlas.paint's loop without battle cameras): painterly at 0.55 plus the 2D words, the
+  model on a plain sky gradient: the body from 10 sides (the party's 9 plus from above behind: field cameras look
+  down), the head from 5, arms and hands, hands, the sword, the torso's sides with the arms left out (`solo`: the
+  arms cover them standing), then from below (soles). ~150 s a version. Then `colour_lock` (the game's hue and
+  saturation; field's version also keeps the game's greys grey), the decals restored, the twins copied.
+- **What the variants showed:**
+  - v1-v3 (0.55; v2 `better` 2.0; v3 0.62): the bodies read as painted, but the head's close views painted another,
+    older face with smaller eyes, which landed round the model's eye decals as smears; the AI's purple cast stayed on
+    the near-black gloves, the steel pauldron and the sword (`colour_lock` leaves greys alone).
+  - v4: the decals keep the game's drawing (`keep`), the face's close views repaint at 0.40 with "big round anime
+    eyes"; greys locked. Clean chibi eyes; faint brown marks on the forehead. v5 (body 0.62): more marks, browner hair.
+  - v6: as v4 with the face at 0.30: the cleanest face.
+  - The top and back of the hair (what a field camera sees most) came out blotchy with brown patches and a dark
+    scribble. v7 (the hair's views at 0.35-0.45) and v8 (every later view at 0.45) didn't help: it wasn't the AI's
+    strength. The first view sees the hair's top edge-on, its samples landed scattered with the original between them,
+    and the later views painted from that state; and paint.Painter.images() colours unpainted texels with one linear
+    fit over the whole atlas (a dotted black line along a seam on the right upper arm, red specks on the sword), while
+    Painter.fill_holes grows paint into neighbouring charts. Fixed in the pipeline (an identity dry run then matches
+    the original closely):
+    - `paint(facing=FACING_RAMP)`: a view's pixels count from |cos| 0.3, fully from 0.55, so surfaces seen edge-on
+      wait for a view that sees them squarely;
+    - `compose()`: the paint where views put some, the rest of each chart from its own nearest paint (whole charts no
+      view saw keep the game's colours), used for the final atlas and for what the next views see.
+  - **v9 (picked):** v6's recipe (face 0.30, `better` 2.0, decals kept) with those fixes. The hair's top is smoother,
+    the scribble and the arm's dotted line are gone. v10 (v8's strengths with the fixes) is about the same, a little
+    softer.
+  - The look's describer captioned the first view as the background alone ("a plain gradient ... empty and
+    featureless"), as it did for the battle party (rt v4): a lead for later (`describe=False` for model views) not tried.
+- **Commands:** `python -m ff7bg.models.fieldatlas build|paint|check|install|uninstall|status <hrc> [--version V]`;
+  `make()` in Python. Builds: `work/models/field/atlas/<hrc>/<version>/` (`<P>.png`, `<P>.P.uv`, info.json, preview/:
+  turntable, head, field, identity, files_identity, the views, atlas.png). `install` copies a build into
+  `<workingdir>/mesh/field/atlas/` with a manifest (`work/models/field/atlas/installed.json`), battleatlas's rules.
+  `identity` is the unpainted build, for checking the engine path.
+- **Judgement (v9):** it reads as a painted version of the chibi Cloud: painted shading and folds on the clothes, steel
+  pauldron and glove plates with drawn highlights, painted strands in the hair, the game's colours, the chibi shape
+  and the game's big anime eyes. It's a gentler change than the battle models' (the mod's textures are already
+  hand-painted), with no strong line art; the hair's top and back are still a little faceted and blotchy where views
+  meet, and faint brown marks stay on the forehead and cheek. Not yet seen in game.
+- **Not done:** only Cloud has a recipe (`RECIPES`; other models get the body and head views only); the PNG alpha
+  carries the decals' cut-outs, so the engine must alpha-test atlas texels where the group did; effect (additive)
+  groups aren't handled (Cloud has none); ~25% of the texels (insides, where parts meet) no view sees: filled from
+  their chart's paint.
+
 ## Order
 Shared core first (formats, mesh, renderer), then battle scenes end to end (static, unlit, real cameras), then
 battle models (posed), then field models (posed; generated UVs and glTF for untextured parts).

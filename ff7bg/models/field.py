@@ -1,6 +1,9 @@
 """FF7's field models (data/field/char.lgp) and the fields that use them (flevel.lgp's model loader sections): read,
 pose and turn into a mesh.Mesh (docs/models-plan.md, "field models").
 
+Files are read as the game reads them: workingdir/direct/char/<file> first (FFNx's direct mode; the user's chibi
+field models are there), then char.lgp (char_read; since 2026-11-07, as battle.read_file does for direct/battle).
+
 char.lgp holds, per model:
 - An HRC skeleton (text): ":HEADER_BLOCK 2", ":SKELETON <name>", ":BONES <n>", then per bone four lines: its name,
   its parent's name ("root" for the model's root), its length, and "<count> <RSD names...>". Lines starting with #
@@ -50,11 +53,12 @@ from . import pfile, tex
 
 GAME_WORKDIR = Path(r"C:\Program Files (x86)\Steam\steamapps\common\FINAL FANTASY VII Steam Edition\ff7\workingdir")
 CHAR_LGP = GAME_WORKDIR / "data" / "field" / "char.lgp"
+DIRECT = GAME_WORKDIR / "direct" / "char"  # the game's own replacements for char.lgp's files (char_read)
 FLEVEL_LGP = GAME_WORKDIR / "data" / "field" / "flevel.lgp"
 REPO = Path(__file__).resolve().parents[2]
-# catalogue() scans every field (about 35 s): its result is kept here, redone when an LGP changes
+# catalogue() scans every field (about 35 s): its result is kept here, redone when an LGP or direct/char changes
 CACHE = REPO / "work" / "models" / "field" / "catalogue.json"
-CACHE_VERSION = 3
+CACHE_VERSION = 4  # 4: direct/char read first (2026-11-07)
 
 # model name prefixes left out of a model's short name: main_n_cloud -> cloud, fieldbg_saveicn -> saveicn
 SHORT_PREFIXES = ("main_n_", "main_", "sub_n_", "sub_", "fieldbg_", "n_")
@@ -232,20 +236,46 @@ def _archive(path):
         return _archives[path]
 
 
+def _direct(name, char_lgp):
+    """The game's own replacement for a char.lgp file, when there is one: FFNx's direct mode reads
+    workingdir/direct/char/<file> in place of the archive's (7th Heaven mods put files there: the user's setup has the
+    chibi field models, 8963 files, Cloud's AAAA.HRC among them; FFNx.log's "reading p file: char/AAAC.P" lines are
+    those). Only for the game's own char.lgp, as battle._direct."""
+    if Path(char_lgp) != CHAR_LGP:
+        return None
+    p = DIRECT / name.lower()
+    return p if p.is_file() else None
+
+
 def char_read(name, char_lgp=CHAR_LGP):
-    """A file of char.lgp (any case); KeyError when it isn't there."""
+    """A file of char.lgp (any case), as the game reads it (its direct/char replacement first); KeyError when it isn't
+    there."""
+    p = _direct(name, char_lgp)
+    if p is not None:
+        return p.read_bytes()
     with _lock:
         return _archive(char_lgp).read(name)
 
 
 def char_has(name, char_lgp=CHAR_LGP):
-    return name.lower() in _archive(char_lgp).entries
+    return _direct(name, char_lgp) is not None or name.lower() in _archive(char_lgp).entries
 
 
 def char_names(ext, char_lgp=CHAR_LGP):
-    """char.lgp's names with an extension (".hrc"), upper case without it."""
+    """char.lgp's names with an extension (".hrc"), upper case without it (with any the game's direct/char adds)."""
     ext = ext.lower()
-    return sorted(n[:-len(ext)].upper() for n in _archive(char_lgp).names() if n.lower().endswith(ext))
+    names = set(_archive(char_lgp).names())
+    if Path(char_lgp) == CHAR_LGP and DIRECT.is_dir():
+        names |= {p.name for p in DIRECT.iterdir() if p.is_file()}
+    return sorted({n[:-len(ext)].upper() for n in names if n.lower().endswith(ext)})
+
+
+def direct_stamp(char_lgp=CHAR_LGP):
+    """[count, total size, newest mtime] of direct/char (catalogue()'s cache key), or None."""
+    if Path(char_lgp) != CHAR_LGP or not DIRECT.is_dir():
+        return None
+    files = [p.stat() for p in DIRECT.iterdir() if p.is_file()]
+    return [len(files), sum(s.st_size for s in files), int(max((s.st_mtime for s in files), default=0))]
 
 
 def _base(name):
@@ -365,6 +395,8 @@ def catalogue(cache=CACHE, flevel_lgp=FLEVEL_LGP, char_lgp=CHAR_LGP, progress=No
         "animations" ([.a names], the most used first), "first_animation" (what most fields start it on)}}.
     Kept in `cache` (a JSON file, None for none) and redone when either LGP changes."""
     stamp = {"version": CACHE_VERSION, "flevel": _stamp(flevel_lgp), "char": _stamp(char_lgp)}
+    if direct_stamp(char_lgp) is not None:  # the game's direct/char replacements (char_read) count too
+        stamp["direct"] = direct_stamp(char_lgp)
     key = (str(cache), json.dumps(stamp))
     if key in _catalogue:
         return _catalogue[key]

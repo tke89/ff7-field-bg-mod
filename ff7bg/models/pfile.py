@@ -100,8 +100,11 @@ def read(data):
         take(nv, 4)
     # battle.lgp's files have no extensions: a .p file's counts add up to its length. Mods' parts (the user's direct/
     # Barret) also carry the per-vertex normal index table without the header's flag for it: 4 bytes per vertex more,
-    # which FFNx ignores as the game does
-    if off != len(data) and not (not h[15] and len(data) - off == nv * 4):
+    # which FFNx ignores as the game does. The chibi field models (direct/char, checked 2026-11-07 on all 3853 parts)
+    # end in that table (0..nv-1), flagged or not, and 2939 of them in a u32 0 after it
+    rest = len(data) - off
+    table = 0 if h[15] else nv * 4
+    if rest not in (0, table) and not (rest == table + 4 and data[-4:] == b"\0\0\0\0"):
         raise ValueError("not a .p file (size)")
     groups = []
     for i in range(ng):
