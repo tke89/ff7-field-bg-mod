@@ -65,6 +65,49 @@ class Part:
         return idx, np.concatenate(uv).astype(np.float32), col, np.concatenate(grp), np.concatenate(tid)
 
 
+def write(verts, vcol, polys, pcol, hundred=None, header_tail=None):
+    """A .p part as the game's own battle parts are laid out (rtam and the rest, checked 2026-11-07): one untextured
+    group (polytype 1), no normals (FFNx and the game work them out), vertex and polygon colours, an edge table, one
+    hundred (render state: pass the part's original), one bounding box and the normal index table (flag 1, 0..n-1).
+    verts (n, 3) float in the part's own space, vcol (n, 4) RGBA uint8, polys (p, 3) vertex indices, pcol (p, 4) RGBA.
+    header_tail: the header's last 64 bytes (the original's are left-over pointers; zeros by default)."""
+    verts = np.ascontiguousarray(verts, np.float32).reshape(-1, 3)
+    polys = np.asarray(polys, np.int64).reshape(-1, 3)
+    nv, npoly = len(verts), len(polys)
+    if nv > 65535:
+        raise ValueError("a .p part holds at most 65535 vertices")
+    edge_of = {}
+    pedges = np.zeros((npoly, 3), np.int64)
+    for i, (a, b, c) in enumerate(polys):
+        for k, (u, v) in enumerate(((a, b), (b, c), (c, a))):
+            key = (min(u, v), max(u, v))
+            if key not in edge_of:
+                edge_of[key] = len(edge_of)
+            pedges[i, k] = edge_of[key]
+    edges = np.array(list(edge_of.keys()), np.uint16).reshape(-1, 2)
+    head = struct.pack("<16I", 1, 1, 1, nv, 0, 0, 0, nv, len(edges), npoly, 0, 0, 1, 1, 1, 1)
+    head += (header_tail or b"\0" * 64)[:64].ljust(64, b"\0")
+    bgra = lambda c: np.ascontiguousarray(np.asarray(c, np.uint8).reshape(-1, 4)[:, [2, 1, 0, 3]]).tobytes()
+    raw = np.zeros((npoly, 12), np.uint16)
+    raw[:, 1:4] = polys
+    raw[:, 7:10] = pedges
+    hund = (hundred or b"\0" * HUNDRED)[:HUNDRED].ljust(HUNDRED, b"\0")
+    group = struct.pack("<14I", 1, 0, npoly, 0, nv, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    lo, hi = verts.min(0), verts.max(0)
+    bbox = struct.pack("<I6f", 0, *hi.tolist(), *lo.tolist())
+    table = np.arange(nv, dtype=np.uint32).tobytes()
+    return b"".join([head, verts.tobytes(), bgra(vcol), bgra(pcol), edges.tobytes(), raw.tobytes(), hund, group, bbox,
+                     table])
+
+
+def hundred_of(data):
+    """The first hundred (render state, 100 bytes) of a .p file, and its header's last 64 bytes."""
+    h = struct.unpack_from("<16I", data, 0)
+    nv, nn, nunk, nt, nc, ne, npoly, nunk2, nunk3 = h[3:12]
+    off = HEADER + nunk * 12 + nv * 12 + nn * 12 + nt * 8 + nc * 4 + npoly * 4 + ne * 4 + npoly * 24 + nunk2 * 24 + nunk3 * 3
+    return data[off:off + HUNDRED], data[64:HEADER]
+
+
 def read(data):
     if len(data) < HEADER:
         raise ValueError("not a .p file")
