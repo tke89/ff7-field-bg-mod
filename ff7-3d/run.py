@@ -136,6 +136,7 @@ if __name__ == "__main__":
         fields = PILOT if fields == ["pilot"] else fields
         from ff3d import life
         for name in fields:
+            t0 = time.time()
             build.set_options(name, look=look)  # later builds keep it
             f = common.Field(name)
             if life.stale(life.cached(f)):  # built before chimneys, fires, windows, water were looked for: once
@@ -144,6 +145,9 @@ if __name__ == "__main__":
                 except Exception as e:
                     print(f"{name}: finding chimneys, fires and flags failed: {e}", flush=True)
             build.write_look(f, look)
+            # how long it took: the Studio's estimate for this field's next look step (studio_plugin.look_seconds)
+            (common.WORK / name / "look.json").write_text(json.dumps({"seconds": round(time.time() - t0, 1),
+                                                                    "look": look, "at": time.time()}))
             print(name, look)
     elif cmd == "build":
         do_build([f for f in fields if f != "--progress"], progress="--progress" in fields)

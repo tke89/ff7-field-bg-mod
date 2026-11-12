@@ -233,8 +233,9 @@
     char_match: { label: "Character colour match", min: 0, max: 1, step: 0.05, fmt: pctFmt,
       what: "FF7's characters were coloured to fit the original backgrounds. This changes their colours the way the new " +
         "art changed the background: brighter or darker, warmer or cooler, more or less colourful.",
-      up: "characters follow the new art's colours more closely", down: "they keep the game's own colours; at 0% unchanged",
-      rec: "75%" },
+      up: "characters follow the new art's colours more closely, but darker and more contrasty: yellow turns gold",
+      down: "they keep the game's own colours; at 0% unchanged",
+      rec: "0%" },
     char_light: { label: "Character light from the scene", min: 0, max: 1, step: 0.05, fmt: pctFmt,
       what: "The soft light around the characters takes on the painting's colours (sky above, ground below), so a warm room " +
         "warms them and a green reactor tints them. The scene itself keeps its own light.",
@@ -262,9 +263,33 @@
       up: "brighter characters that stand out more", down: "darker; at 0% only the scene's own light, as before",
       rec: "100%" },
     char_finish: { label: "Character finish", min: 0, max: 1, step: 0.05, fmt: pctFmt,
-      what: "How shiny the characters' skin, hair and clothes look under the scene's lights. Matte suits the painted " +
-        "scenes around them; full is FFNx's usual sheen, which makes everyone look like painted plastic or metal.",
-      up: "glossier, more like plastic or metal", down: "more matte, like cloth and skin", rec: "20%" },
+      what: "How shiny the characters' skin, hair and clothes look, in fields, battles and on the world map: " +
+        "highlights from the lights " +
+        "and a sheen of the sky along their edges. Matte suits the painted scenes around them; full is FFNx's usual " +
+        "sheen, which makes everyone look like painted plastic or metal.",
+      up: "glossier, more like plastic or metal", down: "more matte, like cloth and skin; at 0% no sheen at all",
+      rec: "0%" },
+    char_sss: { label: "Light through skin", min: 0, max: 1, step: 0.05, fmt: pctFmt,
+      what: "Light soaks a little into the characters' skin, feathers and clothes, in fields, battles and on the " +
+        "world map: the edge " +
+        "between their lit side and their shadow side is soft and warm, shadow sides keep their colour, and thin " +
+        "parts glow faintly when the light is behind them. Without it they look like plastic toys.",
+      up: "softer, warmer shading", down: "crisper, greyer shading; at 0% none", rec: "100%" },
+    char_highlight: { label: "Soft highlights", min: 0, max: 1, step: 0.05, fmt: pctFmt,
+      what: "Where the light on a character is strongest, its colour fades off gently instead of washing out to pale " +
+        "white or gold. In fields and on the world map (battles keep their brighter look).",
+      up: "gentler bright parts that keep their colour", down: "brighter, harsher bright parts; at 0% they wash out",
+      rec: "100%" },
+    char_volume: { label: "Rounder shading", min: 0, max: 1, step: 0.05, fmt: pctFmt,
+      what: "FF7's characters are built from a few flat panels, so light shows every facet. This shades each part " +
+        "(a head, an arm, a feather, a snake's coil) as if it were round, in fields, battles and on the world map. " +
+        "Their shape doesn't change, so faces and eyes stay as they are.",
+      up: "smoother, rounder-looking parts", down: "flatter panels; at 0% every facet shows", rec: "100%" },
+    char_ao: { label: "Shade between parts", min: 0, max: 1, step: 0.05, fmt: pctFmt,
+      what: "Where a character's parts come close (under the arms, between the legs, a chocobo's wings against its " +
+        "body) less light gets in, so those places are a little darker. Gives them depth instead of looking like " +
+        "cut-outs. In fields, battles and on the world map.",
+      up: "deeper shade in the creases", down: "evenly lit; at 0% none", rec: "100%" },
     char_lamps: { label: "Lit by nearby lights", min: 0, max: 1, step: 0.05, fmt: pctFmt,
       what: "Characters pick up the colour and light of the fires, lamps, lit windows, screens and glowing tanks they " +
         "walk past: orange by a furnace, cyan beside a screen. The lights are placed where the painting has them.",
@@ -358,7 +383,7 @@
         "Subtle in the Painted look, where the texture's shading is already painted in; more visible in Relit.",
       up: "rougher-looking surfaces", down: "smoother; at 0% none", rec: "0% Painted, about 50% Relit" },
   };
-  const PARTICLE_KINDS = { auto: "Automatic", none: "None", dust: "Dust in the air", embers: "Embers rising",
+  const PARTICLE_KINDS = { auto: "Automatic", none: "None", embers: "Embers rising",
     fireflies: "Fireflies", snow: "Snow falling", blizzard: "Blizzard", rain: "Rain" };
 
   // what the AI found in this scene for the options below (life.json from the last build or look switch)
@@ -389,7 +414,7 @@
   // the characters' settings that are the same in every field (server: build.GAMEWIDE): set under All fields only,
   // they show in the game at once (FFNx-3d reads them from the lighting config's [fields])
   const GAMEWIDE = ["char_shadow", "char_haze", "char_match", "char_local", "char_outline", "char_soft",
-    "contact_shadow", "char_finish", "char_fill"];
+    "contact_shadow", "char_finish", "char_fill", "char_sss", "char_highlight", "char_volume", "char_ao"];
   const PER_FIELD_EFFECTS = Object.keys(EFFECTS).filter((k) => !GAMEWIDE.includes(k));
   const GROUPS = [
     ["light", "Lighting"], ["game", "The characters, in every field"], ["chars", "Around the characters"],
@@ -447,7 +472,7 @@
       life: `<div class="ctl"><div class="lbl ${mk("particles")}">Particles</div><select data-a="particles">` +
         Object.entries(PARTICLE_KINDS).map(([v, n]) => `<option value="${v}" ${o.particles === v ? "selected" : ""}>` +
           `${v === "auto" ? `Automatic: ${PARTICLE_KINDS[st.particles_auto].toLowerCase()}` : n}</option>`).join("") +
-        `</select><div class="ctl-help">${helpText("Small things moving in the air: dust catching the light indoors, embers " +
+        `</select><div class="ctl-help">${helpText("Small things moving in the air: embers " +
           "over fires, fireflies in dark forests, falling snow or rain. Automatic picks from where the scene is in the game " +
           "or its description; most outdoor daytime scenes get none. On the Great Glacier, Blizzard replaces the grain of the game's " +
           "own flat snowstorm with snow blown past in 3D (its gusts of white stay); any other choice brings the original's back.", "Automatic")}</div></div>` +

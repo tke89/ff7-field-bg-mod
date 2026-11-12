@@ -29,7 +29,8 @@ LIGHT = {"shine": (0.0, 1.0), "light_tint": (0.0, 1.0), "shading": (0.0, 1.0), "
 # around the characters (ff3d/atmos.py): their shadows, haze and the lights' glow
 EFFECTS = {"char_shadow": (0.0, 1.0), "char_haze": (0.0, 1.0), "glow": (0.0, 1.0), "char_match": (0.0, 1.0),
            "char_light": (0.0, 1.0), "char_local": (0.0, 1.0), "char_outline": (0.0, 1.0), "char_soft": (0.0, 1.0),
-           "contact_shadow": (0.0, 1.0), "char_finish": (0.0, 1.0), "char_fill": (0.0, 2.0),
+           "contact_shadow": (0.0, 1.0), "char_finish": (0.0, 1.0), "char_fill": (0.0, 2.0), "char_sss": (0.0, 1.0),
+           "char_highlight": (0.0, 1.0), "char_volume": (0.0, 1.0), "char_ao": (0.0, 1.0),
            "particle_amount": (0.0, 2.0), "water_motion": (0.0, 1.0),
            "clouds": (0.0, 1.0), "flicker": (0.0, 1.0), "grass": (0.0, 1.0), "occlusion": (0.0, 1.0), "gloss": (0.0, 1.0),
            "metal": (0.0, 1.0), "bump": (0.0, 1.0), "smoke": (0.0, 1.0), "fire": (0.0, 1.0), "windows": (0.0, 1.0),
@@ -37,7 +38,7 @@ EFFECTS = {"char_shadow": (0.0, 1.0), "char_haze": (0.0, 1.0), "glow": (0.0, 1.0
            "mist": (0.0, 1.0), "bubbles": (0.0, 1.0), "char_lamps": (0.0, 1.0), "reflections": (0.0, 1.0)}
 SHAPE = ("sway", "reveal")  # changing these rebuilds the scene
 UI_KEYS = ("look", *SHAPE, "sun", "particles", *LIGHT, *EFFECTS)  # what the 3D tab shows
-PARTICLES = ("auto", "none", "dust", "embers", "fireflies", "snow", "blizzard", "rain")
+PARTICLES = ("auto", "none", "embers", "fireflies", "snow", "blizzard", "rain")  # no dust since 2026-11-09
 SUNS = ("painting", "default")
 NO_WINDOW = 0x08000000  # CREATE_NO_WINDOW: builds run without a console popping up
 
@@ -201,22 +202,101 @@ def register(studio):
         except Exception:
             pass  # the game is optional
 
+    # Look steps run side by side (user, 2026-11-09: a change for all fields took hours, one field after another): a
+    # look step takes the look steps queued right behind it along, up to LOOK_PARALLEL in all, each in its own process
+    # with LOOK_THREADS maths threads (6 x 4 on this PC's 32 cores, not 6 x 32 fighting over them)
+    LOOK_PARALLEL = 6
+    LOOK_THREADS = "4"
+
+    def look_seconds(name):
+        """How long this field's last look step took (run.py writes it), else about the usual."""
+        try:
+            return float(json.loads((common.WORK / name / "look.json").read_text())["seconds"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return 20.0  # about what one takes run side by side
+
     def run_look(w, job):
-        if not up_to_date(job["name"]):  # it would re-align to the new version and drop the build's caches
-            raise RuntimeError("the 3D scene is out of date: rebuild it instead")
-        o = _options(job["name"])
-        w._stage(f"switching to the {o['look']} look", 0.2)
-        run_pipeline(w, ["look", o["look"], job["name"]], job)  # the game reloads it by itself
+        """This look step and the ones queued right behind it (a build or a render in between keeps its place, and a
+        look step after a build waits for it), each in its own process, side by side. Each one's result goes in the
+        queue's history as its own; this job's own failure is raised as usual."""
+        group = [job]
+        with w.lock:
+            while w.queue and len(group) < LOOK_PARALLEL and w.queue[0]["kind"] == "3dlook":
+                group.append(w.queue.popleft())
+        env = {**os.environ, "FF7_STUDIO": str(studio.HERE), "OMP_NUM_THREADS": LOOK_THREADS,
+               "OPENBLAS_NUM_THREADS": LOOK_THREADS, "MKL_NUM_THREADS": LOOK_THREADS}
+        results, procs, tails = {}, {}, {}
+        started = time.time()
+        for j in group:
+            name = j["name"]
+            if not up_to_date(name):  # it would re-align to the new version and drop the build's caches
+                results[j["id"]] = (False, "the 3D scene is out of date: rebuild it instead", 0.0)
+                continue
+            look = _options(name)["look"]
+            procs[j["id"]] = subprocess.Popen(
+                [sys.executable, "-u", str(HERE / "run.py"), "look", look, name], cwd=str(HERE), stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", env=env, creationflags=NO_WINDOW)
+
+        def drain(jid, proc):  # each one's output, read as it comes (a full pipe would stop it)
+            tail = []
+            for line in proc.stdout:
+                if line.strip():
+                    tail = (tail + [line.rstrip()])[-20:]
+            tails[jid] = tail
+        readers = [threading.Thread(target=drain, args=(jid, p), daemon=True) for jid, p in procs.items()]
+        for r in readers:
+            r.start()
+        names = ", ".join(j["name"] for j in group)
+        while any(p.poll() is None for p in procs.values()):
+            if w.cancel_flag:  # a cancel stops them all at once
+                for p in procs.values():
+                    p.kill()
+                break
+            done = sum(p.poll() is not None for p in procs.values()) + len(group) - len(procs)
+            w._stage(f"switching {len(group)} fields to their look at once ({names}): {done} done", done / len(group))
+            time.sleep(0.3)
+        for r in readers:
+            r.join(timeout=5)
+        for j in group:
+            p = procs.get(j["id"])
+            if p is None:
+                continue
+            if w.cancel_flag:
+                results[j["id"]] = (False, "cancelled", time.time() - started)
+            elif p.returncode:
+                tail = tails.get(j["id"], [])
+                failed = [t for t in tail if "FAILED" in t]
+                msg = (failed or tail or ["the 3D look step stopped"])[-1].split("FAILED", 1)[-1].strip()
+                results[j["id"]] = (False, msg, time.time() - started)
+            else:
+                results[j["id"]] = (True, "", look_seconds(j["name"]))
+        # the others' results, as the worker records its own job's
+        for j in group[1:]:
+            ok, msg, secs = results[j["id"]]
+            if ok:
+                project.update_meta(j["name"], error=None)
+            elif msg != "cancelled":
+                project.update_meta(j["name"], error=msg)
+            with w.lock:
+                w.recent.append({**w._public(j), "version": j.get("version"), "ok": ok, "message": msg,
+                                 "seconds": round(secs, 1), "finished": time.time()})
+        ok, msg, _ = results[job["id"]]
+        if not ok:
+            raise InterruptedError("cancelled") if msg == "cancelled" else RuntimeError(msg)
 
     def estimate(name):
         r = common.WORK / name / "report.json"
         return json.loads(r.read_text()).get("seconds", 30) if r.exists() else 30
 
     studio.JOB_KINDS["3d"] = {"run": run_build, "est": estimate}
-    studio.JOB_KINDS["3dlook"] = {"run": run_look, "est": lambda name: 6}
+    studio.JOB_KINDS["3dlook"] = {"run": run_look, "est": look_seconds}
 
     def queue(names, kind="3d", front=False):
-        return worker.enqueue([studio.make_job(n, kind) for n in names], front=front)
+        jobs = [studio.make_job(n, kind) for n in names]
+        if kind == "3dlook" and len(jobs) > 1:  # they run LOOK_PARALLEL at a time (run_look): each one's share
+            for j in jobs:
+                j["est"] = round(j["est"] / min(LOOK_PARALLEL, len(jobs)), 1)
+        return worker.enqueue(jobs, front=front)
 
     def on_current(name, vid, options=None):
         """A field's version in the game changed (a render finished, Use this version): its 3D scene next, as the
@@ -421,14 +501,55 @@ def register(studio):
                        stamp=(common.MESH / name / "scene.gltf").stat().st_mtime, version=source_of(name)[0],
                        up_to_date=up_to_date(name), current=project.current(name))
 
-    @bp.get("/scene/<name>/<part>")
-    def api_scene(name, part):
-        """scene.gltf, scene.bin, or colour.dds (the colour texture, uncompressed BGRA)."""
+    # the field's life for the preview (studio_view3d.js): its particles file and the settings of its moving parts,
+    # looked up as the engine does ([field_<name>], then [fields], then the file's top level)
+    LIFE_KEYS = ("scene_fx", "scene_fx_dir", "water_motion", "grass_wind", "grass_gust", "grass_wind_dir")
+
+    @bp.get("/life/<name>")
+    def api_life(name):
+        """{particles: the field's <name>_particles.toml as it is (null: none), fx: the moving parts' settings, maps:
+        which of the effects map and the normal map (grass) the scene has, stamp: when any of them last changed}."""
+        import tomllib
         known(name)
         d = common.MESH / name
-        if part == "colour.dds":
+        out = {"particles": None, "fx": {}, "maps": {}, "stamp": 0.0}
+        p = d / f"{name}_particles.toml"
+        if p.exists():
+            try:
+                out["particles"] = tomllib.loads(p.read_text("utf-8"))
+            except (OSError, ValueError) as ex:
+                out["error"] = f"{p.name}: {ex}"
+            out["stamp"] = p.stat().st_mtime
+        cfg_path = common.LIGHTING / "config.toml"
+        try:
+            cfg = tomllib.loads(cfg_path.read_bytes().decode("utf-8"))
+            out["stamp"] = max(out["stamp"], cfg_path.stat().st_mtime)
+        except (OSError, ValueError):
+            cfg = {}
+        for k in LIFE_KEYS:
+            for group in (cfg.get(f"field_{name}") or {}, cfg.get("fields") or {}, cfg):
+                if k in group:
+                    out["fx"][k] = group[k]
+                    break
+        if (d / "scene.gltf").exists():
+            base = json.loads((d / "scene.gltf").read_text())["images"][0]["name"]
+            for key in ("fx", "nml"):
+                f = d / f"{base}_{key}.dds"
+                out["maps"][key] = f.exists()
+                if f.exists():
+                    out["stamp"] = max(out["stamp"], f.stat().st_mtime)
+        return jsonify(out)
+
+    @bp.get("/scene/<name>/<part>")
+    def api_scene(name, part):
+        """scene.gltf, scene.bin, colour.dds (the colour texture, uncompressed BGRA), fx.dds (its effects map) or
+        nml.dds (its normal map: grass in its alpha), the same."""
+        known(name)
+        d = common.MESH / name
+        if part in ("colour.dds", "fx.dds", "nml.dds"):
             gltf = json.loads((d / "scene.gltf").read_text())
-            path = d / f"{gltf['images'][0]['name']}.dds"
+            base = gltf["images"][0]["name"]
+            path = d / (f"{base}.dds" if part == "colour.dds" else f"{base}_{part}")
         elif part in ("scene.gltf", "scene.bin"):
             path = d / part
         else:

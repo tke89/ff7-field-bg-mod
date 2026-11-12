@@ -358,13 +358,16 @@ def char_material(finish):
             "material_specular": round(0.04 + 0.06 * a, 3)}
 
 
-def char_exposure(finish):
-    """How much to darken the characters (a factor on their colour grade, sRGB) so a matter finish keeps them as
-    bright: a metal takes half the scene's soft light (diffuse x (1 - metallic)), so going matte doubled it and they
-    looked washed out. Half that in full: much of their light is lamps' and reflections', which metal doesn't halve
-    (the full amount made Kalm's characters by the furnace dim)."""
-    metal = char_material(finish)["material_metallic"]
-    return (0.5 / max(1.0 - metal, 0.5)) ** (0.5 / 2.2)
+def char_surface(o):
+    """The characters' surface in FFNx-3d (2026-11-12, players: they looked "metallic", "plastic", "flat"):
+    char_sheen how much of their surroundings they mirror (the finish: matte none; upstream's Fresnel part put a pale
+    sky sheen on every edge even of matte cloth), char_sss light soaking into skin, feathers and cloth (a soft warm
+    edge into shadow); 2026-11-12: char_volume their parts shaded as if round (flat facets read as "flat"), char_ao
+    the light from all around shaded where their parts come close (FFNx-3d; metal parts and light wrap were tried and
+    not taken)."""
+    clip = lambda k: round(float(np.clip(float(o[k]), 0.0, 1.0)), 3)  # noqa: E731
+    return {"char_sheen": clip("char_finish"), "char_sss": clip("char_sss"), "char_volume": clip("char_volume"),
+            "char_ao": clip("char_ao")}
 
 
 def char_style(f):
@@ -449,21 +452,37 @@ def game_light(f):
 def fields_settings(o, ambient):
     """The characters' game-wide settings as FFNx-3d's [fields] keys (every field takes them unless its own section
     says otherwise): shadows, haze, colour match, light where they stand, outline strength, softness, the shadow
-    under them, finish, and their fill light (`ambient`, build.char_ambient)."""
+    under them, finish, surface (char_surface), soft highlights, and their fill light (`ambient`,
+    build.char_ambient). No darkening (char_exposure 1; until 2026-11-12 a matte finish was darkened to keep the
+    brightness metal had, which with the colour match turned yellow chocobos to gold)."""
     finish = float(o["char_finish"])
     return {"shadowmap_occlusion": round(1 - float(o["char_shadow"]), 3), "haze_strength": float(o["char_haze"]),
             "char_match": float(o["char_match"]), "floor_light_strength": float(o["char_local"]),
             "char_outline": float(o["char_outline"]), "char_soft": round(float(o["char_soft"]) * SOFT_MAX, 2),
-            "contact_shadow": float(o["contact_shadow"]), **char_material(finish),
-            "char_exposure": round(char_exposure(finish), 4), "char_ambient": ambient}
+            "contact_shadow": float(o["contact_shadow"]), **char_material(finish), **char_surface(o),
+            "char_highlight": round(float(np.clip(float(o["char_highlight"]), 0.0, 1.0)), 3),
+            "char_exposure": 1.0, "char_ambient": ambient}
+
+
+def battles_settings(o):
+    """The game-wide battle settings for FFNx-3d's [battles]: the characters' finish and surface as in fields. Not the
+    soft highlights: they left Midgar Zolom dull grey-green (2026-11-11)."""
+    return {**char_material(float(o["char_finish"])), **char_surface(o)}
+
+
+def worldmap_settings(o):
+    """FFNx-3d's [worldmap]: the world map's models (Cloud, chocobos, vehicles; its ground isn't lit by these) as in
+    fields, soft highlights too (2026-11-12; before, the file's top level: FFNx's half-metallic stock, a silver edge)."""
+    return {**char_material(float(o["char_finish"])), **char_surface(o),
+            "char_highlight": round(float(np.clip(float(o["char_highlight"]), 0.0, 1.0)), 3)}
 
 
 # Particles (FFNx-3d: <field>_particles.toml beside the scene). Per kind: how many the camera sees on a screen at
 # 100%, their size and how high above the floor they reach (background pixels where the floor is, so they look the
 # same in every field), how visible, their colour, and how far past the walkmesh they go (share of its size)
+# (no dust in the air since 2026-11-09: the user found it looked bad in every scene it was in; motes in light
+# shafts are life.py's, apart)
 PARTICLES = {
-    "dust": {"per_screen": 60, "size": 2.0, "height": 60, "alpha": 0.6, "color": [1.0, 0.95, 0.85], "around": 0.05,
-             "lift": (0.0, 1.0)},
     "embers": {"per_screen": 150, "size": 2.2, "height": 110, "alpha": 1.0, "color": [1.0, 0.55, 0.2], "around": 0.05,
                "lift": (0.0, 1.0)},
     "fireflies": {"per_screen": 40, "size": 3.0, "height": 50, "alpha": 1.0, "color": [0.8, 1.0, 0.45], "around": 0.1,
@@ -474,7 +493,7 @@ PARTICLES = {
     "blizzard": {"per_screen": 1300, "size": 2.2, "height": 200, "alpha": 0.9, "color": [0.95, 0.97, 1.0],
                  "around": 0.3, "wind": 110, "streak": 0.06},
 }
-FLOOR_KINDS = ("dust", "embers", "fireflies")  # start above the walkable floor (lift: share of their height)
+FLOOR_KINDS = ("embers", "fireflies")  # start above the walkable floor (lift: share of their height)
 FLOOR_POINTS = 400  # floor points sampled for them
 FLOOR_SPREAD = 20   # how far around a floor point they start (background pixels)
 PARTICLE_PX = 0.3   # ffnx3d_particles.cpp's speeds are for a field this many background pixels per world unit
@@ -484,9 +503,7 @@ SCREEN_PX = 320 * 240
 AUTO_FIELDS = {"snow": ("snow", "hyou1", "hyou2", "hyou3", "hyou4", "hyou5", "hyou6", "hyou7", "hyou8", "hyou9",
                         "gaia_", "gaiafoot", "gaiin_", "move_"),
                "embers": ("nivl_b",),            # Nibelheim burning
-               "fireflies": ("slfrst", "blue_"),  # the Sleeping Forest, the Forgotten City's forest
-               "dust": ("anfrst",)}               # the Ancient Forest: motes in its light
-INSIDE_NAME = re.compile(r"inn|pb|_im?\b|_i\d|in\d|in_|in$")
+               "fireflies": ("slfrst", "blue_")}  # the Sleeping Forest, the Forgotten City's forest
 INSIDE = r"\b(room|interior|inside|indoors?|hallway|corridor|bedroom|kitchen|bar|tavern|inn|shop|store|office|library|basement|attic|warehouse)\b"
 
 
@@ -512,8 +529,8 @@ def blizzard_wind(name):
 
 
 def particle_kind(name):
-    """The particles a field gets on automatic: dust, embers, fireflies, snow, blizzard (snow where the original
-    has a blizzard), rain or none."""
+    """The particles a field gets on automatic: embers, fireflies, snow, blizzard (snow where the original has a
+    blizzard), rain or none (indoors, sunbeams and dusty places got dust until 2026-11-09)."""
     kind = _particle_kind(name)
     return "blizzard" if kind == "snow" and blizzard_wind(name) else kind
 
@@ -535,10 +552,8 @@ def _particle_kind(name):
                 r"\b(night|nighttime|dark|dim|moonlit|misty|glowing)\b", c) and not re.search(
                 r"\b(daytime|daylight|sunny|sunlight|overcast)\b", c):
             return "fireflies"
-        if inside or re.search(r"\b(sunbeams?|sunlight filters|shafts? of light|dusty)\b", c):
-            return "dust"
         return "none"
-    return "dust" if INSIDE_NAME.search(name) else "none"
+    return "none"
 
 
 def _seen_box(f, box, n=20000):

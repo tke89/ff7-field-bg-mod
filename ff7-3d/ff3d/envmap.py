@@ -15,6 +15,11 @@ import numpy as np
 GAME = Path(r"C:\Program Files (x86)\Steam\steamapps\common\FINAL FANTASY VII Steam Edition\ff7\workingdir")
 IBL = GAME / "lighting" / "ibl"
 LEVEL = 0.45
+# make()'s inputs for the files in IBL, one file per field (and suffix): the same light again skips the work (user,
+# 2026-11-09: a look step re-made both cubes every time, about 40% of it). Bump KEY_VERSION when make()'s output
+# changes for the same inputs
+KEYS = Path(__file__).resolve().parents[1] / "work" / "_ibl_keys"
+KEY_VERSION = 1
 
 
 def face_dirs(n):
@@ -119,11 +124,27 @@ def env_brdf(n=64, samples=512):
     return out
 
 
+def _stamp(paths):
+    """The files' sizes and change times (a file changed since the key was written: made again)."""
+    return " ".join(f"{p.stat().st_size}:{p.stat().st_mtime_ns}" for p in paths)
+
+
 def make(field, sun, colours=NEUTRAL, suffix=""):
     """lighting/ibl/field_<id><suffix>_s.dds (reflections, with mips) and _d.dds (diffuse), plus envBrdf.dds if
-    missing. suffix "_char": the characters' own (FFNx-3d)."""
+    missing. suffix "_char": the characters' own (FFNx-3d). Nothing to do when the files there were made from the same
+    sun and colours (KEYS)."""
     sun = np.asarray(sun, float) / np.linalg.norm(sun)
     IBL.mkdir(parents=True, exist_ok=True)
+    outs = [IBL / f"field_{field}{suffix}_d.dds", IBL / f"field_{field}{suffix}_s.dds"]
+    key = f"v{KEY_VERSION} {LEVEL} " + " ".join(f"{float(v):.5f}" for v in sun) + " " + " ".join(
+        f"{k}:" + ",".join(f"{float(c):.5f}" for c in colours[k]) for k in sorted(colours))
+    keyfile = KEYS / f"field_{field}{suffix}.txt"
+    if all(p.exists() for p in outs) and (IBL / "envBrdf.dds").exists() and keyfile.exists():
+        try:
+            if keyfile.read_text(encoding="utf-8") == f"{key}\n{_stamp(outs)}":
+                return
+        except OSError:
+            pass
     src_dirs = face_dirs(32)
     src = environment(src_dirs, sun, **colours)
     mips, n, level = [], 128, 0
@@ -137,8 +158,10 @@ def make(field, sun, colours=NEUTRAL, suffix=""):
     # bring the brightest irradiance down to LEVEL so the ambient strength setting means about the same either way
     diff = convolve(src, src_dirs, face_dirs(32))
     top = diff.max() / LEVEL
-    write_cube(IBL / f"field_{field}{suffix}_d.dds", [to_lin8(diff, top)])
-    write_cube(IBL / f"field_{field}{suffix}_s.dds", [to_lin8(m, top) for m in mips])
+    write_cube(outs[0], [to_lin8(diff, top)])
+    write_cube(outs[1], [to_lin8(m, top) for m in mips])
+    KEYS.mkdir(parents=True, exist_ok=True)
+    keyfile.write_text(f"{key}\n{_stamp(outs)}", encoding="utf-8")
     if not (IBL / "envBrdf.dds").exists():
         lut = env_brdf()
         rgba = np.zeros(lut.shape[:2] + (4,), np.uint8)

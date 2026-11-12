@@ -55,17 +55,23 @@ DEFAULTS = {
     "char_shadow": 0.5,   # how dark the characters' shadows are on the ground they walk on (0 none, 1 black)
     "char_haze": 1.0,     # how much of the painting's haze the characters take on with distance (1: matched)
     "glow": 0.5,          # how strongly the painting's lights glow, over the characters too (0: none)
-    "char_match": 0.75,   # how far the characters' colours follow the new art's change from the original (atmos.grade)
+    "char_match": 0.0,    # how far the characters' colours follow the new art's change from the original (atmos.grade;
+                          # 0.75 until 2026-11-12: its contrast and darkening turned yellow chocobos to gold)
     "char_light": 0.6,    # how much the characters' surrounding light takes the painting's colours (0: neutral)
     "char_local": 0.6,    # how much characters take the light of the floor where they stand (atmos.floor_light)
     "char_outline": 0.0,  # characters outlined in the painting's line colour (for outlined art styles; 0: none)
     "char_soft": 0.35,    # how much softer the characters' textures are, like the painted scene
     "contact_shadow": 0.5,  # a soft dark patch on the floor right under the characters, whatever the sun
-    "char_finish": 0.2,   # how shiny the characters look under the lights (1: FFNx's usual plastic-like sheen)
+    "char_finish": 0.2,   # how shiny the characters look under the lights (1: FFNx's usual plastic-like sheen and sky
+                          # reflections; 0: matte, none)
+    "char_sss": 1.0,      # light soaking a little into skin, feathers and cloth (FFNx-3d char_sss; 0: as upstream)
+    "char_highlight": 1.0,  # the characters' brightest parts roll off softly instead of washing out (FFNx-3d; fields)
+    "char_volume": 1.0,   # the characters' parts shaded as if round, not as flat facets (FFNx-3d char_volume; 0: upstream)
+    "char_ao": 1.0,       # the light from all around shaded where their parts come close (FFNx-3d char_ao; 0: none)
     "char_fill": 1.0,     # the characters' light from all around, whatever the scene's sun/shade split (0: the scene's
                           # ambient, as before 2026-11-01; 1: CHAR_FILL x brightness; up to 2)
     # life in the scene (FFNx-3d)
-    "particles": "auto",  # dust, embers, fireflies, snow, rain or none in the air (auto: atmos.particle_kind)
+    "particles": "auto",  # embers, fireflies, snow, rain or none in the air (auto: atmos.particle_kind)
     "particle_amount": 1.0,  # how many of them (1: the usual number)
     "water_motion": 0.5,  # how much the scene's water ripples (0: still)
     "clouds": 0.0,        # cloud shadows drifting over the field, characters too (sunny outdoors; atmos.clouds)
@@ -109,7 +115,7 @@ WIND_BONES, WIND_FRAMES = 10, 360
 LOOK_KEYS = ("look", "shine", "light_tint", "shading", "brightness", "saturation", "sun_turn", "sun_height", "sun",
              "char_shadow", "char_haze",
              "glow", "char_match", "char_light", "char_local", "char_outline", "char_soft", "contact_shadow", "char_finish",
-             "char_fill",
+             "char_fill", "char_sss", "char_highlight", "char_volume", "char_ao",
              "particles", "particle_amount", "water_motion", "clouds", "flicker", "grass", "occlusion", "gloss", "metal", "bump",
              "smoke", "fire", "windows", "sky", "flags", "birds", "blink", "motes", "mist", "bubbles", "char_lamps",
              "reflections")
@@ -119,7 +125,7 @@ LOOK_KEYS = ("look", "shine", "light_tint", "shading", "brightness", "saturation
 # have its own. Each field's section keeps only its own part (its outline colour and scale, its whole colour grade,
 # its floor light map).
 GAMEWIDE = ("char_shadow", "char_haze", "char_match", "char_local", "char_outline", "char_soft", "contact_shadow",
-            "char_finish", "char_fill")
+            "char_finish", "char_fill", "char_sss", "char_highlight", "char_volume", "char_ao")
 
 
 def write_fields_section(o=None):
@@ -129,6 +135,10 @@ def write_fields_section(o=None):
     ibl.write_section("fields", {
         **atmos.fields_settings(o, char_ambient(look, ll["shading"], ll["brightness"], float(o["char_fill"]))),
         "char_round": 0.0})  # FFNx-3d's rounder models hid eyes drawn as separate pieces (mds7pb_1): off
+    # every battle's characters the same way (a battle look's own [battle_STAGE<nn>] comes first; its material is
+    # matte too): before 2026-11-12 battles took the file's top level, FFNx's half-metallic stock
+    ibl.write_section("battles", atmos.battles_settings(o))
+    ibl.write_section("worldmap", atmos.worldmap_settings(o))  # ...and the world map's (FFNx-3d [worldmap])
 
 
 # One set every field follows (SHARED, the 3D tab's "All fields"), and a field's own changes on top
