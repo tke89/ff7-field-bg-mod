@@ -13,8 +13,8 @@ painted battle scene version (ai/models/scene/<id>/<version>/, paint.py's flat s
    original (atmos.grade's bounded fit);
 3. bring the scene to life (life): sky textures that drift (scenepaint.classify's far textures that are only sky,
    along the way they tile), grass that sways (ground textures that are grass: colour, and Qwen when allowed), and
-   particles where the scene suits them (Qwen on the battle camera's view, else the Studio's description: dust,
-   embers, snow, rain, fireflies);
+   particles where the scene suits them (Qwen on the battle camera's view, else the Studio's description: embers,
+   snow, rain, fireflies; no dust since 2026-11-09);
 4. give the painted textures relief (normals): Marigold's surface normals of each painted sheet (wrap-padded, fine
    relief only), encoded for FFNx's cotangent frame as the fields' are, saved as <NAME>_00_nml.png.
 
@@ -136,7 +136,7 @@ GRASS_SHARE = 0.3   # a ground texture this much grass (colour) sways...
 SWAY = 0.6          # ...this much when it's all grass
 WIND = (1.0, 0.0, 1.0)  # the wind over the ground (battle x, y, z): the way the engine's gusts travel (+x+z)
 PARTICLE_AMOUNT = 0.6
-PARTICLE_KINDS = ("dust", "embers", "fireflies", "snow", "rain")
+PARTICLE_KINDS = ("embers", "fireflies", "snow", "rain")  # no dust since 2026-11-09 (the user: it looked bad)
 PARTICLE_NEAR = 0.35  # particles stop growing nearer the camera than this share of its distance to the fight
 FLOOR_POINTS = 400
 # 4. normal maps
@@ -732,7 +732,7 @@ SKY_ASK = ("This is a texture from a JRPG battle arena's sky dome. Does it show 
 GRASS_ASK = ("This is a ground texture from a JRPG battle arena. Is it mostly grass, a meadow, reeds or crops: plants "
              "that would sway in the wind? Answer with one word, yes or no.")
 PARTICLE_ASK = ("This is a battle arena in a Japanese role-playing game. Which floating particles would suit it best: "
-                "dust (dusty rooms, caves, ruins, factories, deserts), embers (fires, lava, burning places), snow "
+                "embers (fires, lava, burning places), snow "
                 "(snowy or icy places outdoors), rain (rain falling outdoors), fireflies (forests, swamps or grass at "
                 "night), or none (clear open air, clean rooms, water, space)? Answer with one word.")
 
@@ -831,8 +831,6 @@ def _kind_from_words(words):
         return "rain"
     if re.search(r"\b(forest|jungle|woods|swamp|grove)\b", c) and re.search(r"\b(night|nighttime|moonlit)\b", c):
         return "fireflies"
-    if inside or re.search(r"\b(dusty|desert|ruins?)\b", c):
-        return "dust"
     return "none"
 
 
@@ -1356,7 +1354,12 @@ def install(id, version=None, formations=None, parts=None):
                 copies.append((src, dest / src.name))
     if st["files"].get("particles") and (parts is None or "life" in parts):
         src = out / st["files"]["particles"]
-        copies.append((src, mesh_dir() / "battle" / src.name))
+        try:  # a build from before a kind was dropped (dust, 2026-11-09) keeps its file: not put in
+            offered = tomllib.loads(src.read_text(encoding="utf-8")).get("kind") in PARTICLE_KINDS
+        except (OSError, ValueError):
+            offered = False
+        if offered:
+            copies.append((src, mesh_dir() / "battle" / src.name))
     tables = {sec: values, **{f"bat_{f}": values for f in forms}}
     with _lock:
         data = installed()

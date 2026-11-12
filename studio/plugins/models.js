@@ -22,6 +22,8 @@
     battleResult: null,
     // the battle look (battle scenes): what the Studio last said about it, an install or uninstall under way
     bl: null, blBusy: false, blSeq: 0,
+    // the floor's reflections (battle scenes): what the Studio last said, a click under way, the preview's refresh
+    floor: null, floorBusy: false, floorSeq: 0, floorPic: 0,
     // paint in 2D style (battle models): what the Studio last said about it, the version shown, a click under way
     p2d: null, p2dSeq: 0, p2dVer: null, p2dBusy: false,
     // the viewer: a 2D version shown on the model (its id; null: the Paint card's versions), the ones there are,
@@ -85,6 +87,12 @@
                        background: #000; border: 1px solid var(--line); }
     .mdl-bl-prev figcaption { font-size: 11px; color: var(--faint); margin-top: 2px; line-height: 1.3; }
     .mdl-bl-part .hint { margin-top: 1px; line-height: 1.4; }
+    .mdl-floor-prev { margin: 8px 0 2px; cursor: zoom-in; }
+    .mdl-floor-prev img { width: 100%; max-height: 160px; object-fit: contain; display: block; border-radius: 4px;
+                          background: #000; border: 1px solid var(--line); }
+    .mdl-floor-row .row-btns { display: flex; flex-wrap: nowrap; gap: 6px; }
+    .mdl-floor-row .row-btns select { flex: 1 1 auto; min-width: 0; width: auto; }
+    .mdl-floor-row .row-btns select[data-famount] { flex: 0 0 76px; }
     .mdl-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px;
                   border: 1px solid var(--line); margin: 0 2px; }
     .mdl-bl-probs { font-size: 11px; color: var(--faint); margin: 4px 0 0; padding-left: 16px; }
@@ -175,6 +183,7 @@
         <input id="mdlSearch" type="search" autocomplete="off">
         <div class="count-row"><span class="count" id="mdlCount"></span>
           <label class="check" id="mdlBareBox" title="Leave out the models that have no textures (nothing to paint on them yet)"><input type="checkbox" id="mdlHideBare"> Only with textures</label></div>
+        <div class="row-btns tight" id="mdlBatchRow" hidden><button id="mdlBatch" class="small" title="Queue a Paint final for every battle scene that has something to paint: the ones not painted yet, or all of them">Paint all battle scenes…</button></div>
       </div>
       <ul class="field-list mdl-list" id="mdlList"></ul>
     </aside>
@@ -220,6 +229,7 @@
         <section class="card mdl-card" id="mdlPaint"></section>
         <section class="card mdl-card" id="mdlGame"></section>
         <section class="card mdl-card" id="mdlBl" hidden></section>
+        <section class="card mdl-card" id="mdlFloor" hidden></section>
       </div></div>
       <section class="gen-foot">
         <div class="estimate" id="mdlEstimate"></div>
@@ -263,6 +273,7 @@
     $("#mdlKindHint").textContent = KINDS[kind].hint;
     $("#mdlSearch").placeholder = KINDS[kind].search;
     $("#mdlBareBox").hidden = kind !== "battle";
+    $("#mdlBatchRow").hidden = kind !== "scene";
     if (changed || !keep) $("#mdlSearch").value = pref(`models.search.${kind}`, "");
     loadList();
   }
@@ -398,11 +409,13 @@
     if (!ids.includes(M.ver)) M.ver = it.current || ids[ids.length - 1] || null;
     if (M.cam >= Math.max(1, it.cameras.length)) M.cam = 0;
     if (M.bl && (M.bl.id !== it.id || it.kind !== "scene")) M.bl = null;
+    if (M.floor && (M.floor.id !== it.id || it.kind !== "scene")) M.floor = null;
     if (M.p2d && (M.p2d.id !== it.id || it.kind !== "battle")) M.p2d = null;
     loadLooks();
     renderAll();
     requestRender(false);
     loadBattleLook();
+    loadFloor();
     loadP2d();
     loadViewer2d();
   }
@@ -415,6 +428,7 @@
     renderPaint();
     renderGame();
     renderBattleLook();
+    renderFloor();
     renderVersions();
     renderFoot();
     renderStatus();
@@ -609,18 +623,19 @@
         "painted on its own, and lines can show where they meet.", "on")}</div></span></label>` +
       `<div class="ctl ${ch("detail")} ${detOff ? "mdl-off" : ""}"><label class="lbl" for="mdlDetail">Ground detail</label>` +
       `<select id="mdlDetail" ${detOff ? "disabled" : ""}>` +
-      [[1, "Off"], [2, "2× (default)"], [4, "4×"], [8, "8×"], [16, "16×"]].map(([v, l]) =>
-        `<option value="${v}" ${(ps.detail || 2) === v ? "selected" : ""}>${l}</option>`).join("") +
+      [[1, "Off (default)"], [2, "2×"], [4, "4×"], [8, "8×"], [16, "16×"]].map(([v, l]) =>
+        `<option value="${v}" ${(ps.detail || 1) === v ? "selected" : ""}>${l}</option>`).join("") +
       `</select>` + (scene && parts.ground ? `<div class="hint">${parts.ground} ground texture${parts.ground === 1 ? "" : "s"} here` +
-          (exOn && (ps.detail || 2) > 1 && PF.ground_px ? `; ${detailSize(ps.detail || 2, PF, PP)}` : "") + `.</div>`
+          (exOn && (ps.detail || 1) > 1 && PF.ground_px ? `; ${detailSize(ps.detail || 1, PF, PP)}` : "") + `.</div>`
         : exOn ? `<div class="hint">No ground texture found in this scene.</div>` : "") +
-      `<div class="ctl-help"><div>The floor is a small texture stretched over the whole arena, so it's painted bigger and ` +
-      `the detail pass adds grass, stones and cracks. Nothing goes over 8192 pixels: higher settings stop there.</div>` +
-      `<div class="help-range"><span><b>Higher:</b> sharper on the floor up close, but much slower (the detail pass repaints the ` +
-      `whole enlarged floor in tiles: about 1 minute per ground texture at 4×, about 4 minutes at 8×) and very big files the ` +
-      `game has to hold in memory; above 4096 pixels it's rarely visible at 1080p.</span>` +
-      `<span><b>Lower:</b> faster and smaller; Off paints the floor at the size of the other textures, softer up close.</span></div>` +
-      `<div class="help-rec">Recommended: 2×–4×.</div></div></div>` +
+      `<div class="ctl-help"><div>Paints the floor's textures bigger and adds fine detail to them (grass blades, small stones, ` +
+      `cracks). The battle cameras see the floor from a distance and at a low angle, so the extra detail barely shows in a ` +
+      `battle: only the strip of ground nearest the camera gets a little sharper. Nothing goes over 8192 pixels.</div>` +
+      `<div class="help-range"><span><b>Higher:</b> sharper floor up close, but much slower and much bigger textures for the ` +
+      `game to hold in memory (the grassland: 22 seconds and 4 MB off, 68 s and 13 MB at 2×, 3 minutes and 45 MB at 4×).</span>` +
+      `<span><b>Off:</b> the floor is painted at the size of the other textures: fast and small.</span></div>` +
+      `<div class="help-rec">Recommended: Off. 2× only for a scene whose camera comes close to the floor and looks soft.</div>` +
+      `</div></div>` +
       `<label class="check ctl ${ch("seams")} ${exOn ? "" : "mdl-off"}"><input type="checkbox" id="mdlSeams" ` +
       `${ps.seams !== false ? "checked" : ""} ${exOn ? "" : "disabled"}><span>Blend seams` +
       `<div class="ctl-help">${helpText("Where two textures, or two parts of one, meet in the scene, their colours are " +
@@ -1025,7 +1040,7 @@
         "are matched to the painting, so they look like they belong in it instead of pasted on top. Off: the characters " +
         "keep their own colours and nothing fades with distance." },
     { key: "life", name: "Life", ai: true, rec: "on, built with the game closed",
-      help: "A little movement: the painted sky slowly drifts, grass sways where there is grass, and dust, embers, snow " +
+      help: "A little movement: the painted sky slowly drifts, grass sways where there is grass, and embers, snow, rain " +
         "or fireflies drift in the air where the painting suggests them. The AI looks at the scene to tell what's sky, " +
         "what's grass and which of these fit, so the game has to be closed while it builds. Without the AI it's worked " +
         "out less well: only sky that's clearly sky drifts, grass is found by its colour alone, and the particles come " +
@@ -1328,6 +1343,191 @@
     openModal(`<div class="modal-head"><h2>${esc(it.title)} · battle look: ${esc(p.title)}</h2>` +
       `<button class="ghost small" data-a="close">Close</button></div><p class="hint">${esc(p.text)} ` +
       `<a href="${url}" target="_blank" rel="noopener">Open on its own</a></p><img class="mdl-bl-big" alt="" src="${url}">`);
+  }
+
+  /* ---------------------------------------------------------- the floor's reflections (battle scenes) */
+
+  // A battle scene's floor textures mirroring the battle (models.py floor_*, ff7bg/models/floorreflect.py): how each
+  // reflects and how strongly, a picture of where, Install and Uninstall
+  const FLOOR_MODES = [
+    ["off", "Off", "No reflection."],
+    ["puddles", "Puddles", "Water only where the texture looks like water (grey-blue), found by its colour: check the " +
+      "picture, as it can miss some or catch some that aren't."],
+    ["water", "Water, all of it", "The whole texture is water."],
+    ["metal", "Metal, soft sheen", "A soft, blurry reflection, like brushed or worn steel."],
+    ["polished", "Polished, sharp", "A sharp mirror, like a polished stone or metal floor."],
+  ];
+  const FLOOR_NAME = Object.fromEntries(FLOOR_MODES.map(([k, n]) => [k, n]));
+  const GRASS_MODES = [["off", "No grass"], ["short", "Short grass"], ["medium", "Medium grass"]];
+  const GRASS_NAME = Object.fromEntries(GRASS_MODES);
+  // a texture's choices in a few words: "Puddles, 100%; short grass"
+  const floorWords = (c) => [c.mode !== "off" ? `${FLOOR_NAME[c.mode] || c.mode}, ${Math.round(c.amount * 100)}%` : "",
+    c.grass && c.grass !== "off" ? (GRASS_NAME[c.grass] || c.grass).toLowerCase() : ""].filter(Boolean).join("; ");
+  const floorPic = (id) => `${API}/floor/${encodeURIComponent(id)}/preview.jpg?t=${M.floorPic}`;
+
+  async function loadFloor() {
+    const it = M.item;
+    if (!it || it.kind !== "scene" || !it.paintable) return;
+    const seq = ++M.floorSeq;
+    let r;
+    try { r = await api(`${API}/floor/${encodeURIComponent(it.id)}`); } catch (e) { r = { id: it.id, error: e.message }; }
+    if (seq !== M.floorSeq || !M.item || M.item.id !== it.id) return;
+    M.floor = r;
+    M.floorPic = Date.now();
+    renderFloor();
+  }
+
+  function renderFloor() {
+    const it = M.item, box = $("#mdlFloor");
+    const on = !!it && it.kind === "scene" && it.paintable;
+    if (box.hidden === on) box.hidden = !on;
+    if (!on) return;
+    const F = M.floor && M.floor.id === it.id ? M.floor : null;
+    const head = `<h2>Floor</h2><div class="mdl-lines"><div>The floor can reflect the battle: puddles and water mirror ` +
+      `the fighters and the sky, a metal floor gets a sheen. Grassy ground can grow blades of grass that bend in the ` +
+      `wind. Nothing in your game changes until you install it.</div></div>`;
+    if (!F) { fill(box, head + `<div class="hint">Reading it…</div>`); return; }
+    if (F.error) { fill(box, head + `<div class="model-warn">${esc(F.error)}</div>`); return; }
+    if (!F.floors.length) {
+      fill(box, head + `<div class="mdl-line">This scene has no floor lying flat on the ground, so there's nothing to ` +
+        `reflect in.</div>`);
+      return;
+    }
+    const I = F.installed, busy = M.floorBusy;
+    const any = F.floors.some((f) => f.mode !== "off" || (f.grass && f.grass !== "off"));
+    const pic = `<div class="mdl-floor-prev" title="Click to see it bigger"><img alt="" src="${floorPic(it.id)}"></div>` +
+      `<div class="hint">Each floor texture as your game shows it. Blue: water. Purple: metal. Green: grass. Dimmed: ` +
+      `parts that aren't on the floor.</div>`;
+    const rows = F.floors.map((f) => {
+      const pct = Math.max(1, Math.round(f.share * 100));
+      const modes = FLOOR_MODES.map(([k, n]) => `<option value="${k}" ${f.mode === k ? "selected" : ""}>${n}</option>`).join("");
+      const amounts = [0.25, 0.5, 0.75, 1].map((a) =>
+        `<option value="${a}" ${Math.abs(f.amount - a) < 0.01 ? "selected" : ""}>${Math.round(a * 100)}%</option>`).join("");
+      return `<div class="ctl mdl-floor-row"><span class="lbl">${esc(f.name)} <span class="hint">· ${pct}% of the floor` +
+        `${f.painted ? "" : " · the game's own texture"}</span></span>` +
+        `<div class="row-btns tight"><select data-fmode="${esc(f.name)}" ${busy ? "disabled" : ""}>${modes}</select>` +
+        `<select data-famount="${esc(f.name)}" ${busy || f.mode === "off" ? "disabled" : ""} title="How strong the reflection is">${amounts}</select></div>` +
+        `<div class="row-btns tight"><select data-fgrass="${esc(f.name)}" ${busy ? "disabled" : ""} title="Blades of grass where it looks like grass">` +
+        GRASS_MODES.map(([k, n]) => `<option value="${k}" ${(f.grass || "off") === k ? "selected" : ""}>${n}</option>`).join("") +
+        `</select></div></div>`;
+    }).join("");
+    const help = `<div class="ctl-help">${helpText(FLOOR_MODES.map(([, n, h]) => `<b>${n}</b>: ${h}`).join("<br>") +
+      "<br>The percentage is how strong the reflection is: higher is more like a mirror, lower is subtler. Water is " +
+      "faint looking straight down and strong at a low angle, as real water is." +
+      "<br><b>Grass</b>: thin blades of grass grow where the texture looks like grass (green, and not water), coloured " +
+      "like the ground under them, bending as gusts of wind roll across. Short is like a lawn, Medium a little longer. " +
+      "Thousands of blades: it costs the game a little.",
+      "Puddles or Water at 100% for wet ground, Metal at 50% for steel floors, Short grass on grassland")}</div>`;
+    let where;
+    if (I) {
+      const names = Object.entries(I.choices).map(([n, c]) => `${n} (${floorWords(c)})`);
+      where = `<div class="mdl-line"><span class="ok">In the game</span> since ${fmtWhen(I.at, true)}: ${esc(names.join(", "))}.</div>` +
+        (I.changed ? `<div class="mdl-line warn">Your choices changed since: Install again to put them in.</div>` : "") +
+        (F.stale.length ? `<div class="model-warn">The painting in the game changed since for ${esc(F.stale.join(", "))}: ` +
+          `Install again so the puddles match it.</div>` : "");
+    } else {
+      where = `<div class="mdl-line">Not in the game: the floor here looks as it always has.</div>`;
+    }
+    const inst = `<div class="ctl"><span class="lbl">Install and Uninstall</span>${where}` +
+      `<div class="row-btns tight"><button class="small primary" id="mdlFloorInstall" ${any && !busy ? "" : "disabled"} ` +
+      `title="${any ? "Put these reflections in the game" : "Pick how at least one floor texture reflects first"}">` +
+      `${I ? "Install again" : "Install"}</button>` +
+      `<button class="small" id="mdlFloorUninstall" ${I && !busy ? "" : "disabled"} title="Take this scene's floor reflections out of the game">Uninstall</button></div>` +
+      `<div class="ctl-help">${helpText("Install puts the reflections and grass into your game for battles in this " +
+        "scene: one entry in the game's lighting settings (this scene's floor only) and, for puddles and grass, small " +
+        "files saying where the water and the grass are. The next battle here shows them. If a file or setting it would " +
+        "write belongs to something else, it installs nothing and tells you which. Uninstall takes out exactly what " +
+        "Install put in. Nothing goes in by itself. Reflections cost the game a little (the battle is drawn a second " +
+        "time, mirrored), and so does grass.", "")}</div></div>`;
+    fill(box, head + pic + `<div class="subhead">How each floor texture reflects</div>` + rows + help +
+      `<div class="subhead">In your game</div>` + inst, (el) => {
+      el.querySelector(".mdl-floor-prev").onclick = showFloorPicture;
+      const pick = (name) => F.floors.find((x) => x.name === name);
+      for (const sel of el.querySelectorAll("[data-fmode]")) {
+        sel.onchange = () => {
+          const f = pick(sel.dataset.fmode), mode = sel.value;
+          if (f) saveFloor(f.name, { mode, amount: (F.modes || {})[mode] || 1, grass: f.grass || "off" });
+        };
+      }
+      for (const sel of el.querySelectorAll("[data-famount]")) {
+        sel.onchange = () => {
+          const f = pick(sel.dataset.famount);
+          if (f) saveFloor(f.name, { mode: f.mode, amount: Number(sel.value), grass: f.grass || "off" });
+        };
+      }
+      for (const sel of el.querySelectorAll("[data-fgrass]")) {
+        sel.onchange = () => {
+          const f = pick(sel.dataset.fgrass);
+          if (f) saveFloor(f.name, { mode: f.mode, amount: f.amount, grass: sel.value });
+        };
+      }
+      el.querySelector("#mdlFloorInstall").onclick = installFloor;
+      el.querySelector("#mdlFloorUninstall").onclick = uninstallFloor;
+    });
+  }
+
+  async function saveFloor(name, choice) {
+    const it = M.item, F = M.floor;
+    if (!it || !F) return;
+    const textures = Object.fromEntries(F.floors.map((f) => [f.name, { mode: f.mode, amount: f.amount, grass: f.grass || "off" }]));
+    textures[name] = choice;
+    try {
+      const r = await api(`${API}/floor/settings`, { body: { id: it.id, textures } });
+      if (M.item && M.item.id === it.id) { M.floor = r; M.floorPic = Date.now(); }
+    } catch (e) { toast(e.message, 6000); }
+    renderFloor();
+  }
+
+  function showFloorPicture() {
+    const it = M.item;
+    if (!it) return;
+    const url = floorPic(it.id);
+    openModal(`<div class="modal-head"><h2>${esc(it.title)} · floor</h2><button class="ghost small" data-a="close">Close</button></div>` +
+      `<p class="hint">Each floor texture as your game shows it. Blue: water. Purple: metal. Dimmed: parts that aren't on ` +
+      `the floor. <a href="${url}" target="_blank" rel="noopener">Open on its own</a></p><img class="mdl-bl-big" alt="" src="${url}">`);
+  }
+
+  async function installFloor() {
+    const it = M.item, F = M.floor;
+    if (!it || !F || M.floorBusy) return;
+    const picked = F.floors.filter((f) => f.mode !== "off" || (f.grass && f.grass !== "off"));
+    if (!picked.length) { toast("Pick how at least one floor texture reflects, or grass, first"); return; }
+    const list = picked.map((f) => `${f.name}: ${floorWords(f)}`).join("\n");
+    if (!await ask(`Put the floor of ${it.title} into your game?\n\n${list}\n\nThe next battle here shows ` +
+      `them, and Uninstall takes them out again.${F.installed ? " They replace the ones in the game now." : ""}`,
+      F.installed ? "Install again" : "Install")) return;
+    M.floorBusy = true;
+    renderFloor();
+    let err = null;
+    try {
+      const r = await api(`${API}/floor/install`, { body: { id: it.id } });
+      if (M.item && M.item.id === it.id) M.floor = r.floor;
+      toast(`Floor in the game for ${r.textures} texture${r.textures === 1 ? "" : "s"}`, 6000);
+    } catch (e) { err = e.message; }
+    M.floorBusy = false;
+    if (err) { await loadFloor(); await tell(err); } else renderFloor();
+  }
+
+  async function uninstallFloor() {
+    const it = M.item, F = M.floor;
+    if (!it || !F || !F.installed || M.floorBusy) return;
+    if (!await ask(`Take the floor reflections and grass of ${it.title} out of your game?\n\nWhat Install put in is removed, so the ` +
+      "floor here looks as it always has. Nothing else is touched.", "Uninstall")) return;
+    M.floorBusy = true;
+    renderFloor();
+    let err = null;
+    try {
+      const r = await api(`${API}/floor/uninstall`, { body: { id: it.id } });
+      if (M.item && M.item.id === it.id) M.floor = r.floor;
+      toast("Floor reflections and grass taken out of the game", 5000);
+      if (r.left.length) {
+        err = `${r.left.length === 1 ? "One file was" : `${r.left.length} files were`} left in the game, because ` +
+          `something changed ${r.left.length === 1 ? "it" : "them"} after Install (in your game's folder):\n\n${r.left.join("\n")}`;
+      }
+    } catch (e) { err = e.message; }
+    M.floorBusy = false;
+    renderFloor();
+    if (err) await tell(err);
   }
 
   /* ---------------------------------------------------------- paint in 2D style (battle models) */
@@ -2598,6 +2798,31 @@
   $("#mdlUse").onclick = useVersion;
   $("#mdlDelete").onclick = deleteVersion;
   $("#mdlSheet").onclick = showSheet;
+  // Paint all battle scenes: one Paint final per scene in the Studio's queue (POST /batch)
+  $("#mdlBatch").onclick = async () => {
+    const items = (M.lists.scene || []).filter((x) => x.textured);
+    const done = items.filter((x) => x.current && x.mode === "final").length;
+    const src = M.item && M.item.kind === "scene" ? M.item : null;
+    const checks = [
+      { key: "all", label: `Repaint the ${done} already painted too`, checked: false },
+      ...(src ? [{ key: "copy", label: `Give them all ${src.title}'s paint settings (the scene selected now)`, checked: false }] : []),
+      { key: "install", label: "Put each one into the game as soon as it's painted", checked: false },
+    ];
+    const r = await dialog(`Paint the battle scenes: ${items.length - done} of ${items.length} aren't painted yet. ` +
+      `Each scene is its own Paint final in the queue, with its own settings (the defaults unless you changed them), ` +
+      `so you can watch them come in and cancel the rest at any time. They paint only while the game is closed.\n\n` +
+      `Ticked below: repaint the painted ones as well; copy the selected scene's settings to every scene (it changes ` +
+      `their settings); and install each new version straight away (otherwise nothing in your game changes until you ` +
+      `install versions yourself).`, { ok: "Queue them", checks });
+    if (!r) return;
+    try {
+      const res = await api(`${API}/batch`, { body: { kind: "scene", which: r.all ? "all" : "unpainted",
+        copy_from: r.copy && src ? src.id : null, install: !!r.install } });
+      toast(res.added ? `${res.added} battle scene${res.added === 1 ? "" : "s"} queued, about ${fmtDuration(res.est)}` +
+        (r.install ? "; each goes into the game when it's painted" : "") : "Nothing to queue: they're all painted or queued already");
+      reloadListSoon();
+    } catch (e) { toast(e.message); }
+  };
   $("#mdlCancel").onclick = async () => {
     const q = S.queue;
     if (!q || (!q.current && !q.queued.length)) { toast("Nothing is running or queued"); return; }

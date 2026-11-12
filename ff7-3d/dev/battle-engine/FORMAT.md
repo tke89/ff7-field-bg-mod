@@ -15,11 +15,12 @@ a field's (65-90).
 2. `[battle_STAGE<nn>]` one battle scene, every formation fought in it; `nn` = two digits, the number of the
    exe's `STAGE<nn>.DAT` = scene.bin's battle location (pipeline: battle.lgp id `og` + nn, `oq` = STAGE10);
 3. `[battles]`          every battle (game-wide battle settings, like `[fields]` for fields: `char_match`,
-   `char_exposure`, `normal_edge`...);
+   `char_exposure`, `normal_edge`...; since 2026-11-12 written by `build.write_fields_section` with the
+   characters' matte material, `char_sheen` and `char_sss`, see `atmos.battles_settings`);
 4. the file's top level (the stock keys: light_*, ambient_*, material_*, ...).
 
 `[fields]` never reaches battles and `[battles]` never reaches fields. A key that is an array of tables (`uv_scroll`,
-`sway`) is taken whole from the first group that has it (a formation's list replaces its scene's, no merging).
+`sway`, `reflect`) is taken whole from the first group that has it (a formation's list replaces its scene's, no merging).
 
 The engine learns the scene number when the game loads the scene's parts (`STAGE<nn>.P00`...), and from the
 textures it draws (`battle/STAGE<nn>_T<tt>`). Settings and light are read again on entering a battle, when the
@@ -137,6 +138,54 @@ lighting window's "PBR textures" switch is on (the default).
   the whole texture sways.
 - Lit draws only (not `disable_lighting_textures`). A texture can have both `uv_scroll` and `sway`.
 
+## G. Floors that mirror the battle: `reflect` (2026-11-07)
+
+    reflect = [
+      { texture = "STAGE08_T00", amount = 1.0, water = 1.0 },              # Zolom's marsh: its pools
+      { texture = "STAGE09_T00", amount = 0.5, water = 0.0, blur = 4.0 },  # early Midgar: steel
+    ]
+    floor_reflect = true                                                   # or 0..1: all of them off / turned down
+
+- Where it goes: any battle group, but the Studio's Floor card writes it in a section of its own, `[floor_STAGE<nn>]`
+  (looked in after `[battle_STAGE<nn>]` and before `[battles]`), so it never touches the battle look's section.
+- Where it mirrors: the polygons of that texture that face up (within ~30 degrees), and of those where its mask says:
+  `<external_mesh_path>/battle/<texture>_reflect.dds` (e.g. `mesh/battle/STAGE08_T00_reflect.dds`), red 255 mirrors
+  fully, 0 not at all, the texture's own UV layout (any size; it repeats as the texture does). Without a mask, all of
+  its up-facing polygons. Masks load once a scene, and again when `mesh/battle/` changes. The ground is y = 0.
+- `amount` 0..1 (default 1). `water` 1: water (default 0: metal). `blur`: metal only, in pixels at 720 lines (default
+  4; 0 sharp, a polished floor).
+- Water (as the floor mock-ups): little looking straight down, much at a glance (Fresnel from 0.02: 1.6 F + 0.18, at
+  most 0.85), the reflection pushed about by ripples (up to ~6 pixels at 720 lines near the camera, moving), over a
+  darker, cooler wet body (x 0.55, 0.62, 0.68). Metal: Fresnel from 0.5, the reflection blurred and tinted by the
+  floor's own colour.
+- How: before the frame's draws, the battle's 3D draws again, mirrored about y = 0, into an image of the frame's size
+  with its own depth; a mirroring floor shows it where it is on screen. Left out of the image: the mirroring floors,
+  whatever lies on the ground or under it (highest point within 20 units of y = 0), see-through and glowing draws
+  (spells), the 2D. The image is cut at the ground and takes no sun shadows. Where nothing was mirrored, the haze's
+  colour (else the floor's own, darkened).
+- Lit draws only, drawn unblended by the game; not in the Original view. The battle is drawn twice while a battle
+  has `reflect` entries.
+
+## H. Grass blades on floors: `grass` (2026-11-07)
+
+    grass = [
+      { texture = "STAGE08_T00", height = 26.0, density = 1.0, wind = 1.0 },   # Zolom's marsh
+    ]
+
+- Thin blades over that texture's polygons on the ground (y = 0, within 3 units), within 9000 units of the battle's
+  middle, where its mask says: `<external_mesh_path>/battle/<texture>_grass.dds` (uncompressed 32-bit, as
+  ff3d/gltfout.write_dds writes; red 255 grows, 0 not; none: everywhere). The Studio's Floor card writes it in
+  `[floor_STAGE<nn>]` with the mask from the texture's colour (green, not water).
+- `height` in battle units (default 26; Cloud is about 950; 40-85 looked like a wheat field in the mock-ups);
+  `density` (default 1: 2.8 blades per 1000 square units near the camera) and `wind` (how far gusts bend them), 0..4.
+- A blade takes the floor's colour where it stands (the texture there, the vertex colour, its light: lit as the ground
+  under it), with a warm tip, and bends with gusts rolling across the ground along x, z = (0.8, 0.6).
+- All of them within 2600 units of the camera, beyond that 2600 / distance of them, never under a pixel of the window
+  wide (so far grass still covers the ground); at most 60000 a frame (fewer everywhere when more would show).
+- Drawn right after the floor, with its state, both sides, depth tested and written; not in the reflections, nor in
+  the sun's shadow map. Lit draws only; not in the Original view. Masks and blades are worked out again with the scene,
+  or when `mesh/battle/` changes. Cost on the marsh at 4K internal: GPU 12% -> 16%.
+
 ## F. Particles
 
     mesh/battle/STAGE<nn>_particles.toml        e.g. mesh/battle/STAGE10_particles.toml
@@ -166,7 +215,9 @@ keep arrays on one line (a section ends at the next line starting with `[`). `te
     battle_cam <x> <y> <z> scene <x> <y> <z>         the camera's eye in battle world: by FFNx's view matrix (what
                                                      haze, sway and floor light use) and by the scene's own draw (what
                                                      the particles use); both should be scene.bin's camera
-    battle_draws frames <f> scene <n> lit <n> nml <n> scroll <n> sway <n> other <n>
+    battle_draws frames <f> scene <n> lit <n> nml <n> scroll <n> sway <n> other <n> mirror <n> mirrored <n>
                                                      draws over the last f frames: the scene's, the scene's lit ones,
-                                                     lit ones with a normal map, drifting, swaying, all the rest
+                                                     lit ones with a normal map, drifting, swaying, all the rest;
+                                                     floors drawn mirroring, draws into their mirror image
     battle_particles <systems> <shown>               particle systems loaded, particles drawn last frame
+    battle_grass <blades> <drawn>                    grass blades worked out for the scene, drawn last frame

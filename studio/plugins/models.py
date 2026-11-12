@@ -172,8 +172,8 @@ def clean_paint(kind, ps):
     if kind == "scene":  # the extras: battle scenes only (stored only when not the default)
         if isinstance(ps.get("panorama"), bool):
             out["panorama"] = None if ps["panorama"] else False
-        if ps.get("detail") in DETAILS:
-            out["detail"] = None if ps["detail"] == 2 else int(ps["detail"])
+        if ps.get("detail") in DETAILS:  # off (1) by default since 2026-11-07: see extras_for
+            out["detail"] = None if ps["detail"] == 1 else int(ps["detail"])
         if isinstance(ps.get("seams"), bool):
             out["seams"] = None if ps["seams"] else False
     if ps.get("method") in METHODS and kind != "field":  # field models: projected only (their atlas is cut-up pieces)
@@ -932,7 +932,9 @@ def register(studio):
         """The extras a paint uses: {"panorama": bool, "detail": int, "seams": bool} (battle scenes, Flat or Hybrid;
         otherwise none)."""
         on = kind == "scene" and method in ("flat", "hybrid")
-        return {"panorama": on and ps["panorama"] is not False, "detail": (ps["detail"] or 2) if on else 1,
+        # ground detail is off unless chosen (user, 2026-11-07): on oi it was 22 s off, 68 s at 2x, 185 s at 4x, and
+        # 3.8 / 13 / 45 MB of textures, for a difference barely visible from the battle cameras
+        return {"panorama": on and ps["panorama"] is not False, "detail": (ps["detail"] or 1) if on else 1,
                 "seams": on and ps["seams"] is not False}
 
     def plan(kind, mid, mode, ps):
@@ -1129,6 +1131,9 @@ def register(studio):
             raise
         job["version"] = vid
         job["note"] = f"{mode} {vid} in {round(time.time() - started)} s"
+        if js.get("install") and mode == "final":  # a batch with "put each one into the game" ticked
+            got = install(kind, key_of(kind, e), vid)
+            job["note"] += f", put in the game ({len(got['files'])} textures)"
 
     def entry_or_raise(kind, mid):
         if not ready():
@@ -2702,6 +2707,45 @@ def register(studio):
                               family=s.get("family"), settings={"look": lid, "paint": paint_settings(kind, mid)})
         return jsonify(added=worker.enqueue([job]))
 
+    @bp.post("/batch")
+    @safe
+    def api_batch():
+        """Paint many battle scenes in one go (user, 2026-11-07: "is there still no select all/batch option for
+        battle scenes?"): one Paint final job per scene with something to paint, in the list's order, each with its
+        own settings, or with copy_from's (written into each scene's settings first, so its version records them and
+        a later Paint final repeats them). which: "unpainted" (no final version yet) or "all". install: each version
+        goes into the game as it's painted (the user's tick in the page's dialog). Returns {added, est, skipped}."""
+        body = request.get_json(force=True)
+        kind = body.get("kind")
+        which = body.get("which") or "unpainted"
+        if kind != "scene" or which not in ("unpainted", "all"):
+            abort(400)
+        src = body.get("copy_from") or None
+        src_mid = key_of(kind, entry(kind, src)) if src else None
+        src_ps = paint_settings(kind, src_mid) if src_mid else None
+        jobs, skipped = [], 0
+        for x in list_view(kind):
+            e = entry(kind, x["id"])
+            mid = key_of(kind, e)
+            if not paintable(kind, e)[0]:
+                skipped += 1
+                continue
+            cur = current(kind, mid)
+            if which == "unpainted" and cur and (version_meta(kind, mid, cur) or {}).get("mode") == "final":
+                continue
+            dry = bool(body.get("dry"))  # dry: what it would queue, nothing changed
+            if src_ps is not None and mid != src_mid and not dry:
+                save_model_meta(kind, mid, paint=clean_paint(kind, dict(src_ps)))
+            lid, _, s = look_info(model_meta(kind, mid).get("look"))
+            jobs.append(studio.make_job(job_name(kind, mid), JOB_FINAL, family=s.get("family"),
+                                        settings={"look": lid, "paint": src_ps if dry and src_ps else paint_settings(kind, mid),
+                                                  "install": bool(body.get("install"))}))
+        est = round(sum(j.get("est") or 0 for j in jobs))
+        if body.get("dry"):
+            return jsonify(would=[parse_job_name(j["name"])[1] for j in jobs], est=est, skipped=skipped)
+        added = worker.enqueue(jobs) if jobs else 0
+        return jsonify(added=added, est=est, skipped=skipped)
+
     @bp.post("/look")
     @safe
     def api_look():
@@ -2929,6 +2973,97 @@ def register(studio):
         game = str(B.GAME).rstrip("\\/") + os.sep  # the files left: from the game's folder
         left = [p[len(game):] if p.lower().startswith(game.lower()) else p for p in left]
         return jsonify(look=look_view(e), removed=removed, left=left, sections=len(sections))
+
+    # ---------------------------------------------------------------- the floor (battle scenes): reflections
+    # A battle scene's floor textures mirroring the battle (ff7bg/models/floorreflect.py; FFNx-3d `reflect`): puddles,
+    # water, metal or polished per texture, and how strong; Install and Uninstall (the user's click only)
+
+    def fr():
+        """ff7bg.models.floorreflect, imported when first needed (an error in it shows on the card, not here)."""
+        from ff7bg.models import floorreflect
+        return floorreflect
+
+    def floor_view(e):
+        """A battle scene's floor for the page: its floor textures with the choices, what's in the game, whether a
+        puddle mask's texture changed since."""
+        mid = key_of("scene", e)
+        out = {"id": mid, "floors": [], "installed": None, "stale": [], "error": None, "modes": {}}
+        try:
+            F, B = fr(), bl()
+            out["modes"] = {k: (m or {}).get("amount", 1.0) for k, m in F.MODES.items()}  # each mode's starting strength
+            picks = F.settings(mid)
+            out["floors"] = [{"name": f["name"], "share": round(f["share"], 3), **picks[f["name"]],
+                              "painted": B.texture_installed(f["file"]) is not None} for f in F.floors(mid)]
+            inst = F.installed().get(mid)
+            if inst:
+                out["installed"] = {"at": inst["at"], "choices": inst.get("choices") or {}, "files": len(inst["files"]),
+                                    "changed": (inst.get("choices") or {}) != F.chosen(mid)}
+                out["stale"] = F.stale(mid)
+        except Exception as ex:
+            traceback.print_exc()
+            out["error"] = f"The floor's code didn't load: {type(ex).__name__}: {ex}"
+        return out
+
+    def game_relative(B, paths):
+        game = str(B.GAME).rstrip("\\/") + os.sep
+        return [p[len(game):] if p.lower().startswith(game.lower()) else p for p in paths]
+
+    @bp.get("/floor/<mid>")
+    @safe
+    def api_floor(mid):
+        return jsonify(floor_view(entry("scene", mid)))
+
+    @bp.get("/floor/<mid>/preview.jpg")
+    @safe
+    def api_floor_preview(mid):
+        e = entry("scene", mid)
+        data = fr().preview(key_of("scene", e))
+        return send_file(io.BytesIO(data), mimetype="image/jpeg", max_age=0)
+
+    @bp.post("/floor/settings")
+    @safe
+    def api_floor_settings():
+        body = request.get_json(force=True)
+        e = entry("scene", body.get("id"))
+        if not isinstance(body.get("textures"), dict):
+            abort(400)
+        fr().save_settings(key_of("scene", e), body["textures"])
+        return jsonify(floor_view(e))
+
+    @bp.post("/floor/install")
+    @safe
+    def api_floor_install():
+        """Put the scene's floor choices in the game (only ever from the user's click)."""
+        body = request.get_json(force=True)
+        e = entry("scene", body.get("id"))
+        mid = key_of("scene", e)
+        F, B = fr(), bl()
+        try:
+            got = F.install(mid)
+        except ValueError as ex:
+            return jsonify(message=str(ex)), 409
+        except FileExistsError as ex:
+            what = "; ".join(f"the {x} settings in lighting\\config.toml" if x.startswith("[") else x
+                             for x in game_relative(B, [s.strip() for s in str(ex).split(":", 1)[-1].split(", ") if s.strip()]))
+            return jsonify(message="Nothing was installed. Some of the files or settings it would write in your game "
+                                   f"aren't the Studio's (another mod's, or put there by hand), so they were left alone: "
+                                   f"{what} (in your game's folder). Move or remove them yourself if you want this in."), 409
+        except FileNotFoundError as ex:
+            return jsonify(message=f"Nothing was installed: {ex}"), 409
+        return jsonify(floor=floor_view(e), textures=len(got["choices"]), files=len(got["files"]))
+
+    @bp.post("/floor/uninstall")
+    @safe
+    def api_floor_uninstall():
+        """Take the scene's floor reflections out of the game: exactly what Install put in (the user's click)."""
+        body = request.get_json(force=True)
+        e = entry("scene", body.get("id"))
+        mid = key_of("scene", e)
+        F, B = fr(), bl()
+        if mid not in F.installed():
+            return jsonify(message="This scene's floor reflections aren't in the game."), 409
+        removed, left, section = F.uninstall(mid)
+        return jsonify(floor=floor_view(e), removed=removed, left=game_relative(B, left), section=bool(section))
 
     @bp.get("/paint2d/<mid>")
     @safe

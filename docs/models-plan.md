@@ -148,6 +148,9 @@ textures on 3D objects, and to the battle scenes". Their choices:
     tiles).
   - Checked with the real AI on oo and oi: no line in the sky, the mountains continuous, the ground a bit sharper.
   - About a minute per scene at 2x ground detail. The Models card has switches for all three.
+  - **Ground detail is off by default since 2026-11-07** (user). On oi it was 22 s and 3.8 MB off, 68 s and 13 MB at 2x,
+    and 185 s and 45 MB at 4x, for a difference barely visible from the battle cameras. 2x is left as an option for
+    scenes whose camera comes close to the floor.
 
 ## Battle scenes beyond textures (started 2026-11-07, user: "the first 4")
 1. **Lighting from the painting:**
@@ -492,6 +495,26 @@ treats field parts like battle parts under `mesh/field/atlas/`, one texture per 
   carries the decals' cut-outs, so the engine must alpha-test atlas texels where the group did; effect (additive)
   groups aren't handled (Cloud has none); ~25% of the texels (insides, where parts meet) no view sees: filled from
   their chart's paint.
+
+## Battle floors that reflect: the Floor card (2026-11-07)
+
+User: "the puddles should look wet, the grass should have blades that move. Metallic floors should be somewhat
+reflective". Offline mock-ups first (work/models/floor_mock), approved; then:
+- Engine (FFNx-3d, ff7-3d/dev/battle-engine/FORMAT.md section G): before a battle frame's draws, its 3D draws again,
+  mirrored about the ground (y = 0), into an image of their own; floors with a `reflect` entry show it where they are on
+  screen. Water ripples over a darker wet body (Fresnel from 0.02); metal is blurred and tinted (from 0.5). Masks are
+  `mesh/battle/<texture>_reflect.dds`; the settings go in `[floor_STAGE<nn>]`, apart from the battle look's section.
+  Cost at 4K internal with MSAA 4: GPU 18% -> 19-20%; battles stay at their 15 fps.
+- Data and Studio: `ff7bg/models/floorreflect.py` and the Floor card on battle scenes (models.py floor_*, models.js
+  renderFloor). Each floor texture (scene textures with polygons on the ground) is Off, Puddles (water found by colour),
+  Water, Metal (soft) or Polished (sharp), with a strength; a preview shows where. Install and Uninstall only on the
+  user's click; off unless installed.
+- In the game since the test: oo (both floor textures, puddles 100%) and op (metal 50%), installed through the card.
+- Grass blades, the same night (engine `grass`, FORMAT.md section H; the Floor card's "Grass" choice per texture: off,
+  short 26 or medium 36 units, where the texture's colour is grass and not water). First try: blades thinner than a
+  pixel by the fighters (about 7000 units from the camera) read as sparse dark stalks; now never under a window pixel
+  wide, 3x denser near the camera, lighter with warm tips. On the marsh about 60k blades a frame: GPU 12% -> 16%.
+- In the game: oo has puddles 100% and short grass on both floor textures; op metal 50%.
 
 ## Order
 Shared core first (formats, mesh, renderer), then battle scenes end to end (static, unlit, real cameras), then
