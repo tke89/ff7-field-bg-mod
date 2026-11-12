@@ -12,6 +12,7 @@ import base64
 import io
 import itertools
 import json
+import math
 import os
 import random
 import shutil
@@ -24,6 +25,7 @@ import webbrowser
 from collections import OrderedDict, deque
 from pathlib import Path
 
+import cv2
 import numpy as np
 from flask import Flask, abort, jsonify, request, send_file, send_from_directory
 from PIL import Image
@@ -969,11 +971,23 @@ class Worker(threading.Thread):
             if s.get("input_upscaler") == syw.NAME and self.p.syw_pack():
                 tile = syw.tile_source(self.p.syw_pack(), name, bg)
                 hires = (tile, syw.SCALE) if tile else None
+            # each state as a whole render of the version's own recipe, when it can be re-made (WholeStates)
+            whole, method = None, "painted"
+            if comfy is not None and s.get("family") != "upscale" and bg_has_states(bg):
+                ws = WholeStates(self, name, vid, comfy)
+                if ws.reason is None and ws.check():
+                    whole, method = ws, "whole renders"
+                else:
+                    method = f"painted ({ws.reason})"
             panels = states.run(
                 comfy, bg, main["rect"], main, s, refs, sdir,
                 progress=lambda i, n, k: self._stage(f"restyling states, sheet {i + 1}/{n} ({k} panels)", 0.05 + 0.9 * i / n),
                 cancelled=lambda: self.cancel_flag,
-                animated={int(p): a.get("order", []) for p, a in fjob.get("animations", {}).items()}, hires=hires)
+                animated={int(p): a.get("order", []) for p, a in fjob.get("animations", {}).items()}, hires=hires,
+                whole=whole)
+            if whole is not None and whole.notes:
+                method += "; " + "; ".join(sorted(set(whole.notes)))
+            vs.update_meta(name, vid, states_method=method)
         else:
             panels = states.load(sdir, main["scale"])
         # a finishing step, so a Rebuild applies today's value
@@ -1781,6 +1795,9 @@ def run_signfix(w, job):
 JOB_KINDS["signs"] = {"run": run_signfix, "est": lambda name: 20 + 40 * len(sign_words(name))}
 
 
+TOUCHUP_MARKS = "touchup_marks.png"  # in a touched-up version's folder: the marks it repainted (since 2026-11-12)
+
+
 def touchup_settings(p, name, vmeta):
     """The settings a version was rendered with (as a rebuild has them), for repainting parts of it; a version from
     the Upscale workflow, which paints nothing, gets the field's own look's instead."""
@@ -1850,6 +1867,8 @@ def run_touchup(w, job):
                 note=f"touched up: {n} area{'s' if n != 1 else ''} at {strength:.0%}" + (f", \"{hint}\"" if hint else ""),
                 touchup={"areas": n, "strength": strength, "hint": hint, "seed": seed})
     nvid = vs.create(name, _png(Image.fromarray(new)), meta)
+    # its marks, kept so a states pass can make the touch-up again on a state's render (WholeStates)
+    Image.fromarray(np.round(marks * 255).astype(np.uint8)).save(vs.dir(name, nvid) / TOUCHUP_MARKS)
     if vs.states_dir(name, vid).exists():  # its restyled states come along (a build reuses them)
         shutil.copytree(vs.states_dir(name, vid), vs.states_dir(name, nvid))
     w.p.thumb(name, nvid)
@@ -1863,6 +1882,226 @@ def run_touchup(w, job):
 
 # about 45 s an area (the field's own model at 1 MP) and the build
 JOB_KINDS["touchup"] = {"run": run_touchup, "est": lambda name: 70}
+
+
+# States as whole renders (2026-11-12, the user: "layer the original state over the original background, then
+# generate the whole image using the same seed as the non-state background"): each state is the version's main
+# render recipe (its settings, seed, description, the field's sign and moving-part boxes, its input enlargement and
+# final upscaler) run again on the original with that state on. states.run takes only where a state changes the
+# picture from it, onto the version itself, so fix-ups made on top of the render (the sign fixer, touch-ups) stay
+# everywhere else; where one falls inside a state's change it's made again on that state's render.
+WHOLE_MAX_DIFF = 6.0  # the recipe re-run with the render's own states must come this close to it (mean, 0-255)
+WHOLE_FIX_PAD = 8     # a fix-up counts as inside a state's change within this many original pixels of it
+
+
+def bg_has_states(bg):
+    """The field has toggled states (tiles of a group)."""
+    return any(t.param for t in bg.tiles)
+
+
+def version_chain(name, vid):
+    """[(vid, meta)]: the version, then each version it was fixed up from (signs, touch-ups), down to the render (or
+    the last one still kept: a cleanup may have deleted the render a fix-up started from)."""
+    chain = []
+    while vid:
+        try:
+            m = project.versions.meta(name, vid)
+        except (OSError, ValueError):
+            break
+        if not m:
+            break
+        chain.append((vid, m))
+        vid = m.get("source") if m.get("mode") in ("signs", "touchup") else None
+    return chain
+
+
+class WholeStates:
+    """whole(states) for states.run: the version's states as whole renders, made once each (see above). `reason`
+    says why a version can't have them (then the states pass paints its states itself)."""
+
+    def __init__(self, w, name, vid, comfy):
+        self.w, self.p, self.name, self.comfy = w, w.p, name, comfy
+        self.chain = version_chain(name, vid)
+        # the render the fix-ups started from; when it's gone, the oldest fix-up kept (its meta carries the render's
+        # recipe; its own fix is made again on the states too)
+        self.root_vid, self.root = self.chain[-1]
+        self.fixes = [(v, m) for v, m in reversed(self.chain) if m.get("mode") in ("signs", "touchup")]  # oldest first
+        self.cache = {}
+        self.notes = []
+        self.reason = self._unusable()
+        if self.reason is None:
+            s = self.p.effective(name, self.root.get("family"))
+            s.update(self.root.get("settings") or {})
+            s = self.p.input_settings(name, s)
+            if self.root.get("scene"):
+                s = dict(s, scene=self.root["scene"])  # its own description, not a new one
+            self.s = s
+            check_requirements(comfy, s)
+            self.refs = [comfy.upload(STYLES / r, "ff7studio_styles") for r in s["style_refs"] if (STYLES / r).exists()]
+
+    def _unusable(self):
+        r, fjob = self.root, self.p.jobs[self.name]
+        if r.get("mode") not in ("final", "preview", "signs", "touchup") or not r.get("settings"):
+            return "the version wasn't rendered here (imported)"
+        if r.get("source") and r.get("mode") not in ("signs", "touchup"):  # (a fix-up's source is what it fixed)
+            return "its render started from another version"
+        if r.get("family") not in REPAINT_FAMILIES:
+            return f"{r.get('family')} renders aren't re-run per state"
+        if any(fjob["pad"]) or any(r.get("frame") or ()):
+            return "renders with a margin aren't re-run per state"
+        return None
+
+    def _key(self, states):
+        return tuple(sorted((int(k), int(v)) for k, v in states.items()))
+
+    def check(self):
+        """The recipe re-run with the render's own states must give the render back (else a model or setting has
+        changed since: its states wouldn't match it). Sets `reason` when it doesn't."""
+        root_states = {int(k): v for k, v in (self.root.get("rendered_defaults") or {}).items()}
+        self.w._stage("checking the render can be re-made for its states", 0.03)
+        again = self._render(root_states)
+        before = np.asarray(Image.open(self.p.versions.render_path(self.name, self.root_vid)).convert("RGB"))
+        if again.shape != before.shape:
+            self.reason = "re-making its render gives another size"
+            return False
+        d = float(np.abs(again.astype(np.int16) - before).mean())
+        if d > WHOLE_MAX_DIFF:
+            self.reason = f"re-making its render now gives a different picture ({d:.1f} apart)"
+            return False
+        self.cache[self._key(root_states)] = self._geometry(before, root_states)
+        return True
+
+    def __call__(self, states):
+        key = self._key(states)
+        if key not in self.cache:
+            if self.w.cancel_flag:
+                raise InterruptedError("cancelled")
+            self.w._stage(f"rendering the field with states {dict(key)}", 0.05)
+            img = self._render(dict(key))
+            img = self._fix(img, dict(key))
+            self.cache[key] = self._geometry(img, dict(key))
+        return self.cache[key]
+
+    def _geometry(self, img, states):
+        """The render as states.run takes the main render: on the original's geometry, cut to the canvas."""
+        path = AI / "input_states" / f"{self.name}_render.png"
+        path.parent.mkdir(exist_ok=True)
+        Image.fromarray(img).save(path, compress_level=1)
+        s = self.s
+        main = ai.prepare_main(self.p.background(self.name), path, self.p.jobs[self.name],
+                               {str(k): v for k, v in states.items()}, do_align=s["align"], frame=self.root.get("frame"))
+        return main["ai_hi"]
+
+    def _render(self, states):
+        """The root's recipe on the original with these states (as Worker.generate makes a render)."""
+        p, name, comfy = self.p, self.name, self.comfy
+        fjob, bg = p.jobs[name], p.background(name)
+        w, h = fjob["canvas"][2], fjob["canvas"][3]
+        s = dict(self.s)
+        cancelled = lambda: self.w.cancel_flag  # noqa: E731
+        shows = {str(k): v for k, v in states.items()}
+        img1x, _ = ai.default_view(bg, shows)
+        tmp = AI / "input_states"
+        tmp.mkdir(exist_ok=True)
+        src = tmp / f"{name}.png"
+        Image.fromarray(img1x).save(src)
+        sign_boxes = p.sign_boxes(name, s, comfy)
+        relative = lambda v: v / max(s["denoise"], 1e-3)  # noqa: E731
+        inside = relative(s["text_repaint"])
+        moving = p.moving_boxes(name, s)
+        boxes = [dict(b, inside=inside) for b in sign_boxes] + [dict(b, inside=relative(s["anim_repaint"])) for b in moving]
+        boxes = [b for b in boxes if b["inside"] < 1]
+        flat = None
+        if s.get("protect_flat") and relative(s["flat_repaint"]) < 1:
+            flat = protect.flat_dark(img1x)
+            flat = flat if flat.max() > 0.05 else None
+        if boxes or flat is not None:
+            k = work_size(s, w, h)[0] // w
+            repaint, _ = signs.masks(boxes, w, h, k, inside)
+            if flat is not None:
+                f = np.asarray(Image.fromarray(flat, "F").resize((w * k, h * k), Image.BILINEAR), np.float32)
+                rel = min(1.0, relative(s["flat_repaint"]))
+                repaint = np.minimum(repaint, np.round((1 - f * (1 - rel)) * 255).astype(np.uint8))
+            Image.fromarray(repaint).save(tmp / f"{name}_signs.png")
+            s = dict(s, text_mask=comfy.upload(tmp / f"{name}_signs.png"))
+        source = src
+        if is_local(s["input_upscaler"]):
+            tw, th = work_size(s, w, h)
+            big = None
+            if s["input_upscaler"] == syw.NAME and p.syw_pack():
+                big = syw.view(p.syw_pack(), name, bg, ai.shows(shows), tuple(fjob["pad"]))  # not cached: the
+                # field's own cache holds its main input
+            big = (np.asarray(Image.fromarray(big).resize((tw, th), Image.LANCZOS)) if big is not None
+                   else upscalers.upscale(img1x, s["input_upscaler"], tw, th, cancelled))
+            source = tmp / f"{name}_up.png"
+            Image.fromarray(big).save(source)
+        wf = build_workflow(s, comfy.upload(source), w, h, f"ff7studio/{name}_state", self.refs, (0, 0, 0, 0))
+        img = np.asarray(Image.open(io.BytesIO(comfy.run(wf, None, cancelled))).convert("RGB"))
+        if is_local(s["upscaler"]):
+            ow, oh = w * s["out_scale"], h * s["out_scale"]
+            if img.shape[:2] != (oh, ow):
+                img = upscalers.finish(img, s, ow, oh, cancelled)
+        return img
+
+    def _fix(self, img, states):
+        """The version's fix-ups made again on a state's render, where they fall inside that state's change: its
+        sign words (the sign fixer), its touch-ups (their marks, kept since 2026-11-12; older ones can't be)."""
+        if not self.fixes:
+            return img
+        p, name = self.p, self.name
+        fjob, bg = p.jobs[name], p.background(name)
+        cw, ch = fjob["canvas"][2:]
+        root_states = {str(k): v for k, v in (self.root.get("rendered_defaults") or {}).items()}
+        a, _ = ai.default_view(bg, root_states)
+        b, _ = ai.default_view(bg, {str(k): v for k, v in states.items()})
+        change = cv2.dilate(np.any(a != b, axis=2).astype(np.uint8), np.ones((2 * WHOLE_FIX_PAD + 1,) * 2, np.uint8))
+        scale = img.shape[1] / cw
+        for fvid, fmeta in self.fixes:
+            if fmeta.get("mode") == "signs":
+                boxes = [bx for bx in sign_words(name)
+                         if change[max(0, int(bx["y1"])):int(math.ceil(bx["y2"])), max(0, int(bx["x1"])):int(math.ceil(bx["x2"]))].any()]
+                if not boxes:
+                    continue
+                s = signfix.settings(p.effective(name, "qwen21"))
+
+                def paint(crop, say):
+                    path = AI / "input_states" / f"{name}_sign.png"
+                    Image.fromarray(crop).save(path)
+                    wf = signfix.build_workflow(s, self.comfy.upload(path), say, crop.shape[1], crop.shape[0],
+                                                f"ff7studio/{name}_state_sign")
+                    return np.asarray(Image.open(io.BytesIO(self.comfy.run(wf, None, lambda: self.w.cancel_flag))).convert("RGB"))
+
+                self.w._stage(f"painting {len(boxes)} sign{'s' if len(boxes) != 1 else ''} on a state", 0.05)
+                img = signfix.repaint(img, boxes, (cw, ch), (0, 0, 0, 0), scale, paint)
+            elif fmeta.get("mode") == "touchup":
+                marks_file = p.versions.dir(name, fvid) / TOUCHUP_MARKS
+                if not marks_file.exists():
+                    self.notes.append("a touch-up from before its marks were kept isn't made again on states")
+                    continue
+                marks = np.asarray(Image.open(marks_file).convert("L"), np.float32) / 255
+                inside = cv2.resize(change.astype(np.float32), (marks.shape[1], marks.shape[0]), interpolation=cv2.INTER_NEAREST)
+                marks = marks * inside
+                if marks.max() <= 0:
+                    continue
+                t = fmeta.get("touchup") or {}
+                s = touchup.hint_prompt(dict(touchup_settings(p, name, fmeta), seed=t.get("seed", 0)), t.get("hint"))
+                mask = touchup.full_mask(marks, (cw, ch), (0, 0, 0, 0), (img.shape[1], img.shape[0]))
+
+                def paint_area(crop, model_mask, size, s=s):
+                    names = []
+                    for kind, arr in (("ctx", crop), ("orig", crop), ("mask", model_mask)):
+                        path = AI / "input_states" / f"{name}_touchup_{kind}.png"
+                        Image.fromarray(arr).save(path)
+                        names.append(self.comfy.upload(path, "ff7studio_touchup"))
+                    hh, ww = crop.shape[:2]
+                    wf = build_states_workflow(s, *names, size[0], size[1], ww, hh, f"ff7studio/{name}_state_touchup",
+                                               self.refs, denoise=float(t.get("strength", 0.6)))
+                    res = np.asarray(Image.open(io.BytesIO(self.comfy.run(wf, None, lambda: self.w.cancel_flag))).convert("RGB"))
+                    return upscalers.finish(res, s, ww, hh, lambda: self.w.cancel_flag)
+
+                self.w._stage("making a touch-up again on a state", 0.05)
+                img, _ = touchup.repaint(img, mask, scale, paint_area)
+        return img
 
 
 @app.get("/api/cleanup")

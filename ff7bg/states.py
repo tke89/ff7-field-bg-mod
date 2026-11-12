@@ -36,6 +36,23 @@ MIN_SHEET_SIDE = 768  # tiny sheets are rendered larger so Flux has room to pain
 KEY_MIN_CHANGE = 0.3  # share of a spot a state must change to get its own painted key frame
 MOVING_FADE = 6       # moving parts' light repaint fades into the scene's over this many original pixels
 MOVING_PAD = 2        # around what changes between their frames
+# 2026-11-12 (user: the states are the weakest part; blin60_2's door opened onto a glass pod, games_1's SUPER DUNK sign
+# lit up as "TV Station"):
+ANCHOR_MIN = 0.1      # share of a spot a state must fill with new shapes (a door opening onto the room) to be painted whole
+RECOLOUR_MAX = 0.25   # a state whose change is at most this share of new shapes only recolours (a sign lighting up)
+# the states' prompt: the field's own, without its description (whose objects and quoted signs got painted into small
+# panels: "a stage labeled 'TV Station'" on the SUPER DUNK sign), and with this
+STATES_GUARD = "Keep every sign's lettering exactly as it is: no new words, letters or logos."
+LAYER_COVER = 0.6     # a layered frame: share of its layer the key's layer, moved, must cover
+LAYER_ERR = 20.0      # ...and how far apart (mean per channel, slightly blurred) the two may be there
+NEAR_PICK = 90        # an anchored frame's pixel is taken from the nearest painted state when its original is this near
+                      # (sum of R, G, B differences); farther, it's painted afresh
+SHIFT_MAX = 32        # how far (original pixels) a part may slide between frames and still be the key's part moved
+SHIFT_MIN = 0.3       # share of a frame's new pixels the key moved must match
+# the shifts tried, smallest first: along x or y (doors, lifts), or a few pixels any way
+SHIFTS = sorted(({(d, 0) for d in range(-SHIFT_MAX, SHIFT_MAX + 1)} | {(0, d) for d in range(-SHIFT_MAX, SHIFT_MAX + 1)}
+                 | {(dx, dy) for dx in range(-3, 4) for dy in range(-3, 4)}) - {(0, 0)},
+                key=lambda d: (abs(d[0]) + abs(d[1]), d))
 
 
 @dataclass
@@ -127,6 +144,38 @@ def _changed(view, default_view):
     """Pixels (1x) where a state's view differs from what the main render shows, grown by 1px."""
     diff = np.any(view != default_view, axis=2).astype(np.uint8)
     return cv2.dilate(diff, np.ones((3, 3), np.uint8))
+
+
+def _same_shapes(a, b):
+    """1x map: True where two views show the same shapes, maybe in other colours (a lamp lit, letters turned green):
+    their brightness patterns correlate over 5x5 pixels, or both are flat there."""
+    la = cv2.cvtColor(np.ascontiguousarray(a), cv2.COLOR_RGB2GRAY).astype(np.float32)
+    lb = cv2.cvtColor(np.ascontiguousarray(b), cv2.COLOR_RGB2GRAY).astype(np.float32)
+    k = (5, 5)
+    ma, mb = cv2.blur(la, k), cv2.blur(lb, k)
+    va = cv2.blur(la * la, k) - ma * ma
+    vb = cv2.blur(lb * lb, k) - mb * mb
+    cov = cv2.blur(la * lb, k) - ma * mb
+    flat = (va < 30) & (vb < 30)
+    return flat | (cov / np.sqrt(np.maximum(va * vb, 1e-3)) > 0.5)
+
+
+def _crisp(mask1, w, h, scale):
+    """A 1x mask at `scale` with edges softened over less than a pixel of the original (a layer's outline stays sharp)."""
+    m = cv2.resize(mask1.astype(np.float32), (w * scale, h * scale), interpolation=cv2.INTER_NEAREST)
+    return np.clip(cv2.GaussianBlur(m, (0, 0), max(0.4 * scale, 0.5)), 0, 1)[..., None]
+
+
+def _moved(img, shift, g):
+    """`img` (at g x the original) moved by `shift` original pixels: out[y, x] = img[y - dy, x - dx] (edges repeated)."""
+    h, w = img.shape[:2]
+    m = np.float32([[1, 0, shift[0] * g], [0, 1, shift[1] * g]])
+    return cv2.warpAffine(np.ascontiguousarray(img), m, (w, h), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_REPLICATE)
+
+
+def _new_shapes(view, ref):
+    """1x map: where `view` differs from `ref` with new shapes, not just new colours (a door gone, a room behind)."""
+    return np.any(view != ref, axis=2) & ~_same_shapes(view, ref)
 
 
 def _pack_items(items, k):
@@ -241,7 +290,7 @@ def animated_boxes(bg, rendered_defaults, params):
 
 
 def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, cancelled=lambda: False,
-        animated=None, hires=None):
+        animated=None, hires=None, whole=None):
     """Restyle every state; returns panels for ai.build_pages and saves them under work_dir.
 
     Round 1 paints a key frame for each spot the main render doesn't show (a fan that's always
@@ -254,6 +303,20 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
     does (repainting them more turned Kalm's wall fan into a window in some frames and a heart in the main render).
     One that rests on the art underneath (0 in its order) has the main render as its key, however much it changes;
     one without gets its key painted at anim_repaint too.
+    Since 2026-11-12: a state that only recolours what its key shows (a lamp lit, a sign's letters turned green) is
+    touched up at anim_repaint too (at state_denoise, games_1's SUPER DUNK became other words). A spot where a state
+    fills much of it with new shapes (a door opening onto the room behind) gets an anchor: that state painted whole
+    from its original art, as a key is. Every other frame (not looping animations) takes each pixel from the key, the
+    anchor, or the key moved by a few pixels (a sliding door's panel: SHIFTS) where the original matches it, and only
+    what matches none of them (the door's moving edge) is painted, at state_denoise (anim_repaint when the frame only
+    recolours). Adding the original's change to the painted key showed blin60_2's painted door through the room, and
+    Flux made it a glass pod. The states' prompt is the field's without its description (STATES_GUARD).
+    whole (the user's idea, 2026-11-12): whole(states) -> the main render's recipe (its seed and settings) run on the
+    original with those states on, at the main render's geometry ({group: state mask}, every group given). When
+    given, no state is painted here: a spot's key, anchor and every other frame (looping animations' too, since the
+    user preferred them, though a fan's blades are drawn anew in each) are their whole renders, each only where it
+    changes the picture; a layered frame is the key's painting moved over the
+    anchor's whole render (no shimmer between a door's frames), its new pixels from its own whole render.
     hires: (tile source, its scale) of a cleaner enlargement of the same pages (the SYW Unified pack's 4x, when the
     main render started from it): the states' art comes from there instead of the original enlarged; the original
     still says which pixels a state changes.
@@ -263,6 +326,7 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
     work_dir.mkdir(parents=True, exist_ok=True)
     for old in work_dir.glob("*.png"):
         old.unlink()
+    settings = {**settings, "scene": "", "prompt": f"{settings['prompt'].rstrip()} {STATES_GUARD}"}
     scale, ai_hi, M, defaults = main["scale"], main["ai_hi"], main["M"], main["defaults"]
     default_view = main["orig"]  # the original as the main render saw it
     k = work_size(settings, rect[2], rect[3])[0] // rect[2]
@@ -314,26 +378,184 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
         keys, derived = _rounds(clusters, defaults)
         # Small changes to what the main render already shows (a needle on a gauge) are derived from it;
         # only states that replace most of a spot (a fan spinning in an empty window) get a key painted.
-        # Looping animations that rest on what the main render shows: always derived from it.
+        # Looping animations that rest on what the main render shows: always derived from it. So is a state that
+        # only recolours what it shows, however much (games_1's SUPER DUNK sign lighting up was painted as a key, at
+        # the keys' strength, and came out as other words)
         painted_keys = []
         for c, key in keys:
             area = sum(t * t for _, _, t in c.footprint)
             rests = 0 in (animated.get(c.param) or ())
-            big = changed_from_default(c, key).sum() >= KEY_MIN_CHANGE * area
-            (painted_keys if big and not rests else derived).append((c, key))
+            changed = changed_from_default(c, key)
+            big = changed.sum() >= KEY_MIN_CHANGE * area
+            recolour = _new_shapes(view(c, key), default_crop(c)).sum() <= RECOLOUR_MAX * max(1, changed.sum())
+            (painted_keys if big and not rests and not recolour else derived).append((c, key))
         keys = painted_keys
     key_of = {id(c): s for c, s in keys}
     key_art = {}  # id(cluster) -> painted key at output scale (main crop where the main render is the key)
     animated = dict(animated or {})
     looping = set(animated)
-    total = (len(_pack_items([cs for cs in keys if cs[0].param not in looping], k))
-             + len(_pack_items([cs for cs in keys if cs[0].param in looping], k))
-             + len(_pack_items([cs for cs in derived if cs[0].param not in looping], k))
-             + len(_pack_items([cs for cs in derived if cs[0].param in looping], k)))
+
+    def key_view(c):
+        key = key_of.get(id(c))
+        return default_crop(c) if key is None else view(c, key)
+
+    def key_matched(c):
+        key = key_of.get(id(c))
+        return _color(default_crop(c), M) if key is None else matched[(id(c), key)]
+
+    def changed_from_key(c, s):
+        return _changed(view(c, s), key_view(c))
+
+    use_whole = whole is not None and not upscale_only
+
+    def whole_crop(c, s):
+        """The spot as the whole render with this state of its group on shows it (the other groups as the main render
+        has them)."""
+        d = dict(defaults)
+        d[c.param] = s
+        img = whole(d)
+        cx, cy, w, h = c.rect
+        return img[cy * scale:(cy + h) * scale, cx * scale:(cx + w) * scale]
+
+    # Anchors: per spot (not looping animations), the state that fills most of it with new shapes, when that's
+    # enough of it
+    anchor_of = {}
+    if not upscale_only:
+        for c in clusters:
+            if c.param in looping:
+                continue
+            area = sum(t * t for _, _, t in c.footprint)
+            best, best_n = None, 0
+            for s in c.states:
+                if s == key_of.get(id(c)):
+                    continue
+                n = int(_new_shapes(view(c, s), key_view(c)).sum())
+                if n > best_n:
+                    best, best_n = s, n
+            # the group all off (what's behind its layer: a doorway's room) is the anchor whenever it's one of the
+            # spot's states and changes enough: the other frames are its layer laid over it (layered())
+            if 0 in c.states and 0 != key_of.get(id(c)):
+                n0 = int(_new_shapes(view(c, 0), key_view(c)).sum())
+                if n0 >= ANCHOR_MIN * area:
+                    best, best_n = 0, n0
+            if best is not None and best_n >= ANCHOR_MIN * area:
+                anchor_of[id(c)] = best
+    anchors = [(c, anchor_of[id(c)]) for c in clusters if id(c) in anchor_of]
+    derived = [(c, s) for c, s in derived if anchor_of.get(id(c)) != s]
+
+    def recolours(c, s):
+        """The state only recolours what its key shows (few new shapes among the pixels it changes)."""
+        n = changed_from_key(c, s).sum()
+        return n > 0 and _new_shapes(view(c, s), key_view(c)).sum() <= RECOLOUR_MAX * n
+
+    pick_cache = {}
+
+    def picks(c, s):
+        """A frame per 1x pixel: as its key shows it, as its spot's anchor shows it, as the key shows it moved by a
+        few pixels (a sliding door's panel, a lift), or none of them (new; of those, near_anchor: nearer the anchor's
+        colours than the key's). Returns (from_key, from_anchor, from_shift, shift, new, near_anchor)."""
+        if (id(c), s) in pick_cache:
+            return pick_cache[(id(c), s)]
+        v, ref = view(c, s), key_view(c)
+        from_key = ~np.any(v != ref, axis=2)
+        a = anchor_of.get(id(c))
+        anc = view(c, a) if a is not None else None
+        from_anchor = (~np.any(v != anc, axis=2) & ~from_key) if anc is not None else np.zeros_like(from_key)
+        new = ~from_key & ~from_anchor
+        shift, from_shift = None, np.zeros_like(new)
+        ys, xs = np.nonzero(new)
+        if len(ys) >= 16:
+            h, w = new.shape
+            best_n = 0
+            for dx, dy in SHIFTS:
+                sx, sy = xs - dx, ys - dy
+                ok = (sx >= 0) & (sx < w) & (sy >= 0) & (sy < h)
+                n = np.count_nonzero(np.all(v[ys[ok], xs[ok]] == ref[sy[ok], sx[ok]], axis=1))
+                if n > best_n:
+                    shift, best_n = (dx, dy), n
+            if shift is not None and best_n >= max(16, SHIFT_MIN * len(ys)):
+                from_shift = new & ~np.any(v != _moved(ref, shift, 1), axis=2)
+                new = new & ~from_shift
+            else:
+                shift = None
+        near_anchor = np.zeros_like(new)
+        if anc is not None:
+            # an anchored spot's frame: every pixel from whichever of key, anchor or moved key its original is closest
+            # to, unless none is near (NEAR_PICK): a clean wipe from closed to open, both painted once. Exact matches
+            # alone left the angled door's in-between pixels new, started from the key plus the change: smeared
+            def dist(other):
+                return np.abs(v.astype(np.int16) - other.astype(np.int16)).sum(2)
+            dk, da = dist(ref), dist(anc)
+            ds = dist(_moved(ref, shift, 1)) if shift is not None else np.full_like(dk, 10 ** 4)
+            best = np.minimum(np.minimum(dk, da), ds)
+            changed = ~(dk == 0)
+            from_key = (dk == best) & (best <= NEAR_PICK)
+            from_anchor = changed & (da == best) & ~from_key & (best <= NEAR_PICK)
+            from_shift = changed & (ds == best) & ~from_key & ~from_anchor & (best <= NEAR_PICK)
+            new = best > NEAR_PICK
+            near_anchor = new & (da < dk)
+        pick_cache[(id(c), s)] = (from_key, from_anchor, from_shift, shift, new, near_anchor)
+        return pick_cache[(id(c), s)]
+
+    layer_cache = {}
+
+    def layer(c, img):
+        """The group's layer in a view of its spot: where it differs from the group all off, cleaned of the
+        original's dithering specks and pinholes."""
+        diff = np.any(img != view(c, 0), axis=2).astype(np.uint8)
+        diff = cv2.morphologyEx(diff, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+        return cv2.morphologyEx(diff, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8)) > 0
+
+    def layered(c, s):
+        """A frame of a spot whose anchor is the group all off, when its layer is the key's layer moved (a door
+        sliding open, a shutter, a lift): (shift, its layer, the key's layer, the layer's pixels the moved key layer
+        doesn't cover), else None. FF7 draws each such frame as the door's tiles at another place over the room."""
+        if (id(c), s) in layer_cache:
+            return layer_cache[(id(c), s)]
+        res = None
+        if anchor_of.get(id(c)) == 0 and s != 0:
+            ls, lk = layer(c, view(c, s)), layer(c, key_view(c))
+            if ls.sum() >= 16 and lk.sum() >= 16:
+                v = cv2.GaussianBlur(view(c, s).astype(np.float32), (0, 0), 1.0)
+                kv = cv2.GaussianBlur(key_view(c).astype(np.float32), (0, 0), 1.0)
+                best = None
+                for d in [(0, 0)] + SHIFTS:
+                    mk = _moved(lk.astype(np.uint8), d, 1) > 0
+                    over = ls & mk
+                    if over.sum() < LAYER_COVER * ls.sum():
+                        continue
+                    err = float(np.abs(v[over] - _moved(kv, d, 1)[over]).mean())
+                    if best is None or err < best[0]:
+                        best = (err, d, mk)
+                if best is not None and best[0] <= LAYER_ERR:
+                    res = (best[1], ls, lk, ls & ~best[2])
+        layer_cache[(id(c), s)] = res
+        return res
+
+    def new_of(c, s):
+        lay = layered(c, s)
+        return lay[3] if lay is not None else picks(c, s)[4]
+
+    def new_in(c, s):
+        return cv2.dilate(new_of(c, s).astype(np.uint8), np.ones((3, 3), np.uint8))
+
+    # what each round paints (and how many sheets, for the progress count)
+    plain = [(c, s) for c, s in derived if upscale_only or changed_from_key(c, s).any()]
+    upscaled = plain if upscale_only else []
+    moving = [cs for cs in plain if not upscale_only and cs[0].param in looping]
+    framed = [cs for cs in plain if not upscale_only and cs[0].param not in looping and new_of(*cs).any()]
+    light = [cs for cs in framed if recolours(*cs)]
+    heavy = [cs for cs in framed if not recolours(*cs)]
+    groups = ([cs for cs in keys if cs[0].param not in looping], [cs for cs in keys if cs[0].param in looping],
+              anchors, upscaled, heavy, light, moving)
+    if use_whole:  # nothing is painted here (looping animations too: the user found their whole renders better than
+        groups = ([], [], [], [], [], [], [])  # touched-up frames, 2026-11-12)
+    total = sum(len(_pack_items(g, k)) for g in groups if g)
     done = [0]
 
-    def paint(items, start_fn, change_fn, denoise):
-        """Render (cluster, state) panels; returns {(id(c), s): output-scale image}."""
+    def paint(items, start_fn, change_fn, denoise, ctx_fn=None):
+        """Render (cluster, state) panels; returns {(id(c), s): output-scale image}. ctx_fn(c, s, g): what's
+        around the repaint (default: the main render)."""
         out_imgs = {}
         for g, (W, H), placed in _pack_items(items, k):
             if cancelled():
@@ -346,7 +568,8 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
             start = np.zeros((H, W, 3), np.uint8) if upscale_only else np.zeros((H * g, W * g, 3), np.uint8)
             for c, s, x, y in placed:
                 w, h = c.rect[2], c.rect[3]
-                ctx[y * g : (y + h) * g, x * g : (x + w) * g] = cv2.resize(main_crop(c), (w * g, h * g), interpolation=cv2.INTER_AREA)
+                ctx[y * g : (y + h) * g, x * g : (x + w) * g] = (
+                    ctx_fn(c, s, g) if ctx_fn else cv2.resize(main_crop(c), (w * g, h * g), interpolation=cv2.INTER_AREA))
                 ch1 = change_fn(c, s)
                 # repaint a little beyond the change so it blends in
                 m1 = cv2.dilate(ch1, np.ones((5, 5), np.uint8)) * 255
@@ -388,30 +611,46 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
         return np.clip(ctx * (1 - m) + art * m, 0, 255).astype(np.uint8)
 
     painted = {}
-    switched_keys = [cs for cs in keys if cs[0].param not in looping]
-    moving_keys = [cs for cs in keys if cs[0].param in looping]
-    if switched_keys:
-        painted.update(paint(switched_keys, key_start, changed_from_default, 0.85 if edit else None))
-    if moving_keys:
-        painted.update(paint(moving_keys, key_start, changed_from_default, settings["anim_repaint"]))
+    if groups[0]:
+        painted.update(paint(groups[0], key_start, changed_from_default, 0.85 if edit else None))
+    if groups[1]:
+        painted.update(paint(groups[1], key_start, changed_from_default, settings["anim_repaint"]))
     for c in clusters:
         key = key_of.get(id(c))
         if key is None:
             key_art[id(c)] = main_crop(c)
+        elif use_whole:
+            key_art[id(c)] = _merge(main_crop(c), whole_crop(c, key), changed_from_default(c, key), scale)
         else:
             w, h = c.rect[2], c.rect[3]
             blend = _soft(changed_from_default(c, key), w, h, scale)
             key_art[id(c)] = (main_crop(c) * (1 - blend) + painted[(id(c), key)] * blend).astype(np.uint8)
 
+    def key_at(c, s, g):
+        w, h = c.rect[2], c.rect[3]
+        return cv2.resize(key_art[id(c)], (w * g, h * g), interpolation=cv2.INTER_AREA)
+
+    # Round 1b: anchors, painted whole from their original art pasted into the key
+    def anchor_start(c, s, g):
+        w, h = c.rect[2], c.rect[3]
+        ctx = key_at(c, s, g).astype(np.float32)
+        m = _soft(changed_from_key(c, s), w, h, g)
+        return np.clip(ctx * (1 - m) + art_at(c, s, g) * m, 0, 255).astype(np.uint8)
+
+    anchor_art = {}
+    if anchors and use_whole:
+        for c, a in anchors:
+            anchor_art[id(c)] = _merge(key_art[id(c)], whole_crop(c, a), changed_from_key(c, a), scale)
+    elif anchors:
+        # as strongly as the main render itself was painted: it's the spot's other look, not a new object (at the keys'
+        # strength blin60_2's green room behind its door came out a dark blue void)
+        got = paint(anchors, anchor_start, changed_from_key, 0.85 if edit else settings["denoise"], ctx_fn=key_at)
+        for c, a in anchors:
+            w, h = c.rect[2], c.rect[3]
+            blend = _soft(changed_from_key(c, a), w, h, scale)
+            anchor_art[id(c)] = (key_art[id(c)] * (1 - blend) + got[(id(c), a)] * blend).astype(np.uint8)
+
     # Round 2: everything else, from its key plus the change in the original
-    def key_view(c):
-        key = key_of.get(id(c))
-        return default_crop(c) if key is None else view(c, key)
-
-    def key_matched(c):
-        key = key_of.get(id(c))
-        return _color(default_crop(c), M) if key is None else matched[(id(c), key)]
-
     def derived_start(c, s, g):
         w, h = c.rect[2], c.rect[3]
         view(c, s)
@@ -423,18 +662,49 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
         delta = matched[(id(c), s)] - key_matched(c)
         return np.clip(base + cv2.resize(delta, (w * g, h * g), interpolation=cv2.INTER_CUBIC), 0, 255).astype(np.uint8)
 
-    def changed_from_key(c, s):
-        return _changed(view(c, s), key_view(c))
+    def compose(c, s, g):
+        """A frame's start: the key's painting, the anchor's, or the key's moved, where the original matches each;
+        elsewhere (new) the nearer of key and anchor plus the original's change from it. A layered frame (layered()):
+        the painted room with the painted door moved over it, clipped to where FF7 draws the door in this frame."""
+        w, h = c.rect[2], c.rect[3]
+        lay = layered(c, s)
+        if lay is not None:
+            d, ls, lk, new = lay
+            base = cv2.resize(anchor_art[id(c)], (w * g, h * g), interpolation=cv2.INTER_AREA).astype(np.float32)
+            door = _moved(key_at(c, s, g).astype(np.float32), d, g)
+            m = _crisp(ls & (_moved(lk.astype(np.uint8), d, 1) > 0), w, h, g)
+            out = base * (1 - m) + door * m
+            if new.any() and use_whole:  # door the key never showed: as this frame's whole render has it
+                mn = _soft(new.astype(np.uint8), w, h, g)
+                out = out * (1 - mn) + cv2.resize(whole_crop(c, s), (w * g, h * g), interpolation=cv2.INTER_AREA) * mn
+            elif new.any():  # ...else the room plus the original's change from it
+                dl = cv2.resize(matched[(id(c), s)] - matched[(id(c), 0)], (w * g, h * g), interpolation=cv2.INTER_CUBIC)
+                out = out + dl * _soft(new.astype(np.uint8), w, h, g)
+            return np.clip(out, 0, 255).astype(np.uint8)
+        _, from_anchor, from_shift, shift, new, near_anchor = picks(c, s)
+        out = key_at(c, s, g).astype(np.float32)
+        delta = cv2.resize(matched[(id(c), s)] - key_matched(c), (w * g, h * g), interpolation=cv2.INTER_CUBIC)
+        if shift is not None:
+            ws = _soft(from_shift.astype(np.uint8), w, h, g)
+            out = out * (1 - ws) + _moved(out, shift, g) * ws
+        a = anchor_of.get(id(c))
+        if a is not None:
+            wa = _soft((from_anchor | near_anchor).astype(np.uint8), w, h, g)
+            A = cv2.resize(anchor_art[id(c)], (w * g, h * g), interpolation=cv2.INTER_AREA).astype(np.float32)
+            out = out * (1 - wa) + A * wa
+            da = cv2.resize(matched[(id(c), s)] - matched[(id(c), a)], (w * g, h * g), interpolation=cv2.INTER_CUBIC)
+            delta = delta * (1 - wa) + da * wa
+        return np.clip(out + delta * _soft(new.astype(np.uint8), w, h, g), 0, 255).astype(np.uint8)
 
-    todo = [(c, s) for c, s in derived if upscale_only or changed_from_key(c, s).any()]
-    change2 = changed_from_default if upscale_only else changed_from_key
     painted2 = {}
-    switched = [cs for cs in todo if upscale_only or cs[0].param not in looping]
-    moving = [cs for cs in todo if not upscale_only and cs[0].param in looping]
-    if switched:
-        painted2.update(paint(switched, derived_start, change2, settings["state_denoise"]))
-    if moving:
-        painted2.update(paint(moving, derived_start, change2, settings["anim_repaint"]))
+    if upscaled:
+        painted2.update(paint(upscaled, derived_start, changed_from_default, settings["state_denoise"]))
+    if heavy and not use_whole:
+        painted2.update(paint(heavy, compose, new_in, settings["state_denoise"], ctx_fn=compose))
+    if light and not use_whole:
+        painted2.update(paint(light, compose, new_in, settings["anim_repaint"], ctx_fn=compose))
+    if moving and not use_whole:
+        painted2.update(paint(moving, derived_start, changed_from_key, settings["anim_repaint"]))
 
     panels = {"images": {}, "off": []}
     index = []
@@ -445,6 +715,15 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
                 art = painted2[(id(c), s)]
             elif s == key_of.get(id(c)):
                 art = key_art[id(c)]
+            elif s == anchor_of.get(id(c)):
+                art = anchor_art[id(c)]
+            elif use_whole and (c.param in looping or layered(c, s) is None):
+                art = whole_crop(c, s)
+            elif c.param not in looping:
+                art = compose(c, s, scale)
+                if (id(c), s) in painted2:  # the repaint where the frame shows none of key, anchor or moved key
+                    m2 = _soft(new_in(c, s), w, h, scale)
+                    art = (art * (1 - m2) + painted2[(id(c), s)] * m2).astype(np.uint8)
             elif (id(c), s) in painted2:
                 # the repaint where this state differs from its key, the key elsewhere
                 m2 = _soft(changed_from_key(c, s), w, h, scale)
