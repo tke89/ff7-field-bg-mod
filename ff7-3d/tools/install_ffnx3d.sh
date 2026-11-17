@@ -5,6 +5,10 @@ set -e
 G="/c/Program Files (x86)/Steam/steamapps/common/FINAL FANTASY VII Steam Edition/ff7/workingdir"
 B="${FFNX3D:-$(cd "$(dirname "$0")/../../.." && pwd)/FFNx-3d}/.build/bin"  # FFNx-3d beside the Studio repo
 [ -f "$B/FFNx.dll" ] || { echo "no build at $B"; exit 1; }
+# the plain FFNx swapped in by an earlier 2D (2026-11-16/17): game_mode.py puts FFNx-3d back first
+if [ -f "$G/_game_mode/full3d/AF3DN.P" ]; then
+  echo "the plain FFNx is swapped in (_game_mode/full3d): run tools/game_mode.py backgrounds (or 3d) first"; exit 1
+fi
 cp "$B/FFNx.dll" "$G/AF3DN.P"
 [ -f "$B/FFNx.pdb" ] && cp "$B/FFNx.pdb" "$G/FFNx.pdb"
 cp "$B/shaders/"* "$G/shaders/"

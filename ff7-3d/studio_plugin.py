@@ -29,7 +29,7 @@ LIGHT = {"shine": (0.0, 1.0), "light_tint": (0.0, 1.0), "shading": (0.0, 1.0), "
 # around the characters (ff3d/atmos.py): their shadows, haze and the lights' glow
 EFFECTS = {"char_shadow": (0.0, 1.0), "char_haze": (0.0, 1.0), "glow": (0.0, 1.0), "char_match": (0.0, 1.0),
            "char_light": (0.0, 1.0), "char_local": (0.0, 1.0), "char_outline": (0.0, 1.0), "char_soft": (0.0, 1.0),
-           "contact_shadow": (0.0, 1.0), "char_finish": (0.0, 1.0), "char_fill": (0.0, 2.0), "char_sss": (0.0, 1.0),
+           "contact_shadow": (0.0, 1.0), "lamp_shadow": (0.0, 1.0), "char_finish": (0.0, 1.0), "char_fill": (0.0, 2.0), "char_sss": (0.0, 1.0),
            "char_highlight": (0.0, 1.0), "char_volume": (0.0, 1.0), "char_ao": (0.0, 1.0),
            "particle_amount": (0.0, 2.0), "water_motion": (0.0, 1.0),
            "clouds": (0.0, 1.0), "flicker": (0.0, 1.0), "grass": (0.0, 1.0), "occlusion": (0.0, 1.0), "gloss": (0.0, 1.0),
@@ -92,14 +92,22 @@ def register(studio):
             cur = worker.current
             return bool(cur) and cur["job"]["name"] == name and cur["job"]["kind"] == "3d"
 
+    def game_mode():
+        """How the game is set up (tools/game_mode.py): "3d" or "backgrounds" (2D: no 3D scenes or lighting, only the
+        AI 2D and Original views)."""
+        p = live.GAME / "_game_mode" / "current.txt"
+        return p.read_text().strip() if p.exists() else "3d"
+
     def game():
+        mode = game_mode()
         st = live.status()
         p = live.ROOT / "status.txt"
         running = p.exists() and time.time() - p.stat().st_mtime < 3  # FFNx-3d rewrites it twice a second
         if running:
             starting["since"] = 0.0
         return {"running": running, "starting": time.time() - starting["since"] < 60,
-                "field": st.get("field") if running else None, "view": st.get("view") if running else None}
+                "field": st.get("field") if running else None, "view": st.get("view") if running else None,
+                "mode": mode}
 
     def field_state(name):
         work = common.WORK / name
@@ -303,7 +311,13 @@ def register(studio):
         Automatic setting says. final: every final render gets one, and scenes there are kept in step; built: only
         scenes there are kept in step; all: any version. A batch sent with Skip the 3D scenes leaves them alone."""
         auto = settings()["auto"]
-        if auto == "off" or (options or {}).get("skip_3d") or (built(name) and up_to_date(name)):
+        if auto == "off" or (options or {}).get("skip_3d"):
+            return
+        if (options or {}).get("states_redone"):  # Redo states: the same version, but its states' pages are new
+            if built(name):
+                queue([name], front=True)
+            return
+        if built(name) and up_to_date(name):
             return
         final = project.versions.meta(name, vid).get("mode") == "final"
         if built(name) or auto == "all" or (auto == "final" and final):
@@ -451,7 +465,12 @@ def register(studio):
         body = request.get_json(force=True)
         action, name = body.get("action"), body.get("name")
         try:
-            if action == "start":
+            if action == "mode" and body.get("mode") in ("3d", "backgrounds"):  # as the Desktop shortcuts do
+                r = subprocess.run([sys.executable, str(HERE / "tools" / "game_mode.py"), body["mode"]],
+                                   capture_output=True, text=True, creationflags=NO_WINDOW)
+                if r.returncode:
+                    return jsonify(ok=False, message=((r.stderr or r.stdout).strip().splitlines() or ["failed"])[-1]), 409
+            elif action == "start":
                 if not game()["running"]:
                     start_game(name or "eals_1")
             elif action == "show":

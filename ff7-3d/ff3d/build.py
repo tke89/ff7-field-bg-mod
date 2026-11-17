@@ -62,6 +62,7 @@ DEFAULTS = {
     "char_outline": 0.0,  # characters outlined in the painting's line colour (for outlined art styles; 0: none)
     "char_soft": 0.35,    # how much softer the characters' textures are, like the painted scene
     "contact_shadow": 0.5,  # a soft dark patch on the floor right under the characters, whatever the sun
+    "lamp_shadow": 0.6,   # the characters' shadows from the scene's lamps too, away from each lamp (FFNx-3d; 0: none)
     "char_finish": 0.2,   # how shiny the characters look under the lights (1: FFNx's usual plastic-like sheen and sky
                           # reflections; 0: matte, none)
     "char_sss": 1.0,      # light soaking a little into skin, feathers and cloth (FFNx-3d char_sss; 0: as upstream)
@@ -114,7 +115,8 @@ WIND_BONES, WIND_FRAMES = 10, 360
 # The settings the Studio's 3D tab sets (a look switch applies these in seconds; the rest need a build)
 LOOK_KEYS = ("look", "shine", "light_tint", "shading", "brightness", "saturation", "sun_turn", "sun_height", "sun",
              "char_shadow", "char_haze",
-             "glow", "char_match", "char_light", "char_local", "char_outline", "char_soft", "contact_shadow", "char_finish",
+             "glow", "char_match", "char_light", "char_local", "char_outline", "char_soft", "contact_shadow", "lamp_shadow",
+             "char_finish",
              "char_fill", "char_sss", "char_highlight", "char_volume", "char_ao",
              "particles", "particle_amount", "water_motion", "clouds", "flicker", "grass", "occlusion", "gloss", "metal", "bump",
              "smoke", "fire", "windows", "sky", "flags", "birds", "blink", "motes", "mist", "bubbles", "char_lamps",
@@ -125,7 +127,7 @@ LOOK_KEYS = ("look", "shine", "light_tint", "shading", "brightness", "saturation
 # have its own. Each field's section keeps only its own part (its outline colour and scale, its whole colour grade,
 # its floor light map).
 GAMEWIDE = ("char_shadow", "char_haze", "char_match", "char_local", "char_outline", "char_soft", "contact_shadow",
-            "char_finish", "char_fill", "char_sss", "char_highlight", "char_volume", "char_ao")
+            "lamp_shadow", "char_finish", "char_fill", "char_sss", "char_highlight", "char_volume", "char_ao")
 
 
 def write_fields_section(o=None):
@@ -958,6 +960,36 @@ def fill_out(colour, seen):
     return out
 
 
+STATE_FILES = ("_off.dds", "_states.dds", "_states.toml")  # after the scene's texture name (<field>_scene)
+
+
+def write_states(f, out, tex, scene, finish):
+    """The states the mesh holds that the game switches off (glow.scene_states, saved by the build in
+    work/state_off.npz), for FFNx-3d, which reads the game's group bytes every frame and shows the off art where
+    one is off: <tex>_states.toml (the entries in order: group, bit), <tex>_states.dds (1x canvas, R = the entry
+    index 1..8 of each pixel, 0 none; point-sampled), <tex>_off.dds (the colour texture's size and colours: the scene
+    with the entries off, through the same `finish` as the colour; A = how much of it shows when its entry is off).
+    No entries: none of the files (a look step clears an earlier build's)."""
+    npz = f.work / "state_off.npz"
+    if not npz.exists():
+        for s in STATE_FILES:
+            (out / f"{tex}{s}").unlink(missing_ok=True)
+        return
+    d = np.load(npz)
+    w = d["weight"].astype(np.float32)
+    off = finish(scene * (1 - w[..., None]) + d["rgb"].astype(np.float32) * w[..., None])
+    gltfout.write_dds(out / f"{tex}_off.dds", np.dstack([np.clip(off, 0, 255).astype(np.uint8),
+                                                          np.round(w * 255).astype(np.uint8)]))
+    index = d["index"].astype(np.uint8)
+    zero = np.zeros_like(index)
+    gltfout.write_dds(out / f"{tex}_states.dds", np.dstack([index, zero, zero, np.full_like(index, 255)]))
+    lines = ["# the states the mesh holds that the game switches off: entry k (from 1) is the k-th [[state]];",
+             "# <field>_scene_states.dds holds k in red, <field>_scene_off.dds the art shown when it's off"]
+    for p, b in d["entries"].tolist():
+        lines += ["", "[[state]]", f"group = {int(p)}", f"bit = {int(b)}"]
+    (out / f"{tex}_states.toml").write_text("\n".join(lines) + "\n")
+
+
 def write_look(f, look, o=None, out=None, over=None):
     """The scene's colour texture and material map, image-based light and lighting section for a look and its light
     settings; uses only cached work files, so it takes seconds (hot reload shows it in game). out: the scene's
@@ -980,31 +1012,38 @@ def write_look(f, look, o=None, out=None, over=None):
     # sunlight back as orange patches.) The painting in AI 2D's colours: the Studio's colour pass (keep_colors), which
     # its pages have and the render doesn't (glow.scene_colours)
     scene = glow.scene_colours(f, render)
-    colour = scene.copy()
     off = f.work / "entry_off.npz"
-    if off.exists():  # animations that start on: the game draws them, so the mesh shows what's beneath
-        d = np.load(off)
-        w = d["weight"].astype(np.float32)[..., None]
-        colour = colour * (1 - w) + d["rgb"].astype(np.float32) * w
+    entry_off = np.load(off) if off.exists() else None  # animations that start on: the game draws them (beneath)
     glass = glow.through_glass(f)  # a backdrop AI 2D shows without the glass the render has painted over it
-    if glass is not None:
-        colour = colour * (1 - glass[1][..., None]) + glass[0].astype(np.float32) * glass[1][..., None]
-    if ll["saturation"] != 1:
-        colour = saturate(colour, ll["saturation"])
     # light shafts, haze, lamp halos: only what the render lacks of them (the AI saw them and mostly painted them)
     added = glow.light_added(f, float(o["static_glow"]))
-    if added is not None:
-        colour = colour + added
     # where the game draws a parallax layer (it moves apart from the scene: glow.drawn_layers), the scene is
     # transparent: FFNx-3d skips it there and the game's tiles show wherever nothing nearer is in front
     seen = glow.scene_alpha(f)
+
+    def finish(colour):
+        """The scene's colour (float, render size) as the mesh shows it: what's beneath animations that start on,
+        through the glass, the look's saturation, the light the render lacks, filled out where it's transparent."""
+        if entry_off is not None:
+            w = entry_off["weight"].astype(np.float32)[..., None]
+            colour = colour * (1 - w) + entry_off["rgb"].astype(np.float32) * w
+        if glass is not None:
+            colour = colour * (1 - glass[1][..., None]) + glass[0].astype(np.float32) * glass[1][..., None]
+        if ll["saturation"] != 1:
+            colour = saturate(colour, ll["saturation"])
+        if added is not None:
+            colour = colour + added
+        if seen is not None:
+            colour = fill_out(colour, seen)
+        return colour
+    colour = finish(scene.copy())
     alpha = np.full((f.RH, f.RW), 255, np.uint8)
     if seen is not None:
-        colour = fill_out(colour, seen)
         alpha = np.where(seen >= 0.5, 255, 0).astype(np.uint8)
     rgba = np.dstack([np.clip(colour, 0, 255).astype(np.uint8), alpha])
     gltfout.write_dds(out / f"{tex}.dds", rgba)
     Image.fromarray(rgba[..., :3]).save(f.work / "colour.jpg", quality=88)
+    write_states(f, out, tex, scene, finish)
     sources, fx, light, _ = life.write(f, o, out)  # what the painting has: chimneys, fires, windows, sky, flags
     base = atmos.glow(f, colour, float(o["glow"]), out, lights=light["still"] if light else None, seen=seen)
     flickering = atmos.flicker(f, float(o["flicker"]), out, colour, base=base, lights=light, seen=seen)
@@ -1260,6 +1299,15 @@ def build(name, log=print, variant=None, stage=lambda share, what: None):
         (f.work / "entry_off.npz").unlink(missing_ok=True)
     else:
         np.savez_compressed(f.work / "entry_off.npz", rgb=off[0], weight=off[1].astype(np.float16))
+    # the states the mesh holds that the game switches off: their off art, for the engine (write_states)
+    states = glow.scene_states(f)
+    if states is None:
+        (f.work / "state_off.npz").unlink(missing_ok=True)
+    else:
+        keys, rgb, weight, index = states
+        np.savez_compressed(f.work / "state_off.npz", entries=np.array(keys, np.int32), rgb=rgb,
+                            weight=weight.astype(np.float16), index=index)
+        report["state_entries"] = [f"{p}:{b}" for p, b in keys]
     # the scene's size (it sizes the shadow map, the clouds and the relit light's reach) where it stands (Zs): at
     # LIT_PUSH_CAP 8.5 crater_2's came out 7 times as wide, gon_i's 20 (the shadow map's texels as many times as
     # coarse: gon_i's characters lost their own shadows)

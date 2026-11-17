@@ -252,6 +252,11 @@
       what: "A dark outline around the characters, in the colour of the painting's own line work. For art styles with " +
         "outlines (anime, comic); leave it off for painterly or realistic ones.",
       up: "thicker outlines", down: "thinner; at 0% none", rec: "0% for painterly looks, about 50% for outlined ones" },
+    lamp_shadow: { label: "Shadows from lamps", min: 0, max: 1, step: 0.05, fmt: pctFmt,
+      what: "The characters cast shadows from the scene's lamps, fires and screens too, not only the sun's way: each " +
+        "shadow falls away from its lamp, softer the higher the body part is above the floor, and darker the more " +
+        "that lamp lights the spot. The four lamps lighting the characters most cast them.",
+      up: "darker", down: "fainter; at 0% only the sun casts shadows", rec: "60%" },
     contact_shadow: { label: "Shadow right under them", min: 0, max: 1, step: 0.05, fmt: pctFmt,
       what: "A soft dark patch on the floor right under each character, wherever the sun is, so their feet look " +
         "planted. It's part of their shadow, so it goes when Character shadows is at 0%.",
@@ -414,8 +419,11 @@
   // the characters' settings that are the same in every field (server: build.GAMEWIDE): set under All fields only,
   // they show in the game at once (FFNx-3d reads them from the lighting config's [fields])
   const GAMEWIDE = ["char_shadow", "char_haze", "char_match", "char_local", "char_outline", "char_soft",
-    "contact_shadow", "char_finish", "char_fill", "char_sss", "char_highlight", "char_volume", "char_ao"];
+    "contact_shadow", "lamp_shadow", "char_finish", "char_fill", "char_sss", "char_highlight", "char_volume", "char_ao"];
   const PER_FIELD_EFFECTS = Object.keys(EFFECTS).filter((k) => !GAMEWIDE.includes(k));
+  // no longer shown (2026-11-13): outlines (the user turned that look down) and the old material finish (replaced
+  // by light through skin, soft highlights, rounder shading and shade between parts); their values stay as set
+  const RETIRED = ["char_outline", "char_finish"];
   const GROUPS = [
     ["light", "Lighting"], ["game", "The characters, in every field"], ["chars", "Around the characters"],
     ["life", "Life in the scene"], ["surf", "Surfaces"], ["shape", "Shape (changing these rebuilds the scene)"],
@@ -467,7 +475,7 @@
         ? `<div class="ctl-help">${helpText("These are the same in every field and show in the game straight away; no scene " +
             "is rebuilt or re-applied.", "")}</div>` +
           // a setting the server doesn't know yet (added since the Studio started) shows after its restart
-          GAMEWIDE.filter((k) => o[k] !== undefined).map((k) => lightSlider(k, o, EFFECTS, mk(k))).join("")
+          GAMEWIDE.filter((k) => o[k] !== undefined && !RETIRED.includes(k)).map((k) => lightSlider(k, o, EFFECTS, mk(k))).join("")
         : `<div class="hint">These are the same in every field: switch to All fields to change them.</div>`,
       life: `<div class="ctl"><div class="lbl ${mk("particles")}">Particles</div><select data-a="particles">` +
         Object.entries(PARTICLE_KINDS).map(([v, n]) => `<option value="${v}" ${o.particles === v ? "selected" : ""}>` +
@@ -609,8 +617,9 @@
   function beforeAfter() {
     const g = G.game;
     if (!g || !g.running) return;
-    if (g.view === "original") setView(G.lastView || "3d");
-    else { G.lastView = g.view || "3d"; setView("original"); }
+    const art = g.mode === "backgrounds" ? "ai2d" : "3d";  // 2D: no 3D scenes
+    if (g.view === "original") setView(g.mode === "backgrounds" ? art : G.lastView || art);
+    else { G.lastView = g.view || art; setView("original"); }
   }
 
   function openGameField() {
@@ -625,17 +634,26 @@
     const g = G.game || { running: false };
     const here = g.running && g.field === S.current;
     const follow = pref("followGame", "0") === "1";
+    const bgOnly = g.mode === "backgrounds";  // 2D: the new backgrounds flat, no 3D scenes or lighting (no 3D view)
     const status = g.running
       ? (g.field ? `in <a class="g-field" title="Open ${esc(g.field)} in the Studio">${esc(g.field)}</a>` : "in a menu")
       : g.starting ? "starting…" : "not running";
     const label = g.running ? (here ? "Re-enter field" : "Go to this field") : g.starting ? "Starting…" : "▶ Play this field";
     const tip = g.running ? (here ? "Re-enter this field in the game, where you stand: its textures and glow reload"
       : `Take the game to ${S.current || "the selected field"}`) : "Start the game, straight into the selected field";
-    const views = Object.entries(VIEW_BTNS).map(([v, [l, t]]) =>
+    const views = Object.entries(VIEW_BTNS).filter(([v]) => !(bgOnly && v === "3d")).map(([v, [l, t]]) =>
       `<button data-v="${v}" class="${g.running && g.view === v ? "on" : ""}" ${g.running ? "" : "disabled"} title="${t}">${l}</button>`).join("");
+    const setup = bgOnly
+      ? ["2D", "The game is set up as 2D: the new backgrounds, flat as in the 2D game, the characters as the game " +
+         "draws them; no 3D scenes, lighting or character shading. Click to set it up as Full 3D again (the same as " +
+         "the Desktop shortcut FF7 - Full 3D)."]
+      : ["Full 3D", "The game is set up as Full 3D: the 3D scenes, lighting and shaders. Click to set it up as 2D: the " +
+         "new backgrounds only, flat as in the 2D game (the same as the Desktop shortcut FF7 - Backgrounds only)."];
     const html = `<span class="g-dot ${g.running ? "on" : g.starting ? "wait" : ""}"></span>` +
       `<span class="g-label">Game</span><span class="g-status">${status}</span>` +
       `<button class="small primary" data-a="play" ${S.current && !(g.starting && !g.running) ? "" : "disabled"} title="${tip} (G)">${label}</button>` +
+      `<button class="small ghost" data-a="mode" ${g.running || g.starting ? "disabled" : ""} ` +
+      `title="${setup[1]}${g.running || g.starting ? " Close the game first." : ""}">${setup[0]}</button>` +
       `<div class="seg small" data-a="view" title="What the game shows. B flips between Original and the new art. ` +
       `Switching re-enters the field (it restarts a cutscene).">${views}</div>` +
       `<button class="small ghost" data-a="shot" ${g.running && g.field ? "" : "disabled"} ` +
@@ -646,11 +664,16 @@
     bar.dataset.html = html;
     const b = (a) => bar.querySelector(`[data-a="${a}"]`);
     b("play").onclick = play;
+    b("mode").onclick = () => {
+      const to = G.game && G.game.mode === "backgrounds" ? "3d" : "backgrounds";
+      gameAct({ action: "mode", mode: to }, to === "3d" ? "The game is set up as Full 3D"
+        : "The game is set up as 2D: the new backgrounds only");
+    };
     for (const v of bar.querySelectorAll('[data-a="view"] button')) v.onclick = () => setView(v.dataset.v);
-    b("shot").onclick = async () => {
+    if (b("shot")) b("shot").onclick = async () => {
       if (await gameAct({ action: "shot", name: G.game.field }, `Screenshot of ${G.game.field} saved: it's in the 3D tab`)) refresh();
     };
-    b("follow").onchange = (e) => {
+    if (b("follow")) b("follow").onchange = (e) => {
       setPref("followGame", e.target.checked ? "1" : "0");
       if (e.target.checked) openGameField();
       renderBar();

@@ -621,6 +621,116 @@ def swaps(raw):
     return {p: v for p, v in out.items() if v}
 
 
+BGROL, BGROL2 = 0xE2, 0xE3  # field opcodes: roll a param's states (every bit moves: the one on goes off)
+STATE_ENTRIES_MAX = 8  # scene_states: the most the engine takes (its sceneStateOn0/1 uniforms)
+STATE_MIN_PX = 64      # ...an entry whose off art changes fewer pixels than this (1x) isn't one
+STATE_GROW = 2         # ...its weight reaches this far past where the off art differs (background px)
+STATE_SOFT = 1.0       # ...with an edge this soft (background px)
+
+
+def _rendered(f):
+    """{param: state mask} the render holds on (as entry_states reads it)."""
+    job = json.loads((common.STUDIO / "ai" / "jobs.json").read_text())[f.name]
+    return {int(p): m for p, m in (f.meta.get("rendered_defaults") or job.get("defaults") or {}).items()}
+
+
+def switched_off(raw, p, bit):
+    """Does a field script switch state `bit` of param p off after the always-run init: a BGOFF of it, a BGCLR, a
+    roll (BGROL/BGROL2: every state moves on), or a BGON/BGOFF with the state from a variable (anything may follow)."""
+    for s in palettes.scripts(raw):
+        for pos, op, b in s.ops():
+            if op not in (BGON, BGOFF, BGCLR, BGROL, BGROL2) or len(b) < 3 or b[1] >> 4 or b[2] != p:
+                continue
+            if s.index == 0 and pos < s.init_end:
+                continue
+            if op in (BGCLR, BGROL, BGROL2) or (len(b) >= 4 and b[1] & 0xF):
+                return True
+            if op == BGOFF and len(b) >= 4 and b[3] < 8 and (1 << b[3]) & bit:
+                return True
+    return False
+
+
+def _entry_tiles(f):
+    """{(param, bit): its solid tiles the mesh holds}: a state on in the render, on the scene's layers (0-1), of a
+    param the game doesn't draw as 2D tiles (entry_states' animated: loops, the save's, F26's event states)."""
+    in_render, animated = entry_states(f)
+    on = _rendered(f)
+    out = {}
+    for t in f.bg.tiles:
+        if t.param and not t.blending and t.layer < 2 and in_render(t) and t.param not in animated:
+            for i in range(8):
+                if t.state & on.get(t.param, 0) & (1 << i):
+                    out.setdefault((t.param, 1 << i), []).append(t)
+    return out
+
+
+def state_entries(f):
+    """The states the mesh holds that a script can switch off after entry: [(param, bit)], the game's own switch for
+    each (FFNx-3d reads the game's group bytes, background_sprite_layer, every frame and shows scene_states' off art
+    where one is off). bugin1a's room before the planetarium show (70% of the canvas: F26 leaves such a whole-scene
+    state baked), trnad_1's forest, a door the mesh shows shut. The largest first (by tile area here; scene_states
+    keeps STATE_ENTRIES_MAX of those whose off art changes the picture)."""
+    tiles = _entry_tiles(f)
+    keys = [k for k in tiles if switched_off(f.raw, *k)]
+    keys.sort(key=lambda k: -sum(t.size * t.size for t in tiles[k]))
+    return keys[:2 * STATE_ENTRIES_MAX]
+
+
+def scene_states(f, entries=None):
+    """The off art for state_entries: (entries [(param, bit)] in the engine's order, rgb (render size, uint8: the scene
+    with the entry's state off, in the scene's colours; the scene itself elsewhere), weight (render size, float32 0..1:
+    how much of it the mesh shows when the entry is off), index (1x canvas, uint8: entry k+1, 0 for none)), or None.
+
+    The off art is the version's own pages (studio_pages) put together with that state off and everything else as the
+    render has it: the Studio paints the static tiles under a state that's on in the render with what's behind it
+    (ff7bg.ai.build_pages' "all off" art), which is how AI 2D shows it. Weighted by the state's tiles (their alpha)
+    where that changes the picture by more than OVERLAY_SAME (grown STATE_GROW, softened STATE_SOFT). Where entries
+    overlap, the front-most (nearest tile) holds the spot. Entries changing fewer than STATE_MIN_PX pixels are
+    dropped; at most STATE_ENTRIES_MAX, the ones changing most."""
+    entries = state_entries(f) if entries is None else entries
+    studio = studio_pages(f) if entries else {}
+    if not entries or not studio or not all(t.tex in studio for t in f.bg.tiles):
+        return None
+    S, rect = f.scale, (f.mx, f.my, f.w, f.h)
+    on, tiles, cache = _rendered(f), _entry_tiles(f), PageCache(f.bg)
+    scene = scene_colours(f, Image.open(f.render).convert("RGB"))[:f.h * S, :f.w * S]
+    M = page_colours(f, studio)
+    src = page_tile_source(studio, S)
+    grow = np.ones((2 * STATE_GROW * S + 1,) * 2, np.uint8)
+    made = []
+    for p, b in entries:
+        mask = {q: (m & ~b if q == p else m) for q, m in on.items()}
+        view = np.asarray(render_composite(f.bg, rect, src, S,
+                                           include=lambda t: not t.param or bool(t.state & mask.get(t.param, 0))))
+        view = view[..., :3].astype(np.float32)
+        if M is not None:
+            flat = np.concatenate([view.reshape(-1, 3), np.ones((view.shape[0] * view.shape[1], 1), np.float32)], 1)
+            view = np.clip(np.round(flat @ M), 0, 255).reshape(view.shape)
+        view = view[:scene.shape[0], :scene.shape[1]]
+        alpha = np.zeros(scene.shape[:2], np.float32)
+        for t in tiles[(p, b)]:
+            x, y = (t.dst_x - f.mx) * S, (t.dst_y - f.my) * S
+            a = (tile_alpha(cache.tile(t), S).astype(np.float32) / 255)[:alpha.shape[0] - y, :alpha.shape[1] - x]
+            alpha[y:y + a.shape[0], x:x + a.shape[1]] = np.maximum(alpha[y:y + a.shape[0], x:x + a.shape[1]], a)
+        diff = (np.abs(scene - view).max(2) > OVERLAY_SAME) & (alpha > 0)
+        changed = int((cv2.resize(diff.astype(np.float32), (f.w, f.h), interpolation=cv2.INTER_AREA) > 0.5).sum())
+        if changed < STATE_MIN_PX:
+            continue
+        soft = cv2.GaussianBlur(cv2.dilate(diff.astype(np.uint8), grow).astype(np.float32), (0, 0), STATE_SOFT * S)
+        made.append(((p, b), changed, min(t.z for t in tiles[(p, b)]), view, np.clip(alpha * soft, 0, 1)))
+    made = sorted(made, key=lambda m: -m[1])[:STATE_ENTRIES_MAX]
+    if not made:
+        return None
+    keys = [m[0] for m in made]
+    rgb, weight = scene.copy(), np.zeros(scene.shape[:2], np.float32)
+    index = np.zeros((f.h, f.w), np.uint8)
+    for key, _, _, view, w in sorted(made, key=lambda m: -m[2]):  # back to front: the nearest holds a spot
+        where = w > 1 / 255
+        rgb[where], weight[where] = view[where], w[where]
+        index[cv2.resize(w, (f.w, f.h), interpolation=cv2.INTER_AREA) > 1 / 255] = keys.index(key) + 1
+    return keys, np.clip(rgb, 0, 255).astype(np.uint8), weight, index
+
+
 OVERLAY_SAME = 24  # a switched tile's pixel this close to what's under it is the same picture: a layer drawn with its
                    # own palette repeats the sky around it a few levels off, as speckle (del1's ship: 65% of its
                    # area differs at all, 47% by more than 16, and that share holds to 48)
@@ -1016,20 +1126,37 @@ def overlay_plan(f, glowing):
     keyed = {id(t): (t.param, t.state) for t in solid if t.param and t.param in swap}
     cover = np.zeros((f.h, f.w), np.float32)
     apart = {k: np.zeros((f.h, f.w), np.float32) for k in set(keyed.values())}
+    # ...but a mesh state the engine switches off itself (state_entries: the mesh shows its off art when the game
+    # turns it off) hides nothing of a blended one switched on with it either: bugin1a's planetarium light (states 2
+    # and 4, added over the room switched off) was cut to nothing behind the baked room (state 4's tiles, all of them)
+    entries = set(state_entries(f))
+    shown_off = {}
+
+    def under(t):
+        """What the mesh shows under a switched solid tile: the original as baked, or, where a state the engine
+        switches off goes off with it switching on, that original without the state (scene_states' off art), so
+        it isn't cut against a state that is gone by then."""
+        offs = frozenset((t.param, b) for a, b in swap.get(t.param, ()) if a == t.state and (t.param, b) in entries)
+        if not offs:
+            return shown
+        if offs not in shown_off:
+            shown_off[offs] = _shown(f, [u for u in solid if not any(u.param == q and u.state & b for q, b in offs)], cache)
+        return shown_off[offs]
     vis = {}
     for t in reversed(draw_order(tiles + lit + still + baked + solid)):  # front to back: cover = what's drawn after this tile
         x, y, s = t.dst_x - f.mx, t.dst_y - f.my, t.size
         tile = cache.tile(t)
         alpha = tile[..., 3].astype(np.float32) / 255
         if id(t) in mine:
-            off = {(t.param, b) for a, b in swap.get(t.param, ()) if a == t.state and not t.blending}
+            off = {(t.param, b) for a, b in swap.get(t.param, ())
+                   if a == t.state and (not t.blending or (t.param, b) in entries)}
             cov = cover[y:y + s, x:x + s]
             for k, c in apart.items():
                 if k not in off:
                     cov = np.maximum(cov, c[y:y + s, x:x + s])
             v = (1 - cov) * (alpha > 0)[:f.h - y, :f.w - x]
             if not t.blending and not in_render(t) and t.param not in animated and id(t) not in whole:
-                diff = np.abs(tile[:f.h - y, :f.w - x, :3].astype(np.int16) - shown[y:y + s, x:x + s]).max(2)
+                diff = np.abs(tile[:f.h - y, :f.w - x, :3].astype(np.int16) - under(t)[y:y + s, x:x + s]).max(2)
                 same = (diff <= OVERLAY_SAME) & ~unknown[y:y + s, x:x + s] & held[y:y + s, x:x + s]
                 change = cv2.dilate((~same).astype(np.uint8), np.ones((3, 3), np.uint8))  # grown 1px, as the Studio's
                 v = v * change

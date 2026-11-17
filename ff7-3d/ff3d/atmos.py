@@ -459,7 +459,8 @@ def fields_settings(o, ambient):
     return {"shadowmap_occlusion": round(1 - float(o["char_shadow"]), 3), "haze_strength": float(o["char_haze"]),
             "char_match": float(o["char_match"]), "floor_light_strength": float(o["char_local"]),
             "char_outline": float(o["char_outline"]), "char_soft": round(float(o["char_soft"]) * SOFT_MAX, 2),
-            "contact_shadow": float(o["contact_shadow"]), **char_material(finish), **char_surface(o),
+            "contact_shadow": float(o["contact_shadow"]), "lamp_shadow": float(o.get("lamp_shadow", 0.0)),
+            **char_material(finish), **char_surface(o),
             "char_highlight": round(float(np.clip(float(o["char_highlight"]), 0.0, 1.0)), 3),
             "char_exposure": 1.0, "char_ambient": ambient}
 
