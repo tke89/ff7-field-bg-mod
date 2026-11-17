@@ -45,7 +45,13 @@
           <option value="built">Final</option>
           <option value="preview">Previews only</option>
           <option value="flagged">Needs a look</option>
+          <option value="review" id="reviewFilterOpt" title="The fields you marked to come back to (R, or the ⚑ Review button above the picture)">Marked for review</option>
           <option value="override">Field changes</option>
+          <optgroup label="States">
+            <option value="states" title="Fields with doors, lights, signs or animations that switch: the ones Redo states changes">With states or animations</option>
+            <option value="anims" title="Fields with animations that loop (fans, blinking lights, gauges)">With looping animations</option>
+            <option value="nostates" title="Fields with nothing that switches: Redo states leaves them as they are">Without states</option>
+          </optgroup>
         </select>
         <select id="lookFilter"><option value="">All looks</option></select>
         <select id="familyFilter" class="span2" title="Only fields whose version in the game this workflow made"><option value="">All workflows</option></select>
@@ -59,9 +65,17 @@
     <div class="sel-bar" id="selBar" hidden>
       <div class="sel-info"><b id="selCount"></b> <span class="hint" id="selEst"></span></div>
       <div class="row-btns tight">
-        <button id="selFinal" class="primary small" title="Queue a final render of every selected field, each with its own look; each scene is described and checked for signs afresh">Generate final</button>
-        <button id="selPreview" class="small" title="Queue a preview of every selected field; each scene is described and checked for signs afresh">Preview</button>
+        <button id="selFinal" class="primary small" title="Queue a final render of every selected field, each with its own look; each scene is checked for signs afresh, and described as chosen below">Generate final</button>
+        <button id="selPreview" class="small" title="Queue a preview of every selected field; each scene is checked for signs afresh, and described as chosen below">Preview</button>
+        <button id="selStates" class="small" title="Make the doors, lights, signs and animations again for the version each selected field has in the game (its 3D scene too, if it has one). Fields without any are skipped. Tip: the States filter shows only the fields that have them.">Redo states</button>
+        <button id="selMark" class="small" title="Mark every selected field for review: the Marked for review filter then shows them (their notes are kept)">⚑ Mark</button>
+        <button id="selUnmark" class="small ghost" title="Clear the review mark (and its note) of every selected field, e.g. once you've dealt with them">Clear marks</button>
         <button id="selClear" class="small ghost" title="Clear the selection (Esc)">Clear</button>
+      </div>
+      <div class="sel-opts">
+        <label class="check" title="What the AI is told each scene shows, for this batch (and Generate all missing).&#10;Keep existing: every field that already has a description keeps it, so its renders stay closer to what you've had. Only fields without one get a new one.&#10;Write new: every field is described again from its original art (a few seconds each). The new words can change what the AI paints.&#10;Recommended: Keep existing, unless you've changed how descriptions are written.">Descriptions
+          <select id="selDescribe"><option value="new">Write new</option><option value="keep">Keep existing</option></select></label>
+        <label class="check" title="Ticked: after each field's final render, the signs you gave words to are painted on again (the sign fixer), so the new render keeps readable signs. About 40 seconds a sign. Fields without sign words are left as they are, and previews never are.&#10;Unticked: new renders come without your sign fixes until you use Fix signs on them again.&#10;Recommended: ticked."><input type="checkbox" id="selFixSigns"> Re-fix signs</label>
       </div>
     </div>
   </aside>
@@ -78,6 +92,11 @@
         <select id="leftSel" title="Left side"></select><span class="hint">|</span><select id="rightSel" title="Right side"></select>
       </span>
       <span class="hint" id="viewHint">Space toggles · drag to pan · wheel to zoom</span>
+      <span class="review-mark">
+        <button id="btnReviewMark" class="small" title="Mark this field to come back to later (R). Go through many fields marking the ones that need work, then pick Marked for review in the field list to see just those. The mark stays until you clear it, through new versions too.">⚑ Review</button>
+        <input type="text" id="reviewNote" placeholder="What to look at (optional)" maxlength="500" hidden
+          title="A note for when you come back to this field: what looked wrong, or what to try. Shown in the field list when you hover its ⚑. Saved as you type.">
+      </span>
       <div class="spacer"></div>
       <label class="check" title="Play the field's animations (A)"><input type="checkbox" id="optAnimate" checked> Animate</label>
       <label class="check" title="Where sprites walk behind scenery (O)"><input type="checkbox" id="optOverlay"> Walk-behind</label>

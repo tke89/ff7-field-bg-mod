@@ -85,11 +85,12 @@ const FAMILIES = {
   flux3k: { short: "FLUX 3", hint: "FLUX 3: redraws the scene while keeping the layout the most exactly. Cleaner, and closer to the original colours. Slow: about a minute per field with Base." },
   mageflow: { short: "Mage-Flow", hint: "Mage-Flow: a small, very fast model (a few seconds per field) for quick drafts and big batches. Keeps the original colours." },
   fibo2: { short: "FIBO 2", hint: "FIBO 2: a clean, realistic redraw that keeps the layout very well, but can lose the original's mood (Keep original colours brings it back). Non-commercial use only." },
+  h3img: { short: "H3 Image", hint: "MiniMax H3 Image: a big new model (November 2026) that redraws the scene in 6 steps at up to 4K. Its own license has use restrictions; read it before sharing what it makes." },
   moss: { short: "MOSS", hint: "MOSS: a bold, painterly repaint, with a depth lock that keeps the scene in place. Doesn't use style images. Turbo is about twice as fast as SFT." },
   upscale: { short: "Upscale", hint: "Upscale: no AI restyling. The original art is enlarged with the upscaler under Output, for a faithful HD version." },
 };
 const usesRepaint = (f) => f === "flux1" || f === "krea2" || f === "moss";
-const EDIT = new Set(["qwen21", "flux3k", "mageflow", "fibo2"]);  // edit models: no repaint strength or detail pass
+const EDIT = new Set(["qwen21", "flux3k", "mageflow", "fibo2", "h3img"]);  // edit models: no repaint strength or detail pass
 // Fast and full versions of the edit models; mirrors EDIT_VARIANTS in ff7bg/comfy.py
 const VARIANTS = {
   qwen21: { turbo: { label: "Turbo · 8 steps", unet: "qwen_image_2.1_turbo_int8_convrot.safetensors", steps: 8, cfg: 1 },
@@ -163,7 +164,7 @@ const SL = {
     down: "signs stay closer to the original; 0 keeps them as they are",
     rec: "0.15", recValue: 0.15,
     // the edit models redraw everything else from scratch: no Repaint strength to compare with
-    by: Object.fromEntries(["qwen21", "flux3k", "mageflow", "fibo2"].map((f) => [f, { label: "Sign change",
+    by: Object.fromEntries(["qwen21", "flux3k", "mageflow", "fibo2", "h3img"].map((f) => [f, { label: "Sign change",
       what: "How much the model may change the protected signs and lettering. Everything else is redrawn from scratch, as always with this workflow (which is why it has no Repaint strength)." }])) },
   tries: { label: "Renders per field", min: 1, max: 4, step: 1, fmt: (v) => v > 1 ? `best of ${v}` : "1",
     what: "Final renders only: paints each field several times, each from a different random start, and keeps the one that matches the original layout best. The others are deleted.",
@@ -174,13 +175,14 @@ const SL = {
     what: "How much the original art is enlarged before the AI paints over it. The AI paints at that size.",
     up: "more detail but much slower (on Kalm, 3× took about 2.5 times as long as 2×); above about 4×, models start repeating details",
     down: "faster, softer",
-    rec: "Auto (follows Render size)", recValue: 0 },
+    rec: "Auto (follows Render size)", recValue: 0,
+    by: { h3img: { rec: "4× (the same as the output: H3 paints straight at the final size, which in testing was faster and more detailed than painting smaller and upscaling)", recValue: 4 } } },
   style_ref_strength: { label: "Style image strength", min: 0, max: 1.2, step: 0.05,
     what: "How much your selected style images shape the look.",
     up: "the look follows the style images more closely",
     down: "follows the prompt and the original more; 0 ignores them",
     rec: "0.5", recValue: 0.5,
-    by: Object.fromEntries(["qwen21", "flux3k", "mageflow", "fibo2"].map((f) => [f, {
+    by: Object.fromEntries(["qwen21", "flux3k", "mageflow", "fibo2", "h3img"].map((f) => [f, {
       what: "How much your selected style images shape the look. This model tends to copy things out of them, not just their style (Qwen once painted a different town into a field), so it's off by default.",
       rec: "0", recValue: 0 }])) },
   out_scale: { label: "Output scale", min: 1, max: 10, step: 1, fmt: (v) => `${v}×`,
@@ -214,7 +216,7 @@ const SL = {
     down: "faster, softer",
     rec: "1.4", recValue: 1.4,
     by: { qwen21: { rec: "3", recValue: 3 }, flux3k: { rec: "4", recValue: 4 },
-          mageflow: { rec: "2", recValue: 2 }, fibo2: { rec: "2", recValue: 2 } } },
+          mageflow: { rec: "2", recValue: 2 }, fibo2: { rec: "2", recValue: 2 }, h3img: { rec: "4", recValue: 4 } } },
   edit_margin: { label: "Border padding", min: 0, max: 0.15, step: 0.01, fmt: pct,
     what: "Edit models zoom in a little. This adds a blurred border around the scene, so the zoom eats into the border instead of the scene.",
     up: "safer, a little slower",
@@ -287,6 +289,7 @@ const LOOK_SLIDERS = {
   flux3k: ["style_ref_strength"],
   mageflow: ["style_ref_strength"],
   fibo2: ["style_ref_strength"],
+  h3img: ["style_ref_strength"],
   moss: ["denoise", "depth_lock", "depth_lock_end"],
   upscale: [],
 };
@@ -639,7 +642,8 @@ function renderList() {
       li = document.createElement("li");
       li.dataset.name = f.name;
       li.innerHTML = `<input type="checkbox" class="pick" title="Select for a batch (Ctrl+click toggles, Shift+click selects a range)">` +
-        `<img loading="lazy" alt=""><div><div class="name"></div><div class="sub"></div></div><span class="sdot"></span>`;
+        `<img loading="lazy" alt=""><div><div class="name"><span class="nm"></span><span class="rflag" hidden>⚑</span></div>` +
+        `<div class="sub"></div></div><span class="sdot"></span>`;
       li.onclick = (e) => onListClick(e, f.name);
       li.querySelector(".pick").onclick = (e) => {
         e.stopPropagation();
@@ -651,7 +655,10 @@ function renderList() {
     const thumbSrc = f.current ? `/api/thumb/${f.name}.jpg?v=new&t=${f.current}` : `/api/thumb/${f.name}.jpg`;
     const img = li.querySelector("img");
     if (img.dataset.src !== thumbSrc) { img.src = thumbSrc; img.dataset.src = thumbSrc; }
-    li.querySelector(".name").textContent = f.name;
+    li.querySelector(".nm").textContent = f.name;
+    const flag = li.querySelector(".rflag");
+    flag.hidden = !f.review;
+    if (f.review) flag.title = f.review.note ? `Marked for review: ${f.review.note}` : "Marked for review";
     const tags = (f.look !== defLook ? `<span class="tag" title="Look">${esc(lookName(f.look))}</span> ` : "") +
       (f.custom ? `<span class="tag custom" title="This field changes some settings for itself">field changes</span>` : "");
     const sub = `${f.w}×${f.h}` + (f.copies.length ? ` · +${f.copies.length} copies` : "") + (tags ? `<br>${tags}` : "");
@@ -673,14 +680,61 @@ function renderList() {
         (filter === "built" && f.status === "built") ||
         (filter === "preview" && f.status === "preview") ||
         (filter === "flagged" && (f.flag || f.error)) ||
-        (filter === "override" && f.custom));
+        (filter === "review" && f.review) ||
+        (filter === "override" && f.custom) ||
+        (filter === "states" && f.states > 0) || (filter === "anims" && f.anims > 0) ||
+        (filter === "nostates" && !f.states));
     li.style.display = pass ? "" : "none";
     if (pass) shown++;
   }
   const done = S.fields.filter((f) => f.status === "built").length;
   const previews = S.fields.filter((f) => f.status === "preview").length;
   $("#fieldCount").textContent = `${shown} shown · ${done}/${S.fields.length} final` + (previews ? ` · ${previews} previews` : "");
+  const marked = S.fields.filter((f) => f.review).length;
+  $("#reviewFilterOpt").textContent = `Marked for review (${marked})`;
+  renderReviewMark();
   emit("studio:list");
+}
+
+/* ------------------------------------------------------------ review marks */
+
+// The ⚑ Review button and its note for the field on screen
+function renderReviewMark() {
+  const f = S.byName && S.byName[S.current];
+  const btn = $("#btnReviewMark"), note = $("#reviewNote");
+  btn.disabled = !f;
+  const on = !!(f && f.review);
+  btn.classList.toggle("on", on);
+  btn.textContent = on ? "⚑ Marked" : "⚑ Review";
+  note.hidden = !on;
+  if (on && document.activeElement !== note) note.value = f.review.note || "";
+}
+
+// Mark (on) or clear the given fields; the list and the button follow
+async function setReview(names, on, note) {
+  if (!names.length) return;
+  const body = { names, on };
+  if (note !== undefined) body.note = note;
+  const r = await api("/api/marks", { body });
+  for (const [n, sum] of Object.entries(r.fields)) if (S.byName[n]) S.byName[n].review = sum.review;
+  renderList();
+}
+
+async function toggleReview() {
+  const f = S.byName[S.current];
+  if (!f) return;
+  const on = !f.review;
+  await setReview([f.name], on);
+  toast(on ? `${f.name} marked for review (R again clears it)` : `${f.name}: review mark cleared`);
+}
+
+let reviewNoteTimer = null;
+function reviewNoteChanged() {
+  const name = S.current, note = $("#reviewNote").value;
+  clearTimeout(reviewNoteTimer);
+  reviewNoteTimer = setTimeout(() => {
+    if (S.byName[name] && S.byName[name].review) setReview([name], true, note);
+  }, 500);
 }
 
 /* ------------------------------------------------------------ multi-select */
@@ -733,10 +787,24 @@ function clearPicks() {
   selChanged();
 }
 
+// Redo states for the selected fields' versions in the game (fields without states or a version are skipped)
+async function redoStatesPicked() {
+  const picked = [...S.sel];
+  const byName = Object.fromEntries(S.fields.map((f) => [f.name, f]));
+  const names = picked.filter((n) => byName[n] && byName[n].states > 0 && byName[n].current);
+  if (!names.length) { toast("None of the selected fields has states to redo"); return; }
+  const left = picked.length - names.length;
+  if (names.length > 3 && !await ask(`Redo the states of ${names.length} fields?` +
+    (left ? `\n\n${left} selected field${left === 1 ? " has" : "s have"} no states (or no version yet) and ${left === 1 ? "is" : "are"} skipped.` : "") +
+    "\n\nEach one takes from under a minute to a few minutes. You can keep browsing while they run; Cancel queue stops them.")) return;
+  const r = await api("/api/generate", { body: { names, mode: "build", states: true } });
+  toast(`${r.added} field${r.added === 1 ? "" : "s"} queued for Redo states` + (left ? ` · ${left} skipped (no states)` : ""));
+}
+
 async function queuePicked(mode) {
   const names = [...S.sel];
   if (!names.length) return;
-  const e = await api("/api/estimate", { body: { names, mode } });
+  const e = await api("/api/estimate", { body: { names, mode, options: batchOptions() } });
   const label = mode === "final" ? "final renders" : "previews";
   if (names.length > 3 && !await ask(`Queue ${label} of ${names.length} fields, each with its own look?\n\n` +
     `Estimated time: about ${fmtDuration(e.seconds)}. You can keep browsing while they run; Cancel queue stops them.`)) return;
@@ -834,7 +902,7 @@ function applyDetail(nd, reload = false) {
   S.detail = nd;
   const f = S.byName[nd.name];
   if (f) {
-    for (const k of ["status", "flag", "error", "custom", "look", "look_how", "current", "family"]) f[k] = nd[k];
+    for (const k of ["status", "flag", "error", "custom", "look", "look_how", "current", "family", "review"]) f[k] = nd[k];
   }
   renderList();
   renderStyle();
@@ -1674,11 +1742,20 @@ function renderOutput(v) {
   const about = (fam === "upscale" ? "Enlarges the original art to the final texture size. " : "Enlarges the AI's picture to the final texture size. ") +
     (isOutside(v.upscaler) ? outsideHint(v.upscaler, local) + (fam === "upscale" ? " Works without ComfyUI." : "")
       : "SeedVR2 adds the most natural detail; 4x-UltraSharp is crisp but can look grainy; (none) is soft and adds nothing.") +
-    (fam !== "upscale" ? " (The original art has its own upscaler, under Advanced → Original art.)" : "");
+    (fam !== "upscale" ? " (The original art is enlarged once before painting, with its own setting under Advanced → Original art.)" : "");
   const hint = online || isOutside(v.upscaler)
     ? helpText(about, fam === "upscale" ? "SeedVR2 for the most detail, 4x-UltraSharp for the most faithful" : "SeedVR2, or 4x-UltraSharp if you want speed")
     : "ComfyUI isn't reachable, so only the saved choice is listed.";
-  box.appendChild(selectRow("upscaler", "Upscaler", ups, v, { none: "(none: plain, soft resize)", labels, hint }));
+  // two different enlargements, named for what they enlarge (one "Upscaler" label each confused them, 2026-11-13)
+  const upRow = selectRow("upscaler", fam === "upscale" ? "Enlarge the original with" : "Enlarge the AI's picture with",
+    ups, v, { none: "(none: plain, soft resize)", labels, hint });
+  // the AI paints at the final size (Enlarge by = the output scale): nothing left to enlarge
+  if (fam !== "upscale" && v.input_scale && v.input_scale >= v.out_scale) {
+    upRow.classList.add("dim");
+    upRow.insertAdjacentHTML("beforeend", `<div class="help-note">Not used right now: the AI paints straight at the final ` +
+      `size (Advanced → Original art → Enlarge by ${v.input_scale}×).</div>`);
+  }
+  box.appendChild(upRow);
   if (local && !local.upscayl) {
     const n = document.createElement("div");
     n.className = "hint";
@@ -1741,7 +1818,7 @@ function renderAdvanced(v) {
         { hint: helpText("Keeps SeedVR2's colours matched to the picture it enlarges.", "lab") }));
       if (!v.seedvr2_input) {
         const { ups, labels, local } = upscalerChoices(v.input_upscaler, { seedvr2: false, syw: true });
-        add(selectRow("input_upscaler", "Upscaler before SeedVR2", ups, v, { none: "(none: plain, soft resize)", labels,
+        add(selectRow("input_upscaler", "Enlarge the original first with", ups, v, { none: "(none: plain, soft resize)", labels,
           hint: helpText("Enlarges the original first; SeedVR2 then cleans it up." +
             (v.input_upscaler === "syw" ? " " + sywHint(local) : isOutside(v.input_upscaler) ? " " + outsideHint(v.input_upscaler, local) : ""),
             "4x-UltraSharp") }));
@@ -1762,7 +1839,14 @@ function renderAdvanced(v) {
     return;
   }
   sub("Rendering");
-  const fixedSchedule = fam === "qwen21" && /turbo/i.test(v.unet || "");  // Qwen Turbo: fixed 8 steps
+  // Qwen Turbo: fixed 8 steps; H3 Image: 6 steps at prompt strength 1, fixed by the model (the server enforces it)
+  const fixedSchedule = (fam === "qwen21" && /turbo/i.test(v.unet || "")) || fam === "h3img";
+  if (fam === "h3img") {
+    const n = document.createElement("div");
+    n.className = "hint";
+    n.textContent = "H3 Image always runs 6 steps at prompt strength 1: the model is made that way, and more burns its colours.";
+    add(n);
+  }
   if (!fixedSchedule) add(slider("steps", v));
   if ((EDIT.has(fam) || fam === "moss") && !fixedSchedule) add(slider("cfg", v));
   add(slider("work_mp", v, v.input_scale ? { dim: true, help: "Not used right now: Original art → Enlarge by sets the size." } : {}));
@@ -1775,9 +1859,18 @@ function renderAdvanced(v) {
         "Uses the style images in the detail pass too. About 15% slower, and faint seams can show between tiles.", "off")));
     }
   }
-  if (v.states_pass) {
-    add(slider("state_denoise", v));
-    if (!EDIT.has(fam)) add(slider("state_denoise_boost", v));
+  if (v.states_pass && fam !== "upscale") {
+    // Since 2026-11-13 every painting workflow (edit models too) makes its states as whole renders: the render's own
+    // recipe and seed with each state switched on. These two only apply when that can't be done, so they're folded away
+    const old = document.createElement("details");
+    old.className = "old-states";
+    old.innerHTML = `<summary>Older states settings</summary><div class="help-note">Doors, lights and animations are ` +
+      `made from whole renders: the same recipe and seed as the picture, with each state switched on. These settings ` +
+      `only apply when that can't be done: a version imported from elsewhere, one started from another version, or ` +
+      `one whose render can't be made again (a model or setting changed since).</div>`;
+    old.appendChild(slider("state_denoise", v));
+    if (!EDIT.has(fam)) old.appendChild(slider("state_denoise_boost", v));
+    add(old);
   }
 
   sub("Original art");
@@ -1787,7 +1880,7 @@ function renderAdvanced(v) {
       (v.input_upscaler === "syw" ? " " + sywHint(local) : isOutside(v.input_upscaler) ? " " + outsideHint(v.input_upscaler, local)
         : v.input_upscaler === "seedvr2" ? " SeedVR2 adds detail of its own, but can invent texture (Kalm's cracked plaza became cobblestones)." : ""),
       local && local.syw ? "SYW Unified (kept md1_1's hazard stripes and the Shin-Ra logo that 4x-UltraSharp lost)" : "4x-UltraSharp");
-    add(selectRow("input_upscaler", "Upscaler", ups, v, { none: "(none: plain, soft resize)", labels, hint }));
+    add(selectRow("input_upscaler", "Enlarge the original with", ups, v, { none: "(none: plain, soft resize)", labels, hint }));
     add(slider("input_scale", v));
     // what that comes to for this field
     const d = S.detail, edge = (n) => EDIT.has(fam) ? Math.round(n * v.edit_margin / 16) * 16 : 0;
@@ -1825,7 +1918,7 @@ function renderAdvanced(v) {
       add(selectRow("unet_dtype", "Weight type", m.unet_dtypes, v, { hint: "Leave on default." }));
       add(selectRow("clip1", "Text encoder 1", m.clips, v, {
         hint: "The part of the model that reads your prompt. Leave it as the workflow set it (" +
-          ({ krea2: "qwen3vl_4b", qwen21: "qwen3vl_8b", flux3k: "qwen3vl_4b", mageflow: "qwen3vl_4b", fibo2: "qwen3vl_4b bf16",
+          ({ krea2: "qwen3vl_4b", qwen21: "qwen3vl_8b", flux3k: "qwen3vl_4b", mageflow: "qwen3vl_4b", fibo2: "qwen3vl_4b bf16", h3img: "qwen3vl_32b_minimax_h3",
              moss: "qwen3.5_9b" }[fam] || "clip_l and t5xxl") + ")." }));
       add(selectRow("clip2", "Text encoder 2", m.clips, v, { none: "(none: single encoder)" }));
       add(selectRow("clip_type", "Encoder type", types, v, {
@@ -1855,6 +1948,8 @@ function renderAdvanced(v) {
       if (base && !looksMage(base)) warns.push(`"${base}" doesn't look like a Mage-Flow Edit model.`);
     } else if (fam === "fibo2") {
       if (base && !/fibo/i.test(base)) warns.push(`"${base}" doesn't look like a FIBO 2.0 model.`);
+    } else if (fam === "h3img") {
+      if (base && !/h3_image/i.test(base)) warns.push(`"${base}" doesn't look like a MiniMax H3 Image model.`);
     } else if (fam === "moss") {
       if (base && !/moss/i.test(base)) warns.push(`"${base}" doesn't look like a MOSS-Image model.`);
 
@@ -2367,6 +2462,7 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "f" || e.key === "F") fitView();
   else if (e.key === "o" || e.key === "O") $("#optOverlay").click();
   else if (e.key === "a" || e.key === "A") $("#optAnimate").click();
+  else if (e.key === "r" || e.key === "R") toggleReview();
   else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
     const d = S.detail, v = viewedVersion();
     if (!d || !v) return;
@@ -2398,6 +2494,22 @@ function renderStatus() {
   $("#stageStatus").innerHTML = parts.join(" · ");
 }
 
+// The way a final render goes, in one line: the original enlarged (Original art), the model painting, and the AI's
+// picture enlarged to the final size, or not when the model paints at it already
+function renderPath(d, s, outScale) {
+  const fam = s.family, orig = `${d.name} ${d.w}×${d.h}`;
+  const inUp = s.input_upscaler === "syw" && d.syw === false ? "4x-UltraSharp (SYW doesn't have this field)" : shortUp(s.input_upscaler, s);
+  if (fam === "upscale") return `${orig} → enlarged ${outScale}× with ${shortUp(s.upscaler, s)} → final size (no AI painting)`;
+  const edge = (n) => EDIT.has(fam) ? Math.round(n * s.edit_margin / 16) * 16 : 0;
+  const pw = d.w + 2 * edge(d.w), ph = d.h + 2 * edge(d.h);
+  const k = s.input_scale || Math.max(1, Math.floor(Math.sqrt(s.work_mp * 1e6 / (pw * ph))));
+  const first = k > 1 ? `original enlarged ${k}× with ${inUp}` : "original as it is";
+  const paint = `${famShort(fam)} paints at ${pw * k}×${ph * k}${EDIT.has(fam) ? " (with its border)" : ""}`;
+  const last = k >= outScale ? "final size, no further enlarging"
+    : `enlarged to ${d.w * outScale}×${d.h * outScale} with ${shortUp(s.upscaler, s)}`;
+  return `${orig} → ${first} → ${paint} → ${last}`;
+}
+
 function renderEstimate() {
   const d = S.detail, el = $("#estimate");
   if (!d) return;
@@ -2405,9 +2517,13 @@ function renderEstimate() {
   const size = (k) => `${d.w * k}×${d.h * k} (${k}×)`;
   const parts = [`render ~${fmtDuration(e.render)}`];
   if (e.tiles) parts.push(`detail ${e.tiles} tiles`);
-  if (e.sheets) parts.push(`states: ${d.state_panels} in ${e.sheets} sheet${e.sheets > 1 ? "s" : ""}`);
+  // whole renders (every painting workflow since 2026-11-13; the server says so from its next start) or painted sheets
+  const whole = e.whole ?? s.family !== "upscale";
+  if (e.sheets) parts.push(whole ? `states: ${e.sheets} whole render${e.sheets > 1 ? "s" : ""}`
+    : `states: ${d.state_panels} in ${e.sheets} sheet${e.sheets > 1 ? "s" : ""}`);
   let html = `<div>Renders with <b>${famShort(s.family)}</b>, look "${esc(d.look.name)}"` +
     (d.custom ? ` <span style="color:var(--field)">+ ${d.override_keys.length} field change${d.override_keys.length > 1 ? "s" : ""}</span>` : "") + `</div>`;
+  html += `<div class="hint render-path">${esc(renderPath(d, s, e.scale))}</div>`;
   html += `<div><b>Final</b> ${size(e.scale)} · ${parts.join(" + ")} · <b>~${fmtDuration(e.total)}</b></div>`;
   html += `<div><b>Preview</b> ${size(p.scale)} · render only · ~${fmtDuration(p.total)}</div>`;
   if (!e.tiles && !e.sheets && e.scale === p.scale) html += `<div class="hint">With the detail and states passes off, Final and Preview give the same result.</div>`;
@@ -2471,6 +2587,7 @@ async function pollQueue() {
       ? `${cur.name} · ${jobLabel(cur)}: ${cur.stage}` + (q.queued.length ? ` · ${q.queued.length} queued · ~${fmtDuration(left)} left` : "")
       : (q.queued.length ? `${q.queued.length} queued` : "Idle");
     sum.classList.toggle("busy", !!cur);
+    $("#btnCancel").disabled = !cur && !q.queued.length;  // nothing to cancel
     const bar = $("#progress .bar"), txt = $("#progress .ptext");
     if (cur) {
       bar.style.width = `${Math.round(cur.progress * 100)}%`;
@@ -2584,6 +2701,33 @@ async function init() {
   };
   $("#selFinal").onclick = () => queuePicked("final");
   $("#selPreview").onclick = () => queuePicked("preview");
+  $("#selStates").onclick = redoStatesPicked;
+  $("#selMark").onclick = async () => {
+    const names = [...S.sel];
+    await setReview(names, true);
+    toast(`${names.length} field${names.length === 1 ? "" : "s"} marked for review`);
+  };
+  $("#selUnmark").onclick = async () => {
+    const names = [...S.sel].filter((n) => S.byName[n] && S.byName[n].review);
+    if (!names.length) { toast("None of the selected fields is marked"); return; }
+    if (names.length > 3 && !await ask(`Clear the review marks (and notes) of ${names.length} fields?`, "Clear marks")) return;
+    await setReview(names, false);
+    toast(`Review marks cleared on ${names.length} field${names.length === 1 ? "" : "s"}`);
+  };
+  $("#btnReviewMark").onclick = toggleReview;
+  $("#reviewNote").oninput = reviewNoteChanged;
+  $("#reviewNote").onkeydown = (e) => { if (e.key === "Enter" || e.key === "Escape") e.target.blur(); };
+  // a batch's descriptions (keep or write new) and "Re-fix signs" (studio.py Worker.refresh_texts, fixes_signs),
+  // remembered; sent with every batch
+  const describeSel = $("#selDescribe"), fixSignsBox = $("#selFixSigns");
+  try {
+    describeSel.value = localStorage.getItem("batch.descriptions") || "new";
+    fixSignsBox.checked = localStorage.getItem("batch.fixSigns") === "1";
+  } catch (e) { /* no storage */ }
+  describeSel.onchange = () => { try { localStorage.setItem("batch.descriptions", describeSel.value); } catch (e) { /* no storage */ } };
+  fixSignsBox.onchange = () => { try { localStorage.setItem("batch.fixSigns", fixSignsBox.checked ? "1" : "0"); } catch (e) { /* no storage */ } };
+  BATCH_OPTIONS.descriptions = () => describeSel.value;
+  BATCH_OPTIONS.fix_signs = () => fixSignsBox.checked;
   $("#selClear").onclick = clearPicks;
   $("#filter").onchange = renderList;
   $("#lookFilter").onchange = renderList;

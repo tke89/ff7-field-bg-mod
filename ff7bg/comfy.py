@@ -146,6 +146,17 @@ FAMILY_PRESETS = {
               "clip1": "qwen3vl_4b_bf16.safetensors", "clip2": "", "clip_type": "fibo2",
               "vae": "flux2-vae.safetensors", "steps": 4, "cfg": 1.0, "work_mp": 2.0, "align": True,
               "detail_pass": False, "style_ref_strength": 0.0},
+    # MiniMax H3 Image (33B DiT, November 2026): a 6-step edit model that renders up to ~16 MP natively. Files and
+    # settings from ComfyUI's image_minimax_h3_image_edit template; the text encoder is the H3 video model's
+    # Qwen3-VL 32B, here its NVFP4 build (the one already downloaded for H3 video). It paints straight at the output
+    # size (input_scale 4 = the usual 4x output): on Kalm and Nibelheim (3 seeds each, 2026-11-13) that took ~21 s
+    # against ~56 s for the template's 4 MP plus the upscaler, with the same outlines kept (0.93-0.98) and real
+    # detail (flagstones, stone texture) where the upscaler drew thick outlines over flat areas.
+    "h3img": {"family": "h3img", "model_source": "separate",
+              "unet": "minimax_h3_image_pruned_int8_convrot.safetensors", "unet_dtype": "default",
+              "clip1": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors", "clip2": "", "clip_type": "minimax",
+              "vae": "minimax_h3_image_vae_fp16.safetensors", "steps": 6, "cfg": 1.0, "work_mp": 4.0, "input_scale": 4,
+              "align": True, "detail_pass": False, "style_ref_strength": 0.0},
     # MOSS-Image SFT (OpenMOSS, 5B): a text-to-image model repainting the original, like Krea 2, with a
     # depth lock (structure = its strength, 0 = off). Settings from ComfyUI's image_moss_image_t2i template.
     "moss": {"family": "moss", "model_source": "separate",
@@ -253,6 +264,13 @@ FAMILIES = {
     # Bria FIBO 2.0: the original as <image_1> of TextEncodeFibo2 (in ComfyUI since late October 2026,
     # PR #17240); the result size is set explicitly, since a single image is cropped to it pixel for pixel.
     "fibo2": {"scheduler": "simple", "controlnet": False, "edit": True, "node": "TextEncodeFibo2"},
+    # MiniMax H3 Image: the original is <Picture 1> of MiniMaxH3ImageConditioning (native in ComfyUI since
+    # November 2026), which also makes the empty latent at the size given; CFG-distilled, so the negative is the
+    # positive zeroed out, as in the template.
+    "h3img": {"scheduler": "simple", "controlnet": False, "edit": True, "node": "MiniMaxH3ImageConditioning",
+              # CFG-distilled, 6 steps (its checkpoint's own schedule): a look's other values don't apply. At prompt
+              # strength 4 (a Painterly look's profile, 2026-11-13) its colours burned (Kalm's 22:40 render)
+              "fixed": {"steps": 6, "cfg": 1.0}},
     # MOSS-Image: a text-to-image model, so a partial repaint of the original like Krea 2 (no style images).
     # Its structure lock is a depth lock: Depth Anything 3 measures the original's depth and MOSS's
     # color/depth control adapter (a LoRA plus MOSSImageControl) holds the scene to it. On Kalm, plain
@@ -328,6 +346,15 @@ def _edit_conditioning(wf, s, clip, vae, image, refs, size=(0, 0)):
             enc[f"images.image_{i + 2}"] = r
         wf["qenc"] = {"class_type": "TextEncodeFibo2", "inputs": enc}
         return ["qenc", 0], ["qenc", 1], ["qenc", 2]
+    if fam == "h3img":
+        tags = [f"<Picture {i + 2}>" for i in range(len(use))]
+        enc = {"clip": clip, "vae": vae, "prompt": _edit_instruction(s, "<Picture 1>", tags),
+               "width": size[0], "height": size[1], "images.image_1": image}
+        for i, r in enumerate(use[:4]):  # the node takes up to five pictures
+            enc[f"images.image_{i + 2}"] = r
+        wf["qenc"] = {"class_type": "MiniMaxH3ImageConditioning", "inputs": enc}
+        wf["qneg"] = {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["qenc", 0]}}
+        return ["qenc", 0], ["qneg", 0], ["qenc", 1]
     if fam == "mageflow":
         tags = [f"reference image {i + 2}" for i in range(len(use))]
         enc = {"clip": clip, "prompt": _edit_instruction(s, "image 1", tags), "negative_prompt": "",

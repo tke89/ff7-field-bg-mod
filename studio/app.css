@@ -125,6 +125,10 @@ body:not(.compact-help) button.info { display: none; }
 .field-list li.active { background: #263247; outline: 1px solid #35507a; }
 .field-list img { width: 72px; height: 54px; object-fit: cover; border-radius: 4px; background: #000; }
 .field-list .name { font-weight: 600; }
+.field-list .rflag { color: var(--warn); margin-left: 5px; font-weight: 400; }
+.review-mark { display: inline-flex; align-items: center; gap: 6px; }
+#btnReviewMark.on { background: var(--warn); color: #1b1d22; border-color: var(--warn); }
+#reviewNote { flex: 0 1 220px; width: 220px; min-width: 70px; font-size: 12px; padding: 3px 6px; }
 .field-list .sub { color: var(--muted); font-size: 11px; }
 .field-list .tag { display: inline-block; font-size: 10px; padding: 0 5px; border-radius: 3px; background: #2a2f3a; color: #b9c0cc; margin-top: 2px; }
 .field-list .tag.custom { background: #3a2a22; color: var(--field); }
@@ -139,7 +143,7 @@ body:not(.compact-help) button.info { display: none; }
 
 /* stage */
 .stage { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.stage-toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.stage-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
 .stage-toolbar > * { flex-shrink: 0; }
 .stage-toolbar .hint, .stage-toolbar .spacer { flex-shrink: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .stage-toolbar .check { white-space: nowrap; }
@@ -278,6 +282,7 @@ body:not(.compact-help) button.info { display: none; }
 .req-warn code { font-size: 11px; }
 .help-rec { color: var(--text); margin-top: 2px; }
 .help-note { color: #e0b050; margin-bottom: 3px; }
+.ctl.dim select { opacity: 0.5; }
 .ctl-help > div + div, .help > div + div { margin-top: 2px; }
 button.linkish { background: none; border: none; padding: 0 2px; color: var(--accent); cursor: pointer;
   font-size: inherit; text-decoration: underline; }
@@ -364,6 +369,8 @@ details.adv[open] summary { margin-bottom: 4px; }
 
 .up-note { margin-top: 8px; line-height: 1.45; }
 .sel-bar .row-btns button { white-space: nowrap; }
+.sel-bar .sel-opts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin-top: 6px; font-size: 12px; }
+.sel-bar .sel-opts select { font-size: 12px; padding: 1px 4px; }
 .dialog-modal { z-index: 60; }
 .modal-card.dialog { width: min(460px, 94vw); }
 .dialog-msg { white-space: pre-line; line-height: 1.5; margin: 2px 0 12px; }
@@ -381,3 +388,9 @@ details.adv[open] summary { margin-bottom: 4px; }
 .sign-word .sign-del { flex: none; width: 26px; height: 26px; padding: 0; border-radius: 4px; border: 1px solid transparent;
   background: none; color: var(--muted, #8a8f9a); font-size: 16px; line-height: 1; cursor: pointer; }
 .sign-word .sign-del:hover { color: #fff; background: #b8323a; }
+/* the states sliders that only apply when whole renders can't be made: folded away */
+.old-states { margin: 6px 0 2px; }
+.old-states > summary { cursor: pointer; color: var(--muted, #8a8f9a); font-size: 12px; user-select: none; }
+.old-states > summary:hover { color: #cfd3da; }
+.old-states[open] > summary { margin-bottom: 4px; }
+.old-states > .help-note { color: var(--muted, #8a8f9a); font-size: 12px; margin: 0 0 6px; }

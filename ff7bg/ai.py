@@ -427,6 +427,14 @@ def build_pages(bg, main, job, mod_root, review_dir, panels=None, raw=None, anim
                 return r, img
         return None
 
+    def light_panel(t):
+        """The painted light of a glow-only state holding this tile (the light it adds, not the scene)."""
+        x, y = t.dst_x - min_x, t.dst_y - min_y
+        for r, img in panels.get("light", {}).get((t.param, t.state), []):
+            if r[0] <= x and x + t.size <= r[0] + r[2] and r[1] <= y and y + t.size <= r[1] + r[3]:
+                return r, img
+        return None
+
     def from_panel(t, panel_rect, img):
         rx, ry = panel_rect[:2]
         sz = t.size * scale
@@ -446,6 +454,12 @@ def build_pages(bg, main, job, mod_root, review_dir, panels=None, raw=None, anim
             # were 374 and 205 px off the scene's place at the review's spots), so the AI image can't hold them
             # where they're drawn. Blanked, anfrst_1's beam was gone wherever the game shows it; carried as the AI
             # image (glow_tile over nothing solid), anfrst_3 got a bright copy of the picture with tile edges.
+            # A switched state made only of glow tiles (bugin1a's planetarium light) can have its light painted:
+            # the whole render with it on minus the one with it off (states: "light" panels)
+            if t.param:
+                found = light_panel(t)
+                if found:
+                    return from_panel(t, *found)
             return glow_tile(t) if not t.param and t.layer < 2 else original_tile(t)
         if t.param:
             found = state_panel(t)

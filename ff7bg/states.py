@@ -63,6 +63,45 @@ class Cluster:
     footprint: list       # (x, y, size) of every tile, canvas pixels
 
 
+COMBO_PAD = 24        # whole renders: groups whose spots are at least this far apart (original pixels) share a render
+OCCLUDE_MIN = 16      # original pixels of a spot's own art another group must cover to count as drawn over it
+
+
+def combos(clusters, defaults, pad=COMBO_PAD):
+    """The whole renders a field's states need (2026-11-12, the user: whole renders were slow): each is several groups'
+    states at once where their spots are apart, since a state is only taken where its own group's spots are; groups
+    whose spots come close never share one. Returns [{group: state}]; the main render's states aren't in them. About as
+    many renders as the busiest group has states, instead of one per state of every group."""
+    want, rects = {}, {}
+    for c in clusters:
+        d = defaults.get(c.param, 0)
+        for s in c.states:
+            if s != d and s not in want.setdefault(c.param, []):
+                want[c.param].append(s)
+        # where its tiles are (the panel's painting margin isn't taken from a render): their box, else the panel's
+        if c.footprint:
+            x0, y0 = min(x for x, _, _ in c.footprint), min(y for _, y, _ in c.footprint)
+            x1, y1 = max(x + n for x, _, n in c.footprint), max(y + n for _, y, n in c.footprint)
+            rects.setdefault(c.param, []).append((x0, y0, x1 - x0, y1 - y0))
+        else:
+            rects.setdefault(c.param, []).append(c.rect)
+
+    def apart(r, o):
+        return not (r[0] - pad < o[0] + o[2] and o[0] - pad < r[0] + r[2] and r[1] - pad < o[1] + o[3] and o[1] - pad < r[1] + r[3])
+
+    renders = []  # (assignment, spots it holds)
+    for g in sorted(want, key=lambda g: (-len(want[g]), g)):  # the busiest groups first
+        for s in want[g]:
+            for assign, held in renders:
+                if g not in assign and all(apart(r, o) for r in rects[g] for o in held):
+                    assign[g] = s
+                    held.extend(rects[g])
+                    break
+            else:
+                renders.append(({g: s}, list(rects[g])))
+    return [a for a, _ in renders]
+
+
 def _overlap(a, b, pad=0):
     return a[0] - pad < b[2] and b[0] - pad < a[2] and a[1] - pad < b[3] and b[1] - pad < a[3]
 
@@ -118,6 +157,28 @@ def plan(bg, rect, rendered_defaults):
 def _panel_original(bg, rect, cache, cluster, state, rendered_defaults):
     """Original art of the cluster's area with only `state` of its group on (0 = all off)."""
     return _panel(bg, rect, cache.tile, 1, cluster, state, rendered_defaults)
+
+
+def _occluders(bg, rect, cache, cluster, rendered_defaults, solid):
+    """The other groups on in the main render that are drawn over this spot's own art (`solid`: groups with tiles
+    that aren't glows), as {group: 0}. zcoal_3's passing rock (group 1) is drawn over the train's cab and coal car
+    (groups 2, 3): painted with it in place, the train's tiles carried the rock where its first frame covered them,
+    and it showed on the train in the frames where the rock had moved on (2026-11-17). Found on the original: with
+    the group off, the spot's own state changes pixels that the group, on, changes again."""
+    out = {}
+    states = [s for s in cluster.states if s] or [rendered_defaults.get(cluster.param, 0)]
+    for q, m in rendered_defaults.items():
+        if q == cluster.param or not m or q not in solid:
+            continue
+        off = {**rendered_defaults, q: 0}
+        bare = _panel_original(bg, rect, cache, cluster, 0, off)
+        for s in states:
+            alone = _panel_original(bg, rect, cache, cluster, s, off)
+            with_q = _panel_original(bg, rect, cache, cluster, s, rendered_defaults)
+            if (np.any(alone != bare, axis=2) & np.any(alone != with_q, axis=2)).sum() >= OCCLUDE_MIN:
+                out[q] = 0
+                break
+    return out
 
 
 def _panel(bg, rect, tile, scale, cluster, state, rendered_defaults):
@@ -333,6 +394,15 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
     cache = PageCache(bg)
     clusters = plan(bg, rect, defaults)
     upscale_only = settings.get("family") == "upscale"
+    use_whole = whole is not None and not upscale_only
+    # A spot with another group drawn over its own art (zcoal_3's passing rock over the train): with whole renders its
+    # states are painted, and the scene it rests on taken, with that group off (cdef), so the art carries none of it;
+    # the game draws that group's frames over it. Without whole renders there's no picture without it to take
+    solid = {t.param for t in bg.tiles if t.param and not t.blending}
+    occ = {id(c): (_occluders(bg, rect, cache, c, defaults, solid) if use_whole else {}) for c in clusters}
+
+    def cdef(c):
+        return {**defaults, **occ[id(c)]} if occ[id(c)] else defaults
     outside = upscalers.is_local(settings["upscaler"])  # ImageMagick / Upscayl, after ComfyUI
     # Upscale workflow, an outside upscaler before SeedVR2: run it here, the graph then only resizes
     pre_up = (upscale_only and settings["upscaler"] == SEEDVR2 and not settings["seedvr2_input"]
@@ -343,16 +413,19 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
 
     def view(c, s):
         if (id(c), s) not in views:
-            views[(id(c), s)] = _panel_original(bg, rect, cache, c, s, defaults)
+            views[(id(c), s)] = _panel_original(bg, rect, cache, c, s, cdef(c))
             matched[(id(c), s)] = _color(views[(id(c), s)], M)
         return views[(id(c), s)]
 
     def main_crop(c):
         cx, cy, w, h = c.rect
-        return ai_hi[cy * scale : (cy + h) * scale, cx * scale : (cx + w) * scale]
+        src = whole(cdef(c)) if occ[id(c)] else ai_hi  # the scene with what's drawn over the spot off
+        return src[cy * scale : (cy + h) * scale, cx * scale : (cx + w) * scale]
 
     def default_crop(c):
         cx, cy, w, h = c.rect
+        if occ[id(c)]:
+            return _panel_original(bg, rect, cache, c, defaults.get(c.param, 0), cdef(c))
         return default_view[cy : cy + h, cx : cx + w]
 
     def changed_from_default(c, s):
@@ -368,7 +441,7 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
             view(c, s)
             return cv2.resize(matched[(id(c), s)], (w * g, h * g), interpolation=cv2.INTER_CUBIC)
         if (id(c), s) not in views_hi:
-            views_hi[(id(c), s)] = _color(_panel(bg, rect, hires[0], hires[1], c, s, defaults), M)
+            views_hi[(id(c), s)] = _color(_panel(bg, rect, hires[0], hires[1], c, s, cdef(c)), M)
         return cv2.resize(views_hi[(id(c), s)], (w * g, h * g),
                           interpolation=cv2.INTER_AREA if g < hires[1] else cv2.INTER_CUBIC)
 
@@ -407,11 +480,18 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
         return _changed(view(c, s), key_view(c))
 
     use_whole = whole is not None and not upscale_only
+    glows = glow_states(bg) if use_whole else {}
+    if use_whole and hasattr(whole, "need"):  # the spots it will cut from the renders: only those are enlarged
+        for c in clusters:
+            whole.need(c.param, c.rect, c.states, c.footprint)
+        for p, gs in glows.items():
+            spot, foot = _glow_spot(bg, rect, p, gs)
+            whole.need(p, spot, [0, sum(gs)], foot)
 
     def whole_crop(c, s):
         """The spot as the whole render with this state of its group on shows it (the other groups as the main render
         has them)."""
-        d = dict(defaults)
+        d = dict(cdef(c))
         d[c.param] = s
         img = whole(d)
         cx, cy, w, h = c.rect
@@ -742,8 +822,64 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
                 panels["images"].setdefault((c.param, s), []).append((c.rect, panel))
             index.append(entry)
 
+    # Glow-only states (switched states made only of tiles that add light: lamps, screens, bugin1a's planetarium,
+    # which draws the whole lit room over black): their light painted, as the whole render with the group's glows on
+    # minus the one with the group off (light adds, so the difference is it), shared out between glow states that
+    # overlap by how much each adds in the original, and kept to where the original adds light (the AI's other
+    # differences between two renders stay out). ai.build_pages gives the glow tiles these instead of the original
+    # art enlarged (until 2026-11-13 they always had that: bugin1a's projection was the only unpainted room).
+    for p, gs in glows.items():
+        if cancelled():
+            raise InterruptedError("cancelled")
+        if progress:
+            progress(0, 1, f"group {p}'s light")
+        off = whole({**defaults, p: 0}).astype(np.int16)
+        on = whole({**defaults, p: sum(gs)}).astype(np.int16)
+        light = np.clip(on - off, 0, 255).astype(np.float32)
+        H, W = light.shape[:2]
+        adds = {s: cv2.resize(np.asarray(render_composite(bg, rect, cache.tile, 1,
+                                                          lambda t, s=s: t.param == p and t.state == s), np.float32),
+                              (W, H), interpolation=cv2.INTER_CUBIC).clip(0, 255) for s in gs}
+        total = sum(adds.values())
+        light *= np.clip(total.max(axis=2, keepdims=True) / GLOW_FLOOR, 0, 1)
+        for s in gs:
+            part = np.clip(light * np.where(total > 1, adds[s] / np.maximum(total, 1e-3), 0), 0, 255).astype(np.uint8)
+            (sx, sy, sw, sh), _ = _glow_spot(bg, rect, p, [s])
+            crop = part[sy * scale:(sy + sh) * scale, sx * scale:(sx + sw) * scale]
+            fname = f"p{p}_{s}_light_{sx}_{sy}.png"
+            Image.fromarray(crop).save(work_dir / fname)
+            panels.setdefault("light", {}).setdefault((p, s), []).append(((sx, sy, sw, sh), crop))
+            index.append({"param": p, "state": s, "rect": [sx, sy, sw, sh], "file": fname, "light": True})
+
     (work_dir / "states.json").write_text(json.dumps({"scale": scale, "panels": index}))
     return panels
+
+
+ADD_BLEND = (1, 3)  # tile blends that add light: add, add a quarter
+GLOW_FLOOR = 6.0    # a glow's painted light is kept in full where the original adds at least this much (0..255)
+
+
+def glow_states(bg):
+    """{group: [states]}: switched states made only of tiles that add light, on the scene's own layers (0-1: the
+    parallax layers' glows scroll apart from the picture, so a render can't hold them where they're drawn)."""
+    by = {}
+    for t in bg.tiles:
+        if t.param:
+            by.setdefault((t.param, t.state), []).append(t)
+    out = {}
+    for (p, s), ts in by.items():
+        if all(t.blending and t.type_trans in ADD_BLEND and t.layer < 2 for t in ts):
+            out.setdefault(p, []).append(s)
+    return {p: sorted(v) for p, v in sorted(out.items())}
+
+
+def _glow_spot(bg, rect, p, gs):
+    """The canvas rect (x, y, w, h) of these glow states' tiles, and their footprint [(x, y, size)]."""
+    min_x, min_y = rect[:2]
+    foot = sorted({(t.dst_x - min_x, t.dst_y - min_y, t.size) for t in bg.tiles if t.param == p and t.state in gs})
+    x0, y0 = min(x for x, _, _ in foot), min(y for _, y, _ in foot)
+    x1, y1 = max(x + z for x, _, z in foot), max(y + z for _, y, z in foot)
+    return (x0, y0, x1 - x0, y1 - y0), foot
 
 
 def load(work_dir, scale):
@@ -757,7 +893,9 @@ def load(work_dir, scale):
     panels = {"images": {}, "off": []}
     for e in meta["panels"]:
         img = np.asarray(Image.open(Path(work_dir) / e["file"]).convert("RGB"))
-        if e["state"] == 0:
+        if e.get("light"):  # a glow-only state's painted light (ai.build_pages: its glow tiles add it)
+            panels.setdefault("light", {}).setdefault((e["param"], e["state"]), []).append((tuple(e["rect"]), img))
+        elif e["state"] == 0:
             panels["off"].append((tuple(e["rect"]), [tuple(t) for t in e["footprint"]], img))
         else:
             panels["images"].setdefault((e["param"], e["state"]), []).append((tuple(e["rect"]), img))

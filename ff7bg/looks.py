@@ -18,10 +18,10 @@ import threading
 import time
 from pathlib import Path
 
-from .comfy import DEFAULT_SETTINGS, FAMILY_PRESETS, SEEDVR2
+from .comfy import DEFAULT_SETTINGS, FAMILIES as MODEL_FAMILIES, FAMILY_PRESETS, SEEDVR2
 from .upscalers import is_local
 
-FAMILIES = ("flux1", "krea2", "qwen21", "flux3k", "mageflow", "fibo2", "moss", "upscale")
+FAMILIES = ("flux1", "krea2", "qwen21", "flux3k", "mageflow", "fibo2", "h3img", "moss", "upscale")
 
 # Settings that belong to a workflow (stored per profile); everything else is shared by the look.
 FAMILY_KEYS = {
@@ -89,6 +89,7 @@ def resolve(layers, family=None):
             continue
         s.update({k: v for k, v in layer.get("settings", {}).items() if k != "family"})
         s.update(layer.get("profiles", {}).get(fam, {}))
+    s.update(MODEL_FAMILIES.get(fam, {}).get("fixed", {}))  # what a model fixes for itself (H3 Image: steps, CFG)
     s["family"] = fam
     return s
 

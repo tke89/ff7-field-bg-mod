@@ -7,14 +7,16 @@
   const KINDS = {
     scene: { tab: "Battle scenes", one: "Battle scene", job: "battle scene", search: "Search: oq, location 2, Guard Hound…",
       hint: "The places battles are fought in. Each one's textures (ground, walls, sky) are painted flat in your look, and you can start one of its battles in your game to see it." },
-    battle: { tab: "Battle characters & enemies", one: "Battle character or enemy", job: "battle model", search: "Search: Cloud, Grunt, rt, 2d painted…",
+    // retired (2026-11-13): painting characters and objects was tried and turned down (2026-11-07); their jobs and
+    // versions still read these entries
+    battle: { retired: true, tab: "Battle characters & enemies", one: "Battle character or enemy", job: "battle model", search: "Search: Cloud, Grunt, rt, 2d painted…",
       hint: "The party and the enemies as they fight. Paint in 2D style paints any of them as a hand-drawn 2D character. Most enemies have no textures (their colour is in the model), so the Paint card only paints the ones with textures." },
-    field: { tab: "Field characters & objects", one: "Field character or object", job: "field model", search: "Search: cloud, aeris, save point, AAAA…",
+    field: { retired: true, tab: "Field characters & objects", one: "Field character or object", job: "field model", search: "Search: cloud, aeris, save point, AAAA…",
       hint: "The people and things that walk around the fields: the game's original models, not the chibi mod you play with." },
   };
   const JOBS = { model: "final", model_preview: "preview" };
   const M = {
-    open: pref("models.open", "0") === "1", kind: KINDS[pref("models.kind", "scene")] ? pref("models.kind", "scene") : "scene",
+    open: pref("models.open", "0") === "1", kind: KINDS[pref("models.kind", "scene")] && !KINDS[pref("models.kind", "scene")].retired ? pref("models.kind", "scene") : "scene",
     lists: {}, id: null, item: null, mode: pref("models.mode", "orig"), ver: null,
     cam: 0, yaw: 0, pitch: 0, zoom: 1, split: 0.5, looks: null, viewError: "", hideBare: pref("models.hideBare", "0") === "1",
     // "Try it in a battle": the running game (/game), its settings (remembered), the last answer
@@ -177,7 +179,7 @@
   page.innerHTML = `
     <aside class="sidebar">
       <div class="sidebar-tools">
-        <div class="mdl-kinds" id="mdlKinds">${Object.entries(KINDS).map(([k, v]) =>
+        <div class="mdl-kinds" id="mdlKinds">${Object.entries(KINDS).filter(([, v]) => !v.retired).map(([k, v]) =>
           `<button data-k="${k}" title="${esc(v.hint)}">${esc(v.tab)}</button>`).join("")}</div>
         <div class="hint mdl-kind-hint" id="mdlKindHint"></div>
         <input id="mdlSearch" type="search" autocomplete="off">

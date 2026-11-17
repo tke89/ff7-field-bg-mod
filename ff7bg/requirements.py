@@ -56,6 +56,10 @@ FILES = {
     "mage_flow_edit_turbo_int8_convrot.safetensors": (_hf("Comfy-Org/Mage-Flow", "diffusion_models/mage_flow_edit_turbo_int8_convrot.safetensors"), 4.16, "Mage-Flow Turbo", ""),
     "mage_flow_edit_int8_convrot.safetensors": (_hf("Comfy-Org/Mage-Flow", "diffusion_models/mage_flow_edit_int8_convrot.safetensors"), 4.16, "Mage-Flow Full", ""),
     "mage_flow_vae_bf16.safetensors": (_hf("Comfy-Org/Mage-Flow", "vae/mage_flow_vae_bf16.safetensors"), 0.35, "Mage-Flow's VAE", ""),
+    # MiniMax H3 Image (community license with use restrictions: read it before sharing what it makes)
+    "minimax_h3_image_pruned_int8_convrot.safetensors": (_hf("Comfy-Org/MiniMax-H3-Image", "diffusion_models/minimax_h3_image_pruned_int8_convrot.safetensors"), 20.98, "MiniMax H3 Image", "MiniMax H3 Image community license"),
+    "minimax_h3_image_vae_fp16.safetensors": (_hf("Comfy-Org/MiniMax-H3-Image", "vae/minimax_h3_image_vae_fp16.safetensors"), 1.17, "MiniMax H3 Image's VAE", ""),
+    "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors": (_hf("Comfy-Org/MiniMax-H3", "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"), 15.69, "MiniMax H3's text encoder (H3 video's too)", "NVFP4: RTX 50 cards; the int8_convrot one (27 GB) for others"),
     # FIBO 2
     "fibo2_edit_turbo_int8_convrot.safetensors": (_hf("Comfy-Org/Fibo-2.0", "diffusion_models/fibo2_edit_turbo_int8_convrot.safetensors"), 8.41, "FIBO 2 Edit Turbo", "non-commercial license"),
     "fibo2_dev_int8_convrot.safetensors": (_hf("Comfy-Org/Fibo-2.0", "diffusion_models/fibo2_dev_int8_convrot.safetensors"), 8.41, "FIBO 2 Dev", "non-commercial license"),

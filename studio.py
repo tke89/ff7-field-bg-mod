@@ -60,6 +60,7 @@ EDIT_FAMILIES = {name for name, f in FAMILIES.items() if f.get("edit")}
 KEEP_IN_GAME = 0.6  # a new version below this share of original outlines doesn't go in game by itself
 FLAG_KEPT = 0.8     # below this share of outlines a field is flagged (and "retry" tries again)
 REPAINT_FAMILIES = {"flux1", "krea2", "moss"}  # the ones with a repaint strength to lower on a retry
+H3IMG_SECONDS_PER_MP_STEP = 0.55  # MiniMax H3 Image per megapixel and step (5090: ~21 s for 6.4 MP, 6 steps; 2026-11-13)
 AVG_STATE_RUNS = 488 / 670  # states-pass sheets per field, game-wide (batch estimates)
 # version settings shown in the version strip
 SUMMARY_KEYS = ("denoise", "structure", "seed", "style_refs", "style_ref_strength", "detail_pass",
@@ -80,9 +81,20 @@ PLUGIN_SCRIPTS = []
 
 # ---------------------------------------------------------------- project data
 
+STATE_COUNTS = AI / "field_states.json"  # each field's toggled groups, counted once (Project.count_states)
+WHOLE_STATS = AI / "whole_stats.json"  # seconds one state's whole render takes: game-wide and per field (learned)
+
+
 class Project:
     def __init__(self, lgp_path):
+        self.lgp_path = Path(lgp_path)
         self.lgp = LgpArchive(lgp_path)
+        self.state_counts = {}
+        self.state_renders = {}  # whole renders a states pass needs per field (count_states)
+        try:
+            self.whole_stats = json.loads(WHOLE_STATS.read_text())
+        except (OSError, ValueError):
+            self.whole_stats = {}
         self.lgp_lock = threading.Lock()
         self.meta_lock = threading.RLock()
         self.bg_cache = OrderedDict()
@@ -116,8 +128,63 @@ class Project:
         self.jobs = json.loads(jobs_file.read_text())
         self.migrate()
         self.migrate_input_upscaler()
+        self.count_states()
         self.ready = True
         self.status = "ready"
+
+    def count_states(self):
+        """How many toggled groups (doors, lights, animations: what the states pass restyles) each field has, for the
+        field list's "With states" filter. Counted from the backgrounds once (about 20 s) and kept in STATE_COUNTS
+        until flevel.lgp changes."""
+        stat = self.lgp_path.stat()
+        stamp = f"{stat.st_size}:{stat.st_mtime_ns}"
+        try:
+            cached = json.loads(STATE_COUNTS.read_text())
+            if cached.get("stamp") == stamp and cached.get("format") == 4 and set(cached.get("counts", {})) >= set(self.jobs):
+                self.state_counts, self.state_renders = cached["counts"], cached["renders"]
+                return
+        except (OSError, ValueError):
+            pass
+        self.status = "counting each field's states (one time, about 20 seconds)"
+        counts, renders = {}, {}
+        for name in self.jobs:
+            try:
+                bg = self.background(name)
+            except Exception:  # noqa: BLE001 (a field that can't be read counts as none)
+                counts[name] = renders[name] = 0
+                continue
+            groups = {}
+            for t in bg.tiles:
+                if t.param and not t.blending:
+                    groups.setdefault(t.param, set()).add(t.state)
+            glows = states.glow_states(bg)  # glow-only groups: their light is painted too (one more render each)
+            counts[name] = len(set(groups) | set(glows))
+            # the whole renders its states need (groups apart share them: states.combos)
+            defaults = {int(g): m for g, m in (self.jobs[name].get("defaults") or {}).items()}
+            renders[name] = (len(states.combos(states.plan(bg, canvas_rect(bg), defaults), defaults)) if groups else 0) \
+                + len(glows)
+        self.state_counts, self.state_renders = counts, renders
+        STATE_COUNTS.write_text(json.dumps({"stamp": stamp, "format": 4, "counts": counts, "renders": renders}))
+
+    def whole_likely(self, name, s):
+        """A states pass on this render would use whole renders (WholeStates): a repainting or edit workflow (since
+        2026-11-13), no canvas margin."""
+        return s.get("family") in REPAINT_FAMILIES | EDIT_FAMILIES and not any(self.jobs[name]["pad"])
+
+    def whole_seconds(self, name, fallback):
+        """Seconds one state's whole render takes for this field: its own last measure, else the game-wide average,
+        else `fallback` (about its main render's time)."""
+        return self.whole_stats.get("fields", {}).get(name) or self.whole_stats.get("avg") or fallback
+
+    def record_whole_seconds(self, name, seconds):
+        """A states pass's measured seconds per whole render, for the estimates."""
+        st = self.whole_stats
+        st.setdefault("fields", {})[name] = round(seconds, 2)
+        st["avg"] = round(seconds if not st.get("avg") else 0.8 * st["avg"] + 0.2 * seconds, 2)
+        try:
+            WHOLE_STATS.write_text(json.dumps(st))
+        except OSError:
+            pass
 
     def migrate(self):
         """One time: earlier renders (ai/output, ai/history, ai/states, ai/review) become versions,
@@ -370,7 +437,7 @@ class Project:
             self._state_runs[key] = states.count_runs(bg, canvas_rect(bg), defaults, k)
         return self._state_runs[key]
 
-    def estimate(self, name, s, preview=False, exact_states=True):
+    def estimate(self, name, s, preview=False, exact_states=True, check=False):
         """Seconds on the RTX 5090 this was tuned on. Batches pass exact_states=False to use the
         game-wide average for fields whose states haven't been counted yet."""
         w, h = self.jobs[name]["canvas"][2:]
@@ -417,6 +484,8 @@ class Project:
                 per = 0.25 * mp * evals  # about 4 s per megapixel at 16 steps on a 5090
             elif fam == "fibo2":
                 per = 0.35 * mp * evals  # 8B; Kalm (1.6 MP, Edit Turbo): 13 s with SeedVR2 before and after
+            elif fam == "h3img":
+                per = H3IMG_SECONDS_PER_MP_STEP * mp * evals  # 33B; measured on a 5090 (see the constant)
             else:  # mageflow; Turbo measured 1-3 s at 1.6 MP
                 per = 0.5 * mp * evals
             first, tile, sheet = 4 + per, 0, 6 + 0.8 * per * sheet_share
@@ -442,7 +511,14 @@ class Project:
             if s["detail_pass"] and not no_detail:
                 out["tiles"] = tile_count(w * s["out_scale"], h * s["out_scale"])
                 out["detail"] = out["tiles"] * tile
-            if s["states_pass"]:
+            if s["states_pass"] and self.whole_likely(name, s) and name in self.state_renders:
+                # whole renders (WholeStates): one per state, plus one to check the render can be re-made when it
+                # wasn't made in the same job (check: Redo states)
+                n = self.state_renders[name]
+                per = self.whole_seconds(name, first + 2)
+                out["sheets"], out["states"] = n, (n + (1 if check and n else 0)) * per
+                out["whole"] = True  # "sheets" are whole renders here (the page says so)
+            elif s["states_pass"]:
                 k = self.render_k(name, s)
                 runs = self.state_runs(name, k)[0] if exact_states or (name, k) in self._state_runs else AVG_STATE_RUNS
                 out["sheets"], out["states"] = runs, runs * sheet
@@ -465,7 +541,8 @@ class Project:
                 install_field(name, self.jobs[name]["copies"])
             except OSError:
                 traceback.print_exc()
-        for hook in ON_CURRENT if changed else ():
+        # (and a states redo: the same version with new states pages, which its 3D scene needs too)
+        for hook in ON_CURRENT if changed or (options or {}).get("states_redone") else ():
             try:
                 hook(name, vid, options or {})
             except Exception:  # a plug-in's trouble mustn't stop the Studio
@@ -539,6 +616,10 @@ class Project:
             "status": status, "flag": (vmeta.get("result") or {}).get("flag", ""),
             "error": meta.get("error", ""), "custom": not looks.is_empty(meta.get("override")),
             "look": look_id, "look_how": how, "current": cur or "", "family": vmeta.get("family"),
+            # toggled groups (count_states) and of them looping animations: the field list's states filters
+            "states": self.state_counts.get(name, 0), "anims": len(job.get("animations") or {}),
+            # marked to come back to (the user's review list): {"note", "at"}, kept through new versions until cleared
+            "review": meta.get("review"),
         }
 
     def settings_view(self, name):
@@ -598,7 +679,7 @@ def make_job(name, kind, family=None, version=None, current="auto", is_try=False
         job["est"] = JOB_KINDS[kind]["est"](name)
     elif kind == "build":
         s = project.effective(name)
-        job["est"] = 4 + (project.estimate(name, s, exact_states=False)["states"] if run_states else 0)
+        job["est"] = 4 + (project.estimate(name, s, exact_states=False, check=True)["states"] if run_states else 0)
     else:
         s = project.job_settings(name, kind, family)
         s.update({k: v for k, v in job["settings"].items() if k in s})
@@ -726,8 +807,9 @@ class Worker(threading.Thread):
         with_states = not preview and s["states_pass"]
         est = self.p.estimate(name, s, preview)
         split = (est["render"] + est["detail"]) / est["total"] if with_states and est["states"] else 0.97
+        opts = job.get("options") or {}
         if job.get("fresh"):
-            self.refresh_texts(name, s)
+            self.refresh_texts(name, s, keep_description=opts.get("descriptions") == "keep")
         tries = max(1, s["tries"])
         if tries == 1 and not s["retry"]:
             self.band = (0.0, split)
@@ -744,13 +826,27 @@ class Worker(threading.Thread):
                 self.p.versions.update_meta(name, vid, held_back=True)
                 raise ComfyError(f"not put in game: only {kept:.0%} of the original outlines kept "
                                  "(the AI changed the scene); it's in the version strip if you want it anyway")
-            self.p.make_current(name, vid, job.get("options"))
+            # a sign fix follows (below): the field's 3D scene is built from that one, not this
+            self.p.make_current(name, vid, dict(opts, skip_3d=True) if self.fixes_signs(name, job) else opts)
+        if self.fixes_signs(name, job):
+            # the batch's "Re-fix signs": the user's sign words painted on the new render next, before the batch
+            # goes on (it goes in the game, and gets its 3D scene, if this render did)
+            self.enqueue([make_job(name, "signs", version=vid, options={k: v for k, v in opts.items() if k != "fix_signs"})],
+                         front=True)
         return vid
 
-    def refresh_texts(self, name, s):
+    @staticmethod
+    def fixes_signs(name, job):
+        """A final render from a batch with "Re-fix signs", of a field with sign words."""
+        return bool((job.get("options") or {}).get("fix_signs")) and job["kind"] == "final" and bool(sign_words(name))
+
+    def refresh_texts(self, name, s, keep_description=False):
         """A batch starts each field afresh: its scene described and its signs looked for again (the signs
-        the user drew stay)."""
+        the user drew stay). keep_description (the batch's "Descriptions: Keep existing"): a field that has a
+        description keeps it; only one without gets one."""
         describe = s.get("describe_scene") and s.get("family") != "upscale"
+        if describe and keep_description and self.p.meta(name).get("caption"):
+            describe = False
         if not describe and not self.p.wants_signs(s):
             return
         comfy = Comfy(self.p.comfy_url)
@@ -943,6 +1039,7 @@ class Worker(threading.Thread):
         if not out:
             raise ComfyError("this version has no image")
         vmeta = vs.meta(name, vid)
+        render_settings = s  # a render's own build passes its settings
         if s is None:  # rebuild with the settings it was made with
             s = self.p.effective(name, vmeta.get("family"))
             current_states = {k: s[k] for k in ("state_denoise", "state_denoise_boost", "anim_repaint")}
@@ -974,8 +1071,10 @@ class Worker(threading.Thread):
             # each state as a whole render of the version's own recipe, when it can be re-made (WholeStates)
             whole, method = None, "painted"
             if comfy is not None and s.get("family") != "upscale" and bg_has_states(bg):
+                # made in this same job (a render's build): it's the recipe's own picture, no check needed
+                fresh = render_settings is not None
                 ws = WholeStates(self, name, vid, comfy)
-                if ws.reason is None and ws.check():
+                if ws.reason is None and (ws.trust() if fresh else ws.check()):
                     whole, method = ws, "whole renders"
                 else:
                     method = f"painted ({ws.reason})"
@@ -987,6 +1086,8 @@ class Worker(threading.Thread):
                 whole=whole)
             if whole is not None and whole.notes:
                 method += "; " + "; ".join(sorted(set(whole.notes)))
+            if whole is not None and whole.timings:
+                self.p.record_whole_seconds(name, sum(whole.timings) / len(whole.timings))
             vs.update_meta(name, vid, states_method=method)
         else:
             panels = states.load(sdir, main["scale"])
@@ -1005,8 +1106,8 @@ class Worker(threading.Thread):
             "state_panels": r["state_panels"], "keep_colors": keep, "animated_frames": r["animated_frames"],
             "animation_left_still": r["animation_left_still"],
         })
-        if self.p.current(name) == vid:  # rebuilt the one the game uses
-            self.p.make_current(name, vid)
+        if self.p.current(name) == vid:  # rebuilt the one the game uses (its states redone: the 3D scene's too)
+            self.p.make_current(name, vid, {"states_redone": True} if run_states else None)
 
 
 def check_requirements(comfy, s):
@@ -1164,6 +1265,25 @@ def _field_or_404(name):
 def api_field(name):
     _field_or_404(name)
     return jsonify(field_detail(name))
+
+
+@app.post("/api/marks")
+def api_marks():
+    """Mark fields to come back to later (on: true, with an optional note), or clear their marks (on: false). A note
+    given for a marked field replaces its note."""
+    body = request.get_json(force=True)
+    names = body.get("names") or []
+    for n in names:
+        _field_or_404(n)
+    on, note = body.get("on", True), body.get("note")
+    for n in names:
+        if not on:
+            project.update_meta(n, review=None)
+            continue
+        was = project.meta(n).get("review") or {}
+        text = (was.get("note", "") if note is None else str(note)).strip()[:500]
+        project.update_meta(n, review={"note": text, "at": was.get("at") or time.time()})
+    return jsonify(ok=True, fields={n: project.field_summary(n) for n in names})
 
 
 @app.post("/api/field/<name>/settings")
@@ -1786,7 +1906,7 @@ def run_signfix(w, job):
     w.band = (0.85, 1.0)
     w.build(name, nvid)
     if w.p.current(name) == vid:
-        w.p.make_current(name, nvid)
+        w.p.make_current(name, nvid, job.get("options"))  # a batch's options (its 3D choice) when a batch queued it
     job["version"] = nvid
     job["note"] = f"{len(boxes)} sign{'s' if len(boxes) != 1 else ''} painted"
 
@@ -1892,6 +2012,7 @@ JOB_KINDS["touchup"] = {"run": run_touchup, "est": lambda name: 70}
 # everywhere else; where one falls inside a state's change it's made again on that state's render.
 WHOLE_MAX_DIFF = 6.0  # the recipe re-run with the render's own states must come this close to it (mean, 0-255)
 WHOLE_FIX_PAD = 8     # a fix-up counts as inside a state's change within this many original pixels of it
+WHOLE_UP_PAD = 16     # a state's spots are enlarged with this many original pixels around them (the upscaler's reach)
 
 
 def bg_has_states(bg):
@@ -1928,6 +2049,13 @@ class WholeStates:
         self.fixes = [(v, m) for v, m in reversed(self.chain) if m.get("mode") in ("signs", "touchup")]  # oldest first
         self.cache = {}
         self.notes = []
+        self.timings = []  # seconds per state render (the estimates learn them)
+        self.regions = {}  # group -> its spots (canvas rects): only those are enlarged (states.run says, need())
+        self.base = None  # the root render at output size: the rest of a state's picture
+        self._boxes = None
+        self._syw_tile = False
+        self._spots = []      # states.run's spots (need())
+        self._combo_of = None  # (group, state) -> the render it shares (states.combos)
         self.reason = self._unusable()
         if self.reason is None:
             s = self.p.effective(name, self.root.get("family"))
@@ -1945,14 +2073,34 @@ class WholeStates:
             return "the version wasn't rendered here (imported)"
         if r.get("source") and r.get("mode") not in ("signs", "touchup"):  # (a fix-up's source is what it fixed)
             return "its render started from another version"
-        if r.get("family") not in REPAINT_FAMILIES:
+        edit = r.get("family") in EDIT_FAMILIES
+        if r.get("family") not in REPAINT_FAMILIES and not edit:
             return f"{r.get('family')} renders aren't re-run per state"
-        if any(fjob["pad"]) or any(r.get("frame") or ()):
+        # the edit models' own blurred margin (Worker.generate: edit_padding) is made again for each state; a field's
+        # canvas margin isn't
+        if any(fjob["pad"]) or (any(r.get("frame") or ()) and not edit):
             return "renders with a margin aren't re-run per state"
         return None
 
     def _key(self, states):
         return tuple(sorted((int(k), int(v)) for k, v in states.items()))
+
+    def need(self, group, rect, group_states=(), footprint=()):
+        """states.run: a spot of `group` it will cut from the renders, and the states it has there (only those spots
+        are enlarged; groups apart share renders: states.combos)."""
+        self.regions.setdefault(int(group), []).append(tuple(rect))
+        self._spots.append(states.Cluster(int(group), list(group_states), tuple(rect), list(footprint)))
+        self._combo_of = None
+
+    def _root_states(self):
+        return {int(k): v for k, v in (self.root.get("rendered_defaults") or {}).items()}
+
+    def trust(self):
+        """The version was rendered in this same job: its picture is the recipe's, no re-make to check."""
+        before = np.asarray(Image.open(self.p.versions.render_path(self.name, self.root_vid)).convert("RGB"))
+        self.base = self._geometry(before, self._root_states())
+        self.cache[self._key(self._root_states())] = self.base
+        return True
 
     def check(self):
         """The recipe re-run with the render's own states must give the render back (else a model or setting has
@@ -1968,22 +2116,57 @@ class WholeStates:
         if d > WHOLE_MAX_DIFF:
             self.reason = f"re-making its render now gives a different picture ({d:.1f} apart)"
             return False
-        self.cache[self._key(root_states)] = self._geometry(before, root_states)
+        self.base = self._geometry(before, root_states)
+        self.cache[self._key(root_states)] = self.base
         return True
 
-    def __call__(self, states):
-        key = self._key(states)
+    def __call__(self, wanted):
+        key = self._key(wanted)
         if key not in self.cache:
             if self.w.cancel_flag:
                 raise InterruptedError("cancelled")
-            self.w._stage(f"rendering the field with states {dict(key)}", 0.05)
-            img = self._render(dict(key))
-            img = self._fix(img, dict(key))
-            self.cache[key] = self._geometry(img, dict(key))
+            root, now = self._root_states(), dict(key)
+            changed = self._changed(now, root)
+            if len(changed) == 1 and self._spots:  # one group's state: the render it shares with groups apart
+                if self._combo_of is None:
+                    self._combos = states.combos(self._spots, root)
+                    self._combo_of = {(g, v): i for i, c in enumerate(self._combos) for g, v in c.items()}
+                g = next(iter(changed))
+                i = self._combo_of.get((g, now.get(g, 0)))
+                if i is not None:
+                    shared = self._key({**root, **self._combos[i]})
+                    if shared not in self.cache:
+                        self.cache[shared] = self._make(dict(shared), root)
+                    self.cache[key] = self.cache[shared]
+                    return self.cache[key]
+            self.cache[key] = self._make(now, root)
         return self.cache[key]
 
+    @staticmethod
+    def _changed(now, root):
+        return {g for g, v in now.items() if root.get(g, 0) != v} | {g for g in root if g not in now}
+
+    def _make(self, now, root):
+        """A whole render of these states (on the root's), its fix-ups made again, at the main render's geometry."""
+        if self.w.cancel_flag:
+            raise InterruptedError("cancelled")
+        changed = self._changed(now, root)
+        self.w._stage(f"rendering the field with states {dict(sorted((g, now.get(g, 0)) for g in changed))}", 0.05)
+        started = time.time()
+        rects = [r for g in changed for r in self.regions.get(g, [])] if changed and changed <= set(self.regions) else None
+        img = self._render(now, rects)
+        img = self._fix(img, now)
+        img = self._geometry(img, now)
+        self.timings.append(time.time() - started)
+        return img
+
     def _geometry(self, img, states):
-        """The render as states.run takes the main render: on the original's geometry, cut to the canvas."""
+        """The render as states.run takes the main render: on the original's geometry, cut to the canvas. A render
+        that isn't aligned is that already (prepare_main's drift search on every state took seconds each)."""
+        w, h = self.p.jobs[self.name]["canvas"][2:]
+        out = self.s["out_scale"]
+        if not self.s["align"] and not any(self.root.get("frame") or ()) and img.shape[:2] == (h * out, w * out):
+            return img
         path = AI / "input_states" / f"{self.name}_render.png"
         path.parent.mkdir(exist_ok=True)
         Image.fromarray(img).save(path, compress_level=1)
@@ -1992,8 +2175,62 @@ class WholeStates:
                                {str(k): v for k, v in states.items()}, do_align=s["align"], frame=self.root.get("frame"))
         return main["ai_hi"]
 
-    def _render(self, states):
-        """The root's recipe on the original with these states (as Worker.generate makes a render)."""
+    def _sign_and_moving_boxes(self):
+        """The field's sign and moving-part boxes, worked out once (the same for every state)."""
+        if self._boxes is None:
+            s = self.s
+            edit = s.get("family") in EDIT_FAMILIES  # these repaint everything: strength 1
+            relative = lambda v: v / (1.0 if edit else max(s["denoise"], 1e-3))  # noqa: E731
+            inside = relative(s["text_repaint"])
+            boxes = ([dict(b, inside=inside) for b in self.p.sign_boxes(self.name, s, self.comfy)]
+                     + [dict(b, inside=relative(s["anim_repaint"])) for b in self.p.moving_boxes(self.name, s)])
+            self._boxes = [b for b in boxes if b["inside"] < 1]
+        return self._boxes
+
+    def _syw(self, shows):
+        """The SYW pack's 4x view with these states (its pages loaded once for the field), or None."""
+        if self._syw_tile is False:
+            pack = self.p.syw_pack()
+            self._syw_tile = syw.tile_source(pack, self.name, self.p.background(self.name)) if pack else None
+        if self._syw_tile is None:
+            return None
+        bg = self.p.background(self.name)
+        return np.asarray(render_composite(bg, canvas_rect(bg), self._syw_tile, syw.SCALE, ai.shows(shows)).convert("RGB"))
+
+    def _enlarge_spots(self, img, rects):
+        """The render (at the model's size) taken to the output size only around `rects` (canvas pixels, padded), the
+        root render elsewhere: the spots side by side in one strip, through the upscaler once (it enlarged the whole
+        picture for every state: much of the time a state took)."""
+        s = self.s
+        w, h = self.p.jobs[self.name]["canvas"][2:]
+        out = s["out_scale"]
+        kx, ky = img.shape[1] / w, img.shape[0] / h
+        boxes = []
+        for (x, y, rw, rh) in rects:
+            x0, y0 = max(0, x - WHOLE_UP_PAD), max(0, y - WHOLE_UP_PAD)
+            x1, y1 = min(w, x + rw + WHOLE_UP_PAD), min(h, y + rh + WHOLE_UP_PAD)
+            crop = img[int(round(y0 * ky)):int(round(y1 * ky)), int(round(x0 * kx)):int(round(x1 * kx))]
+            boxes.append((x0, y0, x1, y1, crop))
+        gap = 8
+        strip = np.zeros((max(b[4].shape[0] for b in boxes), sum(b[4].shape[1] + gap for b in boxes), 3), np.uint8)
+        at, x = [], 0
+        for b in boxes:
+            strip[:b[4].shape[0], x:x + b[4].shape[1]] = b[4]
+            at.append(x)
+            x += b[4].shape[1] + gap
+        sx, sy = out / kx, out / ky
+        big = upscalers.finish(strip, s, int(round(strip.shape[1] * sx)), int(round(strip.shape[0] * sy)),
+                               lambda: self.w.cancel_flag)
+        res = self.base.copy()
+        for (x0, y0, x1, y1, crop), ax in zip(boxes, at):
+            part = big[:int(round(crop.shape[0] * sy)), int(round(ax * sx)):int(round((ax + crop.shape[1]) * sx))]
+            res[y0 * out:y1 * out, x0 * out:x1 * out] = cv2.resize(part, ((x1 - x0) * out, (y1 - y0) * out),
+                                                                   interpolation=cv2.INTER_AREA)
+        return res
+
+    def _render(self, states, rects=None):
+        """The root's recipe on the original with these states (as Worker.generate makes a render). rects: only
+        those spots (canvas pixels) need the output size."""
         p, name, comfy = self.p, self.name, self.comfy
         fjob, bg = p.jobs[name], p.background(name)
         w, h = fjob["canvas"][2], fjob["canvas"][3]
@@ -2003,21 +2240,24 @@ class WholeStates:
         img1x, _ = ai.default_view(bg, shows)
         tmp = AI / "input_states"
         tmp.mkdir(exist_ok=True)
+        # edit models (since 2026-11-13): the original with their blurred margin, as Worker.generate gives it them;
+        # the render keeps that margin (edit_keep), cut off on the way to the canvas (_geometry, as prepare_main does)
+        edit = s.get("family") in EDIT_FAMILIES
+        pad = edit_padding(w, h, s["edit_margin"]) if edit else (0, 0, 0, 0)
+        l, t, r, b = pad
+        pw, ph = w + l + r, h + t + b
         src = tmp / f"{name}.png"
-        Image.fromarray(img1x).save(src)
-        sign_boxes = p.sign_boxes(name, s, comfy)
-        relative = lambda v: v / max(s["denoise"], 1e-3)  # noqa: E731
+        Image.fromarray(ai._pad(img1x, *pad) if edit else img1x).save(src, compress_level=1)
+        relative = lambda v: v / (1.0 if edit else max(s["denoise"], 1e-3))  # noqa: E731
         inside = relative(s["text_repaint"])
-        moving = p.moving_boxes(name, s)
-        boxes = [dict(b, inside=inside) for b in sign_boxes] + [dict(b, inside=relative(s["anim_repaint"])) for b in moving]
-        boxes = [b for b in boxes if b["inside"] < 1]
+        boxes = self._sign_and_moving_boxes()
         flat = None
-        if s.get("protect_flat") and relative(s["flat_repaint"]) < 1:
+        if s.get("protect_flat") and not edit and relative(s["flat_repaint"]) < 1:
             flat = protect.flat_dark(img1x)
             flat = flat if flat.max() > 0.05 else None
         if boxes or flat is not None:
-            k = work_size(s, w, h)[0] // w
-            repaint, _ = signs.masks(boxes, w, h, k, inside)
+            k = work_size(s, pw, ph)[0] // pw
+            repaint, _ = signs.masks([signs.shifted(x, l, t) for x in boxes] if edit else boxes, pw, ph, k, inside)
             if flat is not None:
                 f = np.asarray(Image.fromarray(flat, "F").resize((w * k, h * k), Image.BILINEAR), np.float32)
                 rel = min(1.0, relative(s["flat_repaint"]))
@@ -2026,21 +2266,26 @@ class WholeStates:
             s = dict(s, text_mask=comfy.upload(tmp / f"{name}_signs.png"))
         source = src
         if is_local(s["input_upscaler"]):
-            tw, th = work_size(s, w, h)
+            tw, th = work_size(s, pw, ph)
             big = None
-            if s["input_upscaler"] == syw.NAME and p.syw_pack():
-                big = syw.view(p.syw_pack(), name, bg, ai.shows(shows), tuple(fjob["pad"]))  # not cached: the
-                # field's own cache holds its main input
+            if s["input_upscaler"] == syw.NAME:
+                big = self._syw(shows)
+                if big is not None and edit:
+                    big = ai._pad(big, *(syw.SCALE * p for p in pad))
             big = (np.asarray(Image.fromarray(big).resize((tw, th), Image.LANCZOS)) if big is not None
-                   else upscalers.upscale(img1x, s["input_upscaler"], tw, th, cancelled))
+                   else upscalers.upscale(np.asarray(Image.open(src).convert("RGB")), s["input_upscaler"], tw, th, cancelled))
             source = tmp / f"{name}_up.png"
-            Image.fromarray(big).save(source)
-        wf = build_workflow(s, comfy.upload(source), w, h, f"ff7studio/{name}_state", self.refs, (0, 0, 0, 0))
+            Image.fromarray(big).save(source, compress_level=1)
+        wf = build_workflow(s, comfy.upload(source), w, h, f"ff7studio/{name}_state", self.refs, pad)
         img = np.asarray(Image.open(io.BytesIO(comfy.run(wf, None, cancelled))).convert("RGB"))
         if is_local(s["upscaler"]):
-            ow, oh = w * s["out_scale"], h * s["out_scale"]
+            kl, kt, kr, kb = edit_keep(pad)
+            ow, oh = (w + kl + kr) * s["out_scale"], (h + kt + kb) * s["out_scale"]
             if img.shape[:2] != (oh, ow):
-                img = upscalers.finish(img, s, ow, oh, cancelled)
+                if rects and not edit and self.base is not None and self.base.shape[:2] == (oh, ow) and not s["align"]:
+                    img = self._enlarge_spots(img, rects)
+                else:
+                    img = upscalers.finish(img, s, ow, oh, cancelled)
         return img
 
     def _fix(self, img, states):
@@ -2272,10 +2517,13 @@ def api_estimate():
     body = request.get_json(force=True)
     names = _scope_names(body)
     mode = body.get("mode", "final")
+    opts = body.get("options") if isinstance(body.get("options"), dict) else {}
     total, by_look = 0, {}
     for n in names:
         s = project.job_settings(n, mode)
         total += project.estimate(n, s, mode == "preview", exact_states=False)["total"]
+        if opts.get("fix_signs") and mode == "final" and sign_words(n):  # "Re-fix signs"
+            total += JOB_KINDS["signs"]["est"](n)
         lid, _ = project.look_of(n)
         by_look[lid] = by_look.get(lid, 0) + 1
     return jsonify(count=len(names), seconds=total, by_look=by_look)
