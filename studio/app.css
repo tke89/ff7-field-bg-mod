@@ -128,6 +128,7 @@ body:not(.compact-help) button.info { display: none; }
 .field-list .rflag { color: var(--warn); margin-left: 5px; font-weight: 400; }
 .review-mark { display: inline-flex; align-items: center; gap: 6px; }
 #btnReviewMark.on { background: var(--warn); color: #1b1d22; border-color: var(--warn); }
+.touch-state { color: var(--warn); font-size: 12px; white-space: nowrap; }
 #reviewNote { flex: 0 1 220px; width: 220px; min-width: 70px; font-size: 12px; padding: 3px 6px; }
 .field-list .sub { color: var(--muted); font-size: 11px; }
 .field-list .tag { display: inline-block; font-size: 10px; padding: 0 5px; border-radius: 3px; background: #2a2f3a; color: #b9c0cc; margin-top: 2px; }
@@ -388,6 +389,9 @@ details.adv[open] summary { margin-bottom: 4px; }
 .sign-word .sign-del { flex: none; width: 26px; height: 26px; padding: 0; border-radius: 4px; border: 1px solid transparent;
   background: none; color: var(--muted, #8a8f9a); font-size: 16px; line-height: 1; cursor: pointer; }
 .sign-word .sign-del:hover { color: #fff; background: #b8323a; }
+.sign-word .sign-use { flex: none; height: 26px; padding: 0 8px; font-size: 11px; }
+.sign-word .sign-turn { flex: none; width: 26px; height: 26px; padding: 0; font-size: 15px; line-height: 1; }
+.sign-word .sign-turn.on { color: #1a1020; background: #ffdc3c; border-color: #ffdc3c; }
 /* the states sliders that only apply when whole renders can't be made: folded away */
 .old-states { margin: 6px 0 2px; }
 .old-states > summary { cursor: pointer; color: var(--muted, #8a8f9a); font-size: 12px; user-select: none; }

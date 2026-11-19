@@ -371,6 +371,7 @@ function shortUp(u, s = {}) {
   if (u === "seedvr2") return /7b/i.test(s.seedvr2_unet || "") ? "SeedVR2 7B" : "SeedVR2";
   if (u === "magick") return "Lanczos";
   if (u === "syw") return "SYW";
+  if (u === "syw+digital-art") return "SYW + Digital Art";
   if (u.startsWith("upscayl:")) return UPSCAYL_NAMES[u.slice(8)] || u.slice(8);
   return u.replace(/\.(safetensors|pth|pt)$/i, "").replace(/^\dx[-_]?/i, "");
 }
@@ -525,7 +526,7 @@ function renderStartFrom() {
 
 function renderVersionHead() {
   const d = S.detail, v = viewedVersion();
-  const btns = ["#btnUse", "#btnStartFrom", "#btnTouchUp", "#btnVerMore", "#btnRebuild", "#btnRedoStates", "#btnReview", "#btnDeleteVer"];
+  const btns = ["#btnUse", "#btnStartFrom", "#btnTouchUp", "#btnVerMore", "#btnReuse", "#btnRebuild", "#btnRedoStates", "#btnReview", "#btnDeleteVer"];
   renderStartFrom();
   if (S.touch && (!d || !v || S.touch.field !== d.name || S.touch.vid !== v.id)) setTouch(false);  // another field or version
   $("#btnTouchUp").classList.toggle("primary", !!S.touch);
@@ -937,6 +938,7 @@ function loadImg(src) {
 async function loadImages(fit) {
   const d = S.detail;
   if (!d) return;
+  if (S.touch) renderTouchBar();  // the states shown may have changed: the bar says which
   const playing = playingGroups();
   const q = renderQuery(playing);
   const name = d.name;
@@ -1427,23 +1429,48 @@ function renderSigns(v) {
   box.appendChild(row);
 }
 
+// What the sign detector read on a sign, as words to paint ("" when it read nothing usable); its line breaks become
+// the painter's " / "
+function signReading(b) {
+  const t = (b.text || "").trim();
+  return !t || /too small/i.test(t) ? "" : t.split(/\s*\n\s*/).join(" / ");
+}
+
+// A reading worth taking in a batch: at least two letters or digits (a lone floor number is left to a click)
+const signReadingWord = (b) => (signReading(b).match(/[A-Za-z0-9]/g) || []).length >= 2;
+
 // What each sign should say: the numbers match the ones on the image. Painting them in makes a new version
 // (Qwen-Image 2.1 letters each sign; the rest of the picture stays as it is).
 function signWords(d, boxes) {
   const wrap = document.createElement("div");
   wrap.className = "sign-words";
   const said = boxes.filter((b) => (b.say || "").trim()).length;
+  const unread = boxes.filter((b) => !(b.say || "").trim() && signReadingWord(b)).length;
   const v = viewedVersion();
   wrap.innerHTML = `<div class="ctl-help">${helpText("Type what a sign should say and the AI letters it in, in the " +
     "sign's own style, on the version you're looking at, without changing the rest of the picture. The sign then says " +
     "only your words: any other made-up lettering on it goes. For two lines put a slash between them " +
-    "(KALM / MINES). Leave a sign empty to keep it as it is. The result is a new version; if the one you start from " +
+    "(KALM / MINES). The grey words in an empty box are what the sign detector read there: click use (or press Enter " +
+    "in the box) to take them, or Use the readings for all of them at once. Leave a sign empty to keep it as it is. " +
+    "The result is a new version; if the one you start from " +
     "is in the game, the new one replaces it.",
     "the real words for shop signs and notices; names in the original's spelling")}</div>` +
     boxes.map((b, i) => `<label class="sign-word${S.signSel === i ? " sel" : ""}" data-i="${i}"><span class="num">${i + 1}</span>` +
-      `<input type="text" maxlength="60" value="${esc(b.say || "")}" placeholder="${esc(b.text && !/too small/i.test(b.text) ? b.text : "what it should say")}">` +
+      `<input type="text" maxlength="60" value="${esc(b.say || "")}" placeholder="${esc(signReading(b) || "what it should say")}">` +
+      (!(b.say || "").trim() && signReading(b) ? `<button class="sign-use" title="${esc(`Use what the sign detector read: ` +
+        `“${signReading(b)}” (Enter in the empty box does the same). Check it's right first: it can misread worn or ` +
+        `stylised lettering.`)}">use</button>` : "") +
+      `<button class="sign-turn${b.turn ? " on" : ""}" title="Which way the words run on this sign: the arrow on the ` +
+      `image shows where they start and which way they go. Click to turn it a quarter. → along the top of the area ` +
+      `(the usual), ↓ top to bottom, ← upside down, ↑ bottom to top. Match it to the sign's own lettering before ` +
+      `painting: the words are painted running this way.">${SIGN_TURN_ARROW[b.turn || 0]}</button>` +
       `<button class="sign-del" title="Remove this sign area: it's no longer protected or painted">×</button></label>`).join("") +
-    `<div class="row-btns tight"><button class="small primary" ${said && v ? "" : "disabled"} ` +
+    `<div class="row-btns tight">` +
+    (unread ? `<button class="small" data-a="readings" title="Fill every empty sign with what the sign detector read on ` +
+      `it (the grey words), so you don't have to type them. Signs you've typed words for are left as they are, and so ` +
+      `are single letters or numbers (use them one by one). Check the words before painting: the detector can misread ` +
+      `worn or stylised lettering, and you can correct or clear any of them.">Use the readings (${unread})</button>` : "") +
+    `<button class="small primary" ${said && v ? "" : "disabled"} ` +
     `title="${v ? esc(`Letters the signs on the version you're viewing: ${verName(v)}`) : "Render the field first"}">` +
     `Paint ${said ? `${said} sign${said === 1 ? "" : "s"}` : "the words"} on this version</button></div>`;
   for (const lab of wrap.querySelectorAll(".sign-word")) {
@@ -1455,6 +1482,27 @@ function signWords(d, boxes) {
       next[i] = { ...next[i], say: inp.value.trim() };
       saveSigns(next);
     };
+    const reading = signReading(boxes[i]);
+    if (reading) {
+      // Enter in an empty box takes the reading (its grey placeholder)
+      inp.onkeydown = (e) => { if (e.key === "Enter" && !inp.value.trim()) { e.preventDefault(); inp.value = reading; inp.onchange(); } };
+      const use = lab.querySelector(".sign-use");
+      if (use) {
+        use.onmousedown = (e) => e.preventDefault();
+        use.onclick = (e) => { e.preventDefault(); inp.value = reading; inp.onchange(); };
+      }
+    }
+    const turn = lab.querySelector(".sign-turn");
+    turn.onmousedown = (e) => e.preventDefault();
+    turn.onclick = (e) => {
+      e.preventDefault();
+      const next = (S.detail.text_boxes || []).slice();
+      const t = ((next[i].turn || 0) + 90) % 360;
+      next[i] = { ...next[i], turn: t };
+      if (!t) delete next[i].turn;
+      S.signSel = i;
+      saveSigns(next);
+    };
     const del = lab.querySelector(".sign-del");
     del.onmousedown = (e) => e.preventDefault();  // keep the focus where it is: no half-typed save re-drawing the list first
     del.onclick = (e) => {
@@ -1464,6 +1512,13 @@ function signWords(d, boxes) {
       saveSigns((S.detail.text_boxes || []).filter((_, j) => j !== i));
     };
   }
+  const fill = wrap.querySelector('[data-a="readings"]');
+  if (fill) fill.onclick = () => {
+    const next = (S.detail.text_boxes || []).map((b) =>
+      !(b.say || "").trim() && signReadingWord(b) ? { ...b, say: signReading(b) } : b);
+    saveSigns(next);
+    toast(`${unread} sign${unread === 1 ? "" : "s"} filled with what the detector read: check them, then Paint`);
+  };
   const go = wrap.querySelector("button.primary");
   go.onclick = async () => {
     go.disabled = true;
@@ -1481,6 +1536,17 @@ function signWords(d, boxes) {
 // (`quad`, server: signs.quad_of), else its box's
 function signQuad(b) {
   return b.quad ? b.quad.map((p) => p.slice()) : [[b.x1, b.y1], [b.x2, b.y1], [b.x2, b.y2], [b.x1, b.y2]];
+}
+
+// Which way a sign's words run: `turn`, degrees clockwise from left to right along its top edge (server:
+// signs.reading_quad), as the arrow on its button
+const SIGN_TURN_ARROW = { 0: "→", 90: "↓", 180: "←", 270: "↑" };
+
+// Where a sign's words start and end on the image: the middle of its lettering's left and right sides
+function signReadLine(b) {
+  const q = signQuad(b), k = ((b.turn || 0) / 90) % 4;
+  const [tl, tr, br, bl] = q.slice(k).concat(q.slice(0, k));
+  return [[(tl[0] + bl[0]) / 2, (tl[1] + bl[1]) / 2], [(tr[0] + br[0]) / 2, (tr[1] + br[1]) / 2]];
 }
 
 // The area with these corners, its box their bounds; `boxOnly`: a plain box moved stays a box
@@ -1548,11 +1614,15 @@ function setTouch(on) {
     mask.width = d.w * k;
     mask.height = d.h * k;
     S.touch = { field: d.name, vid: v.id, k, mask, mctx: mask.getContext("2d"), size: (S.touchPrefs || {}).size || 10,
-                erase: false, strength: (S.touchPrefs || {}).strength || 0.6, hint: "", painted: false, stroke: null, cursor: null };
+                erase: false, strength: (S.touchPrefs || {}).strength || 0.6, hint: "", painted: false, stroke: null, cursor: null,
+                start: (S.touchPrefs || {}).start || "current", model: (S.touchPrefs || {}).model || "" };
     if (S.mode !== "new") setMode("new");
+    // a state's touch-up is for the frame on screen: animations hold still meanwhile
+    if (playingGroups().length) { S.touchPausedAnim = true; $("#optAnimate").click(); }
   } else if (S.touch) {
-    S.touchPrefs = { size: S.touch.size, strength: S.touch.strength };
+    S.touchPrefs = { size: S.touch.size, strength: S.touch.strength, start: S.touch.start, model: S.touch.model };
     S.touch = null;
+    if (S.touchPausedAnim) { S.touchPausedAnim = false; if (!S.animate) $("#optAnimate").click(); }
   }
   vp.classList.toggle("touch-edit", !!S.touch);
   $("#btnTouchUp").classList.toggle("primary", !!S.touch);
@@ -1585,6 +1655,9 @@ function renderTouchBar() {
     bar.innerHTML = `<div class="touch-row">` +
       `<b title="Paint over what doesn't look right and the AI repaints just that. Right-drag or the Eraser rubs marks ` +
       `out; Shift+drag moves the picture and the wheel zooms; Esc cancels.">Touch up</b>` +
+      `<span class="touch-state" title="The viewer shows other states than the game does on entering the field (Layers &amp; ` +
+      `states tab), so this touches up those states: only their own parts are repainted (an open door's tiles, say), and ` +
+      `the rest of the picture stays as this version has it. Switch them back to touch up the main picture."></span>` +
       `<span class="hint">paint over what to fix</span>` +
       `<span class="seg small"><button data-tool="brush">Brush</button><button data-tool="erase">Eraser</button></span>` +
       `<label title="How wide the brush is. Bigger: quicker over large areas. Smaller: for fine details like a face or the edge of a sign.">` +
@@ -1595,6 +1668,20 @@ function renderTouchBar() {
       `<label title="How much the AI may change the marked parts. Higher: it redraws them more freely (80–100% to replace ` +
       `something with what you typed). Lower: it stays closer to what's there and only tidies it up. Recommended: 60%.">` +
       `Change <input type="range" data-k="strength" min="0.3" max="1" step="0.05"> <b class="touch-pct"></b></label>` +
+      `<label title="What the AI starts from inside the marks.&#10;What's there: it reworks what you see (a cleaner face, a tidier ` +
+      `corner). Best for fixing things up.&#10;Darkness: the marked parts are blacked out first, so it paints an opening: an ` +
+      `open door, a hole, a dark window. Without it, the AI tends to paint back what was there (a door in the door frame).` +
+      `&#10;Its surroundings: the marked parts are filled in from around them first, to take something away or put something ` +
+      `new there.&#10;Recommended: What's there, unless the AI keeps painting back what you want gone.">Start from ` +
+      `<select data-k="start"><option value="current">What's there</option><option value="dark">Darkness</option>` +
+      `<option value="fill">Its surroundings</option></select></label>` +
+      `<label title="Which model repaints the marked parts.&#10;This version's own workflow matches its style best.&#10;` +
+      `An edit model follows what you type much more closely (an open door, a different object), and may match the style a ` +
+      `little less. Say it as an instruction: &quot;Open the door so the doorway shows a dark corridor&quot;.&#10;` +
+      `Recommended: this version's own; H3 Image when it won't do what you ask (bugin1a's door only opened with H3, ` +
+      `starting from Darkness).">Repaint with <select data-k="model"><option value="">This version's own</option>` +
+      [...EDIT].map((f) => `<option value="${f}">${esc((FAMILIES[f] || {}).short || f)}</option>`).join("") +
+      `</select></label>` +
       `<button class="small ghost" data-a="clear" title="Rub out all the marks">Clear</button>` +
       `<button class="small ghost" data-a="cancel" title="Close the touch-up without repainting (Esc)">Cancel</button>` +
       `<button class="small primary" data-a="go" title="Repaint only the marked parts, with the settings this version was ` +
@@ -1605,6 +1692,7 @@ function renderTouchBar() {
       r.oninput = () => { S.touch[r.dataset.k] = Number(r.value); renderTouchBar(); draw(); };
     }
     bar.querySelector(".touch-hint").oninput = (e) => { S.touch.hint = e.target.value; };
+    for (const sel of bar.querySelectorAll("select[data-k]")) sel.onchange = () => { S.touch[sel.dataset.k] = sel.value; };
     bar.querySelector('[data-a="clear"]').onclick = () => {
       S.touch.mctx.clearRect(0, 0, S.touch.mask.width, S.touch.mask.height);
       S.touch.painted = false;
@@ -1616,7 +1704,11 @@ function renderTouchBar() {
   }
   for (const b of bar.querySelectorAll("[data-tool]")) b.classList.toggle("on", (b.dataset.tool === "erase") === t.erase);
   for (const r of bar.querySelectorAll("input[type=range]")) if (document.activeElement !== r) r.value = t[r.dataset.k];
+  for (const sel of bar.querySelectorAll("select[data-k]")) if (document.activeElement !== sel) sel.value = t[sel.dataset.k];
   bar.querySelector(".touch-pct").textContent = `${Math.round(t.strength * 100)}%`;
+  const st = touchStateLabel(), stEl = bar.querySelector(".touch-state");
+  stEl.textContent = st ? `on state ${st}` : "";
+  stEl.hidden = !st;
   bar.querySelector('[data-a="go"]').disabled = !t.painted;
 }
 
@@ -1626,20 +1718,43 @@ async function submitTouch() {
   const go = $('#touchBar [data-a="go"]');
   go.disabled = true;
   try {
+    const st = touchStateLabel();
     const r = await api(`/api/field/${t.field}/touchup`, { body: {
-      version: t.vid, mask: t.mask.toDataURL("image/png"), hint: t.hint.trim(), strength: t.strength } });
+      version: t.vid, mask: t.mask.toDataURL("image/png"), hint: t.hint.trim(), strength: t.strength,
+      states: shownStates(), start: t.start, model: t.model } });
     if (!r.added) {
       toast("This version is already being touched up. When that's done, touch up the new version it makes.");
       go.disabled = false;
       return;
     }
-    toast("Touching up: it's in the queue. The result is a new version.");
+    toast(st ? `Touching up state ${st}: it's in the queue. The result is a new version with that state repainted.`
+      : "Touching up: it's in the queue. The result is a new version.");
     setTouch(false);
     applyDetail(r);
   } catch (e) {
     toast(`Couldn't touch up: ${e.message}`);
     go.disabled = false;
   }
+}
+
+// The states the viewer shows, {group: mask}
+function shownStates() {
+  const out = {};
+  for (const k of S.params) {
+    const [p, s] = k.split(".").map(Number);
+    out[p] = (out[p] || 0) | s;
+  }
+  return out;
+}
+
+// "2.1" (group.mask, several joined) where the viewer's states differ from the game's on entering the field, else ""
+function touchStateLabel() {
+  const d = S.detail;
+  if (!d) return "";
+  const shown = shownStates(), def = {};
+  for (const [p, m] of Object.entries(d.defaults || {})) if (m) def[p] = m;
+  const groups = [...new Set([...Object.keys(shown), ...Object.keys(def)])].sort((a, b) => a - b);
+  return groups.filter((p) => (shown[p] || 0) !== (def[p] || 0)).map((p) => `${p}.${shown[p] || 0}`).join(", ");
 }
 
 const imagePoint = (e) => {
@@ -1650,6 +1765,7 @@ const imagePoint = (e) => {
 let signSave = null;
 function saveSigns(boxes) {
   const d = S.detail;
+  S.texMask = null;  // sign areas always start from SYW: the Digital Art areas change with them
   d.text_boxes = boxes;
   draw();
   renderStyle();
@@ -1688,6 +1804,7 @@ const UPSCAYL_NAMES = {
 function upName(u) {
   if (u === "magick") return "Lanczos (ImageMagick)";
   if (u === "syw") return "SYW Unified (ready-made 4×)";
+  if (u === "syw+digital-art") return "SYW + Digital Art on rock and rough ground";
   if (u.startsWith("upscayl:")) return `Upscayl ${UPSCAYL_NAMES[u.slice(8)] || u.slice(8)}`;
   return u.replace(/\.safetensors$|\.pth$/, "");
 }
@@ -1699,6 +1816,9 @@ function upscalerChoices(cur, { seedvr2 = true, syw = false } = {}) {
   const svrReady = online && (m.unets || []).some((u) => /seedvr2/i.test(u)) && (m.vaes || []).some((u) => /seedvr2/i.test(u));
   const ups = online ? m.upscalers.slice() : [];
   if (seedvr2 && (svrReady || cur === "seedvr2")) ups.unshift("seedvr2");
+  // SYW with Upscayl Digital Art on rock and rough ground (ff7bg/texture.py): needs the pack and that model
+  const dartOk = local && local.syw && (local.upscayl_models || []).includes("digital-art-4x");
+  if (syw && (dartOk || cur === "syw+digital-art")) ups.unshift("syw+digital-art");
   if (syw && ((local && local.syw) || cur === "syw")) ups.unshift("syw");
   if (local) ups.push("magick", ...local.upscayl_models.map((x) => `upscayl:${x}`));
   const labels = { seedvr2: "SeedVR2 (most natural detail)" };
@@ -1714,6 +1834,26 @@ function sywHint(local) {
     "signs, so the AI has better to work from. Fields the pack doesn't have use 4x-UltraSharp. It's Square Enix's art " +
     "upscaled by the SYW team: fine to use on this PC, not to share." +
     (p ? ` (Found: ${p.fields} fields.)` : " The pack wasn't found in 7th Heaven's library, so 4x-UltraSharp is used instead.");
+}
+
+// What the SYW + Digital Art choice does, in words
+function sywDartHint(local) {
+  return "Starts from the SYW pack as SYW Unified does, but where the original is rock, gravel or rough ground it " +
+    "uses Upscayl's Digital Art enlargement instead. SYW sharpens the grain of those surfaces, and the AI then paints " +
+    "it as outlined cells or netting (the Northern Crater's floors); Digital Art smooths it into clean shapes. Signs, " +
+    "buildings, cobbles, brick and machinery keep SYW's sharp start. The areas are found automatically: tick Show " +
+    "where to see them on the image (orange). Best for caves and rocky fields." +
+    (local && local.syw ? "" : " The pack wasn't found in 7th Heaven's library, so 4x-UltraSharp is used instead.");
+}
+
+// Shows where the SYW + Digital Art start uses Digital Art, over the image (the mask is made from the original art)
+function texMaskFor(d) {
+  if (!S.texShow || !d || (S.texMask && S.texMask.field === d.name)) return;
+  const m = { field: d.name, img: null };
+  S.texMask = m;
+  const img = new Image();
+  img.onload = () => { m.img = img; draw(); };
+  img.src = `/api/field/${encodeURIComponent(d.name)}/texture_mask.png?t=${Date.now()}`;
 }
 
 function outsideHint(u, local) {
@@ -1820,7 +1960,8 @@ function renderAdvanced(v) {
         const { ups, labels, local } = upscalerChoices(v.input_upscaler, { seedvr2: false, syw: true });
         add(selectRow("input_upscaler", "Enlarge the original first with", ups, v, { none: "(none: plain, soft resize)", labels,
           hint: helpText("Enlarges the original first; SeedVR2 then cleans it up." +
-            (v.input_upscaler === "syw" ? " " + sywHint(local) : isOutside(v.input_upscaler) ? " " + outsideHint(v.input_upscaler, local) : ""),
+            (v.input_upscaler === "syw" ? " " + sywHint(local) : v.input_upscaler === "syw+digital-art" ? " " + sywDartHint(local)
+              : isOutside(v.input_upscaler) ? " " + outsideHint(v.input_upscaler, local) : ""),
             "4x-UltraSharp") }));
       }
     } else {
@@ -1877,10 +2018,21 @@ function renderAdvanced(v) {
   {
     const { ups, labels, local } = upscalerChoices(v.input_upscaler, { syw: true });
     const hint = helpText("Enlarges the original art before the AI paints over it. A sharper start gives the AI more to work with." +
-      (v.input_upscaler === "syw" ? " " + sywHint(local) : isOutside(v.input_upscaler) ? " " + outsideHint(v.input_upscaler, local)
+      (v.input_upscaler === "syw" ? " " + sywHint(local) : v.input_upscaler === "syw+digital-art" ? " " + sywDartHint(local)
+        : isOutside(v.input_upscaler) ? " " + outsideHint(v.input_upscaler, local)
         : v.input_upscaler === "seedvr2" ? " SeedVR2 adds detail of its own, but can invent texture (Kalm's cracked plaza became cobblestones)." : ""),
-      local && local.syw ? "SYW Unified (kept md1_1's hazard stripes and the Shin-Ra logo that 4x-UltraSharp lost)" : "4x-UltraSharp");
+      local && local.syw ? "SYW Unified (kept md1_1's hazard stripes and the Shin-Ra logo that 4x-UltraSharp lost); " +
+        "SYW + Digital Art for caves and rocky fields" : "4x-UltraSharp");
     add(selectRow("input_upscaler", "Enlarge the original with", ups, v, { none: "(none: plain, soft resize)", labels, hint }));
+    if (v.input_upscaler === "syw+digital-art") {
+      const show = document.createElement("label");
+      show.className = "check";
+      show.title = "Tints the parts of this field that start from Upscayl's Digital Art orange on the image. The rest " +
+        "starts from SYW. Found from the original art: busy, grainy surfaces without straight lines.";
+      show.innerHTML = `<input type="checkbox" ${S.texShow ? "checked" : ""}> Show where (orange)`;
+      show.querySelector("input").onchange = (e) => { S.texShow = e.target.checked; texMaskFor(S.detail); draw(); };
+      add(show);
+    }
     add(slider("input_scale", v));
     // what that comes to for this field
     const d = S.detail, edge = (n) => EDIT.has(fam) ? Math.round(n * v.edit_margin / 16) * 16 : 0;
@@ -2249,6 +2401,12 @@ function draw() {
     ctx.drawImage(S.imgs.overlay, 0, 0, W, H);
     ctx.globalAlpha = 1;
   }
+  // where the SYW + Digital Art start uses Digital Art (the Original art section's "Show where")
+  texMaskFor(d);
+  if (S.texShow && S.texMask && S.texMask.field === d.name && S.texMask.img) {
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(S.texMask.img, 0, 0, W, H);
+  }
   if (S.touch && S.touch.field === d.name) {
     const t = S.touch;
     ctx.save();
@@ -2290,6 +2448,32 @@ function draw() {
         ctx.strokeStyle = "#1a1020";
         ctx.lineWidth = 1 / S.zoom;
         ctx.strokeRect(x - hs / 2, y - hs / 2, hs, hs);
+      }
+      // which way its words run (the list's arrow button): from where they start, over its middle
+      {
+        const [[sx, sy], [ex, ey]] = signReadLine(b);
+        const ax = sx + (ex - sx) * 0.2, ay = sy + (ey - sy) * 0.2, bx = sx + (ex - sx) * 0.8, by = sy + (ey - sy) * 0.8;
+        const len = Math.hypot(bx - ax, by - ay);
+        if (len > 4 / S.zoom) {
+          const ux = (bx - ax) / len, uy = (by - ay) / len, hl = Math.min(8 / S.zoom, len * 0.4);
+          const path = () => {
+            ctx.beginPath();
+            ctx.moveTo(ax, ay);
+            ctx.lineTo(bx, by);
+            ctx.moveTo(bx - ux * hl - uy * hl * 0.6, by - uy * hl + ux * hl * 0.6);
+            ctx.lineTo(bx, by);
+            ctx.lineTo(bx - ux * hl + uy * hl * 0.6, by - uy * hl - ux * hl * 0.6);
+          };
+          ctx.lineCap = ctx.lineJoin = "round";
+          path();
+          ctx.lineWidth = 4 / S.zoom;
+          ctx.strokeStyle = "rgba(26, 16, 32, 0.8)";
+          ctx.stroke();
+          path();
+          ctx.lineWidth = 2 / S.zoom;
+          ctx.strokeStyle = hot ? "#ffdc3c" : "#ffffff";
+          ctx.stroke();
+        }
       }
       ctx.lineWidth = 2 / S.zoom;
       // its number (the list beside the image), and a tick when it has words to paint
@@ -2498,7 +2682,8 @@ function renderStatus() {
 // picture enlarged to the final size, or not when the model paints at it already
 function renderPath(d, s, outScale) {
   const fam = s.family, orig = `${d.name} ${d.w}×${d.h}`;
-  const inUp = s.input_upscaler === "syw" && d.syw === false ? "4x-UltraSharp (SYW doesn't have this field)" : shortUp(s.input_upscaler, s);
+  const inUp = (s.input_upscaler === "syw" || s.input_upscaler === "syw+digital-art") && d.syw === false
+    ? "4x-UltraSharp (SYW doesn't have this field)" : shortUp(s.input_upscaler, s);
   if (fam === "upscale") return `${orig} → enlarged ${outScale}× with ${shortUp(s.upscaler, s)} → final size (no AI painting)`;
   const edge = (n) => EDIT.has(fam) ? Math.round(n * s.edit_margin / 16) * 16 : 0;
   const pw = d.w + 2 * edge(d.w), ph = d.h + 2 * edge(d.h);
@@ -2821,6 +3006,28 @@ async function init() {
   // the version bar's More menu: closes after a choice or a click elsewhere
   $("#btnVerMore").onclick = () => { $("#verMore").hidden = !$("#verMore").hidden; };
   $("#verMore").addEventListener("click", (e) => { if (e.target.closest("button")) $("#verMore").hidden = true; });
+  // Reuse settings: the version's recipe (seed too) becomes the field's own ("This field only"), its scene description
+  // and the version it started from with it (server: api_field_reuse)
+  $("#btnReuse").onclick = async () => {
+    const v = viewedVersion(), d = S.detail;
+    if (!v || !d) return;
+    if (d.custom && !await ask(`${d.name} already has settings of its own (This field only).
+
+Replace them with the ` +
+      `settings ${verName(v)} was rendered with?`, "Replace")) return;
+    try {
+      const r = await api(`/api/field/${d.name}/reuse`, { body: { version: v.id } });
+      S.startFrom = r.start || "";
+      applyDetail(r.field);
+      renderVersionHead();
+      const from = r.start ? (r.field.versions.find((x) => x.id === r.start) || {}) : null;
+      toast(`${d.name} now renders with ${verName(v)}'s settings (${famShort(r.family) || r.family}, seed ${r.seed})` +
+        (r.caption ? ", and its scene description is back" : "") +
+        (from ? `, starting from ${verName(from)} as it did` : "") +
+        (r.start_missing ? ". It was painted from a version that's since been deleted, so it starts from the original art" : "") +
+        ". Generate final renders it again; New seed gives a variation.", 9000);
+    } catch (e) { toast(`Couldn't reuse its settings: ${e.message}`); }
+  };
   $("#btnRebuild").onclick = () => queue({ names: [S.current], mode: "build", version: viewedVersion().id }, "Rebuild");
   $("#btnRedoStates").onclick = () => queue({ names: [S.current], mode: "build", version: viewedVersion().id, states: true }, "Redo states");
   $("#btnReview").onclick = () => window.open(`/api/review/${S.current}.jpg?ver=${viewedVersion().id}&t=${Date.now()}`, "_blank");

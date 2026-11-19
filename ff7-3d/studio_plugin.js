@@ -1,8 +1,11 @@
 /* FF7 Field Studio plug-in: the 3D tab, "Build 3D" for a selection, and 3D marks in the field list.
    Server side: studio_plugin.py (routes under /api/3d). Uses the Studio's own helpers ($, api, esc, toast, S, setTab,
    fmtWhen, helpText, JOB_LABELS). */
-(() => {
+(async () => {
   const T = { state: null, built: {} };
+  // 3D fields off (Settings): only the game bar's 2D parts; no 3D tab, scenes, marks, view or Full 3D switch
+  let only2d = false;
+  try { only2d = !!(await api("/api/3d/settings")).only_2d; } catch (e) { /* older plug-in server */ }
   const VIEWS = { "3d": "3D scene", ai2d: "AI images (2D)", original: "Original" };
 
   JOB_LABELS["3d"] = () => "3D scene";
@@ -46,14 +49,14 @@
   tabBtn.dataset.tab = "3d";
   tabBtn.textContent = "3D";
   tabBtn.onclick = () => { setTab("3d"); refresh(); };
-  $("#panelTabs").appendChild(tabBtn);
+  if (!only2d) $("#panelTabs").appendChild(tabBtn);
   const tab = document.createElement("div");
   tab.className = "tab";
   tab.dataset.tab = "3d";
   tab.hidden = true;
   tab.innerHTML = ["t3Scene", "t3Options"].map((id) => `<section class="card t3-card" id="${id}"></section>`).join("");
   $(".panel-body").appendChild(tab);
-  if (S.tab === "3d") setTab("3d");  // the saved tab, now that it exists
+  if (S.tab === "3d") setTab(only2d ? "style" : "3d");  // the saved tab, now that it exists
 
   // a batch: "Build 3D" next to Generate final / Preview
   const selBtn = document.createElement("button");
@@ -64,7 +67,7 @@
     const r = await api("/api/3d/build", { body: { names: [...S.sel] } });
     toast(r.added ? `${r.added} 3D scene${r.added === 1 ? "" : "s"} queued` : "Already queued");
   };
-  $("#selBar .row-btns").insertBefore(selBtn, $("#selClear"));
+  if (!only2d) $("#selBar .row-btns").insertBefore(selBtn, $("#selClear"));
 
   // ...and "Skip the 3D scenes" for the batch's renders (remembered; hidden while the 3D setting is off anyway)
   const SKIP_KEY = "ff3d.batchSkip3d";
@@ -78,7 +81,7 @@
   const skipBox = skipRow.querySelector("input");
   try { skipBox.checked = localStorage.getItem(SKIP_KEY) === "1"; } catch (e) { /* no storage */ }
   skipBox.onchange = () => { try { localStorage.setItem(SKIP_KEY, skipBox.checked ? "1" : "0"); } catch (e) { /* no storage */ } };
-  if (typeof BATCH_OPTIONS !== "undefined") {  // a Studio that sends batch options
+  if (typeof BATCH_OPTIONS !== "undefined" && !only2d) {  // a Studio that sends batch options
     BATCH_OPTIONS.skip_3d = () => skipBox.checked;
     $("#selBar").appendChild(skipRow);
   }
@@ -90,7 +93,7 @@
     ["3d_stale", "3D scene out of date", (f) => T.built[f.name] === false],
     ["3d_none", "Without a 3D scene", (f) => !(f.name in T.built)],
   ];
-  if (typeof LIST_FILTERS !== "undefined") {
+  if (typeof LIST_FILTERS !== "undefined" && !only2d) {
     const group = document.createElement("optgroup");
     group.label = "3D";
     for (const [value, label, shown] of FILTERS) {
@@ -634,7 +637,7 @@
     const g = G.game || { running: false };
     const here = g.running && g.field === S.current;
     const follow = pref("followGame", "0") === "1";
-    const bgOnly = g.mode === "backgrounds";  // 2D: the new backgrounds flat, no 3D scenes or lighting (no 3D view)
+    const bgOnly = only2d || g.mode === "backgrounds";  // 2D: the new backgrounds flat, no 3D scenes or lighting (no 3D view)
     const status = g.running
       ? (g.field ? `in <a class="g-field" title="Open ${esc(g.field)} in the Studio">${esc(g.field)}</a>` : "in a menu")
       : g.starting ? "starting…" : "not running";
@@ -652,19 +655,19 @@
     const html = `<span class="g-dot ${g.running ? "on" : g.starting ? "wait" : ""}"></span>` +
       `<span class="g-label">Game</span><span class="g-status">${status}</span>` +
       `<button class="small primary" data-a="play" ${S.current && !(g.starting && !g.running) ? "" : "disabled"} title="${tip} (G)">${label}</button>` +
-      `<button class="small ghost" data-a="mode" ${g.running || g.starting ? "disabled" : ""} ` +
-      `title="${setup[1]}${g.running || g.starting ? " Close the game first." : ""}">${setup[0]}</button>` +
+      (only2d ? "" : `<button class="small ghost" data-a="mode" ${g.running || g.starting ? "disabled" : ""} ` +
+      `title="${setup[1]}${g.running || g.starting ? " Close the game first." : ""}">${setup[0]}</button>`) +
       `<div class="seg small" data-a="view" title="What the game shows. B flips between Original and the new art. ` +
       `Switching re-enters the field (it restarts a cutscene).">${views}</div>` +
-      `<button class="small ghost" data-a="shot" ${g.running && g.field ? "" : "disabled"} ` +
-      `title="Screenshot of the game, kept with its field (3D tab)">📷</button>` +
+      (only2d ? "" : `<button class="small ghost" data-a="shot" ${g.running && g.field ? "" : "disabled"} ` +
+      `title="Screenshot of the game, kept with its field (3D tab)">📷</button>`) +
       `<label class="g-follow" title="Open whichever field the game goes into"><input type="checkbox" data-a="follow" ${follow ? "checked" : ""}>Follow</label>`;
     if (bar.dataset.html === html) return;
     bar.innerHTML = html;
     bar.dataset.html = html;
     const b = (a) => bar.querySelector(`[data-a="${a}"]`);
     b("play").onclick = play;
-    b("mode").onclick = () => {
+    if (b("mode")) b("mode").onclick = () => {
       const to = G.game && G.game.mode === "backgrounds" ? "3d" : "backgrounds";
       gameAct({ action: "mode", mode: to }, to === "3d" ? "The game is set up as Full 3D"
         : "The game is set up as 2D: the new backgrounds only");
@@ -719,13 +722,25 @@
     try { cur = (await api("/api/3d/settings")).auto; } catch (e) { /* older plug-in server */ }
     showSkip(cur);
     const opts = Object.entries(AUTO).filter(([v]) => v !== "all" || cur === "all");
-    box.innerHTML = `<div class="pop-head"><b>3D scenes</b></div><div class="ctl">` +
+    const off = `<div class="ctl"><label class="check" title="${esc("Ticked: the fields stay 2D. No 3D scenes are " +
+      "built, the game is always set up as 2D (the new backgrounds, flat), and the 3D tab, the 3D view, the 3D marks " +
+      "and the Full 3D switch are hidden. Play this field, Re-enter, Follow and AI 2D / Original stay. The 3D scenes " +
+      "already built are kept, so unticking brings everything back.")}"><input type="checkbox" data-a="only2d" ` +
+      `${only2d ? "checked" : ""}> 3D fields off (2D only)</label></div>`;
+    if (only2d) {
+      box.innerHTML = `<div class="pop-head"><b>3D fields</b></div>${off}`;
+    } else box.innerHTML = `<div class="pop-head"><b>3D scenes</b></div>${off}<div class="ctl">` +
       `<label class="lbl">When a field's version in the game changes</label>` +
       `<select data-a="auto">${opts.map(([v, l]) => `<option value="${v}" ${cur === v ? "selected" : ""}>${l}</option>`).join("")}</select>` +
       `<div class="ctl-help">${helpText("A new final render, or Use this version, changes what the game shows. With every final render, " +
         "Generate final also builds the 3D scene, straight after the render (in a batch, field by field), and scenes that " +
         "already exist follow any new version. For every field, not just this one. To leave the 3D scenes out of " +
         "one batch, tick Skip the 3D scenes under the selected fields.", "with every final render")}</div></div>`;
+    box.querySelector('[data-a="only2d"]').onchange = async (e) => {
+      await api("/api/3d/settings", { body: { only_2d: e.target.checked } });
+      location.reload();  // the plug-in's parts come and go with it
+    };
+    if (only2d) return;
     box.querySelector('[data-a="auto"]').onchange = async (e) => {
       await api("/api/3d/settings", { body: { auto: e.target.value } });
       showSkip(e.target.value);
@@ -760,18 +775,22 @@
   /* ---------------------------------------------------------- wiring */
 
   document.addEventListener("studio:field", () => { refresh(); renderBar(); });
-  document.addEventListener("studio:list", markList);
+  if (!only2d) document.addEventListener("studio:list", markList);
   document.addEventListener("studio:jobs", (e) => {
     if (e.detail.some((r) => String(r.kind).startsWith("3d") || r.name === S.current)) { refreshBuilt(); refresh(); }
   });
   setInterval(() => { if (S.tab === "3d") { refresh(); } }, 2000);
-  setInterval(refreshBuilt, 15000);
-  refreshBuilt();
+  if (!only2d) {
+    setInterval(refreshBuilt, 15000);
+    refreshBuilt();
+  }
   refresh();
   pollGame();
 
   // the preview's 3D view: a mode next to Original / New / Split
-  const view3d = document.createElement("script");
-  view3d.src = "/api/3d/view3d.js";
-  document.head.appendChild(view3d);
+  if (!only2d) {
+    const view3d = document.createElement("script");
+    view3d.src = "/api/3d/view3d.js";
+    document.head.appendChild(view3d);
+  }
 })();

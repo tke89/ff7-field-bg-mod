@@ -47,9 +47,25 @@ def shows(defaults):
     return lambda t: not t.param or bool(defaults.get(t.param, 0) & t.state)
 
 
+def parallax_glow(t):
+    """A static tile that adds light on a parallax layer (2-3). The game draws it over the new picture as the
+    original's art (build_pages carries it), scrolled apart from the scene and in the colours the scripts set, so
+    the AI must paint without it or the light is in the game twice: kuro_1's purple light (layer 3, set drifting by
+    BGSCR and dimmed by its palette script) was painted into the maze as a still, bright rectangle with the real one
+    drifting over it; the Icicle area's snowfields have their blizzard the same way (2026-11-18)."""
+    return not t.param and t.blending and t.type_trans in ADD_BLEND and t.layer >= 2
+
+
+def painted(defaults):
+    """Tile filter for what the AI paints from: the view at entry (shows) without parallax_glow."""
+    entry = shows(defaults)
+    return lambda t: entry(t) and not parallax_glow(t)
+
+
 def default_view(bg, defaults=None):
+    """The view the AI paints from (painted), at 1x, and the canvas rect."""
     rect = canvas_rect(bg)
-    return np.asarray(render_composite(bg, rect, PageCache(bg).tile, 1, shows(defaults))), rect
+    return np.asarray(render_composite(bg, rect, PageCache(bg).tile, 1, painted(defaults))), rect
 
 
 def _pad(img, left, top, right, bottom):
@@ -147,10 +163,16 @@ def keep_colors(main, panels, k):
         rgb = img.astype(np.float32)
         return np.clip(rgb * (1 - k) + (rgb @ N[:3] + N[3]) * k, 0, 255).astype(np.uint8)
 
+    def pull_light(img):  # painted light is a difference of two renders: the transform's offset cancels out
+        rgb = img.astype(np.float32)
+        return np.clip(rgb * (1 - k) + (rgb @ N[:3]) * k, 0, 255).astype(np.uint8)
+
     main["ai_hi"], main["ai_1x"] = pull(main["ai_hi"]), pull(main["ai_1x"])
     if panels:
         panels["images"] = {key: [(r, pull(img)) for r, img in lst] for key, lst in panels["images"].items()}
         panels["off"] = [(r, fp, pull(img)) for r, fp, img in panels["off"]]
+        if panels.get("light"):
+            panels["light"] = {key: [(r, pull_light(img)) for r, img in lst] for key, lst in panels["light"].items()}
     main["M"] = fit_color(main["orig"], main["ai_1x"])
 
 
@@ -196,7 +218,7 @@ def prepare_main(bg, ai_path, job, rendered_defaults=None, scale=None, do_align=
     frame: margin the render has around the canvas (1x pixels per side), for the aligner to pull from."""
     rect = canvas_rect(bg)
     min_x, min_y, w, h = rect
-    orig = np.asarray(render_composite(bg, rect, PageCache(bg).tile, 1, shows(rendered_defaults)))
+    orig = np.asarray(render_composite(bg, rect, PageCache(bg).tile, 1, painted(rendered_defaults)))
 
     raw = np.asarray(Image.open(ai_path).convert("RGB"))
     ai_full = _unpad(raw, job, frame)
@@ -357,11 +379,14 @@ def build_pages(bg, main, job, mod_root, review_dir, panels=None, raw=None, anim
     canvases = {n: np.pad(c, ((m, m), (m, m), (0, 0))) for n, c in sheet_canvases(bg, rect, names, cache).items()}
     tile_sheet = dict(zip(map(id, bg.tiles), names))
 
-    # Footprints of groups that were on in the main render: the static tiles underneath show the
-    # state there, so they need the "all off" panel (or original art) for when the state turns off.
+    # Footprints of the solid states that were on in the main render: the static tiles underneath show the
+    # state there, so they need the "all off" panel (or original art) for when the state turns off. Only the
+    # states on, not their whole group: junbin3's group 1 is on at entry as its sunlight (a glow), and counting
+    # its blinds too put the original's window art under the blinds' spot wherever the sunlight changed the
+    # picture, a block of it in the middle of the new window (2026-11-18).
     covered = {}
     for t in bg.tiles:
-        if t.param and not t.blending and defaults.get(t.param, 0):
+        if t.param and not t.blending and defaults.get(t.param, 0) & t.state:
             covered.setdefault(t.param, []).append((t.dst_x - min_x, t.dst_y - min_y, t.size))
 
     def hits(t, tiles):
@@ -372,9 +397,10 @@ def build_pages(bg, main, job, mod_root, review_dir, panels=None, raw=None, anim
     # need the "all off" art: around a door, the same tiles are visible in the default view and must
     # match the main render, or they show as rectangles of differently painted (or original) art.
     cover = None
+    entry = painted(defaults)  # the view the main render was painted from
     if covered:
-        hidden_view = shows({p: m for p, m in defaults.items() if p not in covered})
-        hidden = np.asarray(render_composite(bg, rect, cache.tile, 1, hidden_view))
+        hidden = np.asarray(render_composite(bg, rect, cache.tile, 1,  # the entry view without those (glows kept)
+                                             lambda t: entry(t) and (not t.param or t.blending)))
         diff = np.any(hidden != main["orig"], axis=2).astype(np.float32)
         cover = cv2.resize(diff, (w * scale, h * scale), interpolation=cv2.INTER_LINEAR)
 
@@ -385,12 +411,17 @@ def build_pages(bg, main, job, mod_root, review_dir, panels=None, raw=None, anim
     def off_panel(t):
         return next(((r, img) for r, tiles, img in panels["off"] if hits(t, tiles)), None)
 
+    light_M = np.vstack([M[:3], np.zeros((1, 3), M.dtype)])
+
     def original_tile(t):
-        """Original art for one tile, upscaled with its surroundings and color-matched."""
+        """Original art for one tile, upscaled with its surroundings and color-matched. A tile that adds or takes
+        away light gets only the transform's scaling: its offset is a colour shift, which added to every dark pixel
+        of kuro_1's light tiles laid a grey haze over the whole area they cover (+26)."""
         x, y = t.dst_x - min_x, t.dst_y - min_y
         region = canvases[tile_sheet[id(t)]][y : y + t.size + 2 * m, x : x + t.size + 2 * m]
         up = upscale_rgba(np.ascontiguousarray(region), scale)
-        return apply_color(up[m * scale : (m + t.size) * scale, m * scale : (m + t.size) * scale], M)
+        light = t.blending and t.type_trans in (1, 2, 3)
+        return apply_color(up[m * scale : (m + t.size) * scale, m * scale : (m + t.size) * scale], light_M if light else M)
 
     # Static glows are baked into the AI image, so their own tiles go blank, except where nothing solid
     # lies beneath them: there the glow alone draws the scene (blin1's Shin-Ra screen is additive tiles
@@ -416,7 +447,7 @@ def build_pages(bg, main, job, mod_root, review_dir, panels=None, raw=None, anim
         m = bare[y : y + sz, x : x + sz]
         if carrier.get((t.dst_x, t.dst_y)) != id(t) or t.type_trans not in GAIN or m.max() < 0.01:
             return np.zeros((sz, sz, 4), np.uint8)
-        rgb = np.clip(ai_hi[y : y + sz, x : x + sz] * m[..., None] * GAIN[t.type_trans], 0, 255)
+        rgb = np.clip(ai_base[y : y + sz, x : x + sz] * m[..., None] * GAIN[t.type_trans], 0, 255)
         return np.dstack([rgb.astype(np.uint8), np.full((sz, sz), 255, np.uint8)])
 
     def state_panel(t):
@@ -441,12 +472,74 @@ def build_pages(bg, main, job, mod_root, review_dir, panels=None, raw=None, anim
         x, y = (t.dst_x - min_x - rx) * scale, (t.dst_y - min_y - ry) * scale
         return np.dstack([img[y : y + sz, x : x + sz], tile_alpha(cache.tile(t), scale)])
 
+    # Lights on at entry (switched states made only of glow tiles, as states.glow_states finds them): the main
+    # render was painted from the entry view, so their light is in it, and in every panel painted with them on,
+    # and their glow tiles add it again in the game. That art goes in with the light taken out, so the game's sum
+    # is the render again and switching the light off leaves it unlit (junbin3's sunlight was added twice: the
+    # room blown out white, 2026-11-18).
+    by_state = {}
+    for t in bg.tiles:
+        if t.param:
+            by_state.setdefault((t.param, t.state), []).append(t)
+    glow_only = [k for k, ts in by_state.items()
+                 if all(t.blending and t.type_trans in ADD_BLEND and t.layer < 2 for t in ts)]
+    lights, baked_cache = {}, {}
+
+    def seen(key):
+        """How much of a glow-only state's light shows at entry (0-1, 1x): what's drawn over it after (solid tiles,
+        averaging glows) hides or dims it there, as in the picture the render was painted from."""
+        def marked(only):
+            def src(t):
+                tile = cache.tile(t)
+                out = np.zeros_like(tile)
+                out[..., 3] = 255 if (t.param, t.state) == key else tile[..., 3]
+                if (t.param, t.state) == key:
+                    out[..., :3] = 255
+                return out
+            view = lambda t: (t.param, t.state) == key or (not only and entry(t))
+            return np.asarray(render_composite(bg, rect, src, 1, view))[..., 0].astype(np.float32)
+        return np.clip(marked(False) / np.maximum(marked(True), 1), 0, 1)
+
+    def light_of(key):
+        """The light a glow-only state adds in the game where it shows, over the canvas at the output scale."""
+        if key not in lights:
+            out = np.zeros((h * scale, w * scale, 3), np.float32)
+            for t in by_state[key]:
+                blk = block_for(t).astype(np.float32)  # (glow tiles: never the lit art below, no loop)
+                x, y, sz = (t.dst_x - min_x) * scale, (t.dst_y - min_y) * scale, t.size * scale
+                out[y : y + sz, x : x + sz] += blk[..., :3] * blk[..., 3:4] / 255 * (0.25 if t.type_trans == 3 else 1)
+            v = cv2.resize(seen(key), (w * scale, h * scale), interpolation=cv2.INTER_LINEAR)
+            lights[key] = out * v[..., None]
+        return lights[key]
+
+    def baked(view):
+        """The light of the glow-only states on in art painted with these states ({group: mask}), or None."""
+        keys = tuple(sorted((p, s) for p, s in glow_only if view.get(p, 0) & s))
+        if keys and keys not in baked_cache:
+            baked_cache[keys] = sum(light_of(k) for k in keys)
+        return baked_cache.get(keys)
+
+    def off_group(footprint):
+        """The group an "all off" panel was painted for: the one on at entry over its footprint."""
+        return next((p for p, tiles in covered.items()
+                     if any(x < fx + fs and fx < x + s and y < fy + fs and fy < y + s
+                            for x, y, s in tiles for fx, fy, fs in footprint)), None)
+
     def block_for(t):
         sz = t.size * scale
         x, y = (t.dst_x - min_x) * scale, (t.dst_y - min_y) * scale
 
         def from_ai():
-            return np.dstack([ai_hi[y : y + sz, x : x + sz], tile_alpha(cache.tile(t), scale)])
+            return np.dstack([ai_base[y : y + sz, x : x + sz], tile_alpha(cache.tile(t), scale)])
+
+        def unlit(block, view):
+            """A panel's block with the light of the entry lights it was painted with taken out (see baked)."""
+            light = baked(view)
+            if light is None:
+                return block
+            out = block.copy()
+            out[..., :3] = np.clip(block[..., :3] - light[y : y + sz, x : x + sz], 0, 255).astype(np.uint8)
+            return out
 
         if t.blending:
             # static glows: see glow_tile; toggled ones stay additive overlays of the original art, and so do the
@@ -463,8 +556,8 @@ def build_pages(bg, main, job, mod_root, review_dir, panels=None, raw=None, anim
             return glow_tile(t) if not t.param and t.layer < 2 else original_tile(t)
         if t.param:
             found = state_panel(t)
-            if found:
-                return from_panel(t, *found)
+            if found:  # painted with this state of its group on, the other groups as at entry
+                return unlit(from_panel(t, *found), {**defaults, t.param: t.state})
             if defaults.get(t.param, 0) & t.state:
                 return from_ai()  # on in the main render
             return original_tile(t)
@@ -472,12 +565,17 @@ def build_pages(bg, main, job, mod_root, review_dir, panels=None, raw=None, anim
             if not under(t):
                 return from_ai()
             found = off_panel(t)
-            beneath = from_panel(t, *found) if found else original_tile(t)
+            beneath = original_tile(t)
+            if found:
+                fp = next(fp for r, fp, img in panels["off"] if r == found[0] and img is found[1])
+                beneath = unlit(from_panel(t, *found), {**defaults, off_group(fp): 0})
             m = cover[y : y + sz, x : x + sz, None]
-            rgb = ai_hi[y : y + sz, x : x + sz] * (1 - m) + beneath[..., :3] * m
+            rgb = ai_base[y : y + sz, x : x + sz] * (1 - m) + beneath[..., :3] * m
             return np.dstack([rgb.astype(np.uint8), tile_alpha(cache.tile(t), scale)])
         return original_tile(t)
 
+    entry_light = baked(defaults)  # (block_for's glow tiles first: what the main render's art goes in without)
+    ai_base = ai_hi if entry_light is None else np.clip(ai_hi - entry_light, 0, 255).astype(np.uint8)
     pages = swizzle(bg, scale, block_for)
     frames, too_many, anim = 0, 0, {}
     if raw is not None:

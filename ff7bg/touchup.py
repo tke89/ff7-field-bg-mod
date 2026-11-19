@@ -32,6 +32,29 @@ def hint_prompt(s, hint):
     return dict(s, prompt=s["prompt"].rstrip() + " Clean, well-defined detail: nothing smeared, melted, doubled or garbled.")
 
 
+STARTS = ("current", "dark", "fill")
+
+
+def start_from(img, mask, start, scale):
+    """What the repaint starts from inside the marks: the picture as it is ("current"); blacked out to the scene's
+    own darkest tone ("dark": for openings, which the models otherwise fill with what they expect there: bugin1a's
+    open door came back as a grille, then a red door, from MOSS and from its own art, and only H3 from a dark
+    doorway painted it open, 2026-11-17); or filled in from around it ("fill": to take something away, or paint
+    something new there). mask: 0..1 at img size; scale: img pixels per original pixel."""
+    if start not in ("dark", "fill") or mask.max() <= 0:
+        return img
+    hard = (mask > 0.5).astype(np.uint8)
+    soft = cv2.GaussianBlur(mask.astype(np.float32), (0, 0), max(1.0, scale))[..., None]
+    if start == "dark":
+        k = int(6 * scale) | 1
+        ring = cv2.dilate(hard, np.ones((k, k), np.uint8)) - hard
+        around = img[ring > 0] if ring.any() else img.reshape(-1, 3)
+        fill = np.broadcast_to(np.percentile(around, 5, axis=0).astype(np.float32), img.shape)
+    else:
+        fill = cv2.inpaint(np.ascontiguousarray(img), hard * 255, max(3, int(2 * scale)), cv2.INPAINT_TELEA)
+    return np.clip(img * (1 - soft) + fill * soft, 0, 255).astype(np.uint8)
+
+
 def full_mask(mask, canvas, margins, size):
     """The user's marks (0..1, the canvas at any scale) -> render pixels, through the render's margins (1x px per
     side: the field's padding plus the version's frame)."""

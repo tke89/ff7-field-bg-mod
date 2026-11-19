@@ -23,6 +23,7 @@ from PIL import Image
 MAGICK = "magick"
 UPSCAYL = "upscayl:"
 SYW = "syw"  # the SYW Unified pack's ready-made 4x of the original art (ff7bg/syw.py); the Studio puts it together
+SYW_DART = "syw+digital-art"  # SYW, with Upscayl Digital Art on rock and rough ground (ff7bg/texture.py)
 ROOT = Path(__file__).resolve().parent.parent
 EXE = ".exe" if os.name == "nt" else ""
 TIMEOUT = 900  # seconds
@@ -34,7 +35,7 @@ class UpscalerError(RuntimeError):
 
 def is_local(name):
     """Whether this upscaler runs outside ComfyUI."""
-    return bool(name) and (name in (MAGICK, SYW) or name.startswith(UPSCAYL))
+    return bool(name) and (name in (MAGICK, SYW, SYW_DART) or name.startswith(UPSCAYL))
 
 
 def find_magick():
@@ -83,6 +84,8 @@ def seconds(name, in_px, out_px):
         return 0.4 + 0.08 * out_px / 1e6
     if name == SYW:  # pages read and put together once per field, then a resize
         return 0.3 + 0.05 * out_px / 1e6
+    if name == SYW_DART:  # that, and Upscayl's model over the whole picture
+        return seconds(SYW, in_px, out_px) + seconds(UPSCAYL, in_px, out_px)
     return 1.5 + 0.15 * out_px / 1e6 + 0.1 * 16 * in_px / 1e6  # 4x models: the GPU works on 16x the input
 
 
@@ -91,7 +94,7 @@ def upscale(img, name, w, h, cancelled=lambda: False):
     src = Image.fromarray(np.ascontiguousarray(img))
     if (w, h) == src.size:
         return np.asarray(src)
-    if name == SYW:  # where the field isn't known (a state's art, a version's): a plain resize, as Lanczos
+    if name in (SYW, SYW_DART):  # where the field isn't known (a state's art, a version's): a plain resize
         out = src.resize((w, h), Image.LANCZOS)
     elif name == MAGICK:
         exe = find_magick()

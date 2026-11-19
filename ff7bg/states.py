@@ -25,7 +25,7 @@ import numpy as np
 from PIL import Image
 
 from . import upscalers
-from .ai import apply_color
+from .ai import apply_color, parallax_glow
 from .comfy import FAMILIES, SEEDVR2, build_states_workflow, work_size
 from .sheets import PageCache, canvas_rect, render_composite
 
@@ -187,7 +187,7 @@ def _panel(bg, rect, tile, scale, cluster, state, rendered_defaults):
 
     def inc(t):
         if not t.param:
-            return True
+            return not parallax_glow(t)  # as the main render was painted (ai.painted)
         if t.param == cluster.param:
             return bool(state & t.state)
         return bool(others.get(t.param, 0) & t.state)

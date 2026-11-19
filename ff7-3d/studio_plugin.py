@@ -20,7 +20,7 @@ from flask import Blueprint, abort, jsonify, request, send_file
 from PIL import Image
 
 HERE = Path(__file__).resolve().parent
-SETTINGS = HERE / "studio_settings.json"  # {"auto": "final" | "built" | "off" | "all"}
+SETTINGS = HERE / "studio_settings.json"  # {"auto": "final" | "built" | "off" | "all", "only_2d": bool}
 AUTO = ("final", "built", "off", "all")
 LOOKS = ("painted", "relit")
 # the look's light and colour settings a field can change, with their ranges (the 3D tab's sliders)
@@ -44,7 +44,9 @@ NO_WINDOW = 0x08000000  # CREATE_NO_WINDOW: builds run without a console popping
 
 
 def settings():
-    s = {"auto": "final"}
+    """only_2d: the 3D fields switched off (2026-11-18, the user: "I think I will just keep them in 2d"): no 3D scenes
+    are built, the game stays set up as 2D, and the Studio shows only the game bar's 2D parts. Their files stay."""
+    s = {"auto": "final", "only_2d": False}
     if SETTINGS.exists():
         s.update(json.loads(SETTINGS.read_text()))
     return s
@@ -311,7 +313,7 @@ def register(studio):
         Automatic setting says. final: every final render gets one, and scenes there are kept in step; built: only
         scenes there are kept in step; all: any version. A batch sent with Skip the 3D scenes leaves them alone."""
         auto = settings()["auto"]
-        if auto == "off" or (options or {}).get("skip_3d"):
+        if auto == "off" or settings()["only_2d"] or (options or {}).get("skip_3d"):
             return
         if (options or {}).get("states_redone"):  # Redo states: the same version, but its states' pages are new
             if built(name):
@@ -351,6 +353,8 @@ def register(studio):
 
     @bp.post("/build")
     def api_build():
+        if settings()["only_2d"]:
+            return jsonify(added=0, names=0, message="3D fields are off (Settings)")
         names = [n for n in request.get_json(force=True).get("names", []) if n in project.jobs]
         return jsonify(added=queue(names), names=len(names))
 
@@ -451,10 +455,21 @@ def register(studio):
 
     @bp.post("/settings")
     def api_settings():
-        auto = request.get_json(force=True).get("auto")
-        if auto in AUTO:
-            SETTINGS.write_text(json.dumps({**settings(), "auto": auto}))
+        body = request.get_json(force=True)
+        if body.get("auto") in AUTO:
+            SETTINGS.write_text(json.dumps({**settings(), "auto": body["auto"]}))
+        if isinstance(body.get("only_2d"), bool):
+            SETTINGS.write_text(json.dumps({**settings(), "only_2d": body["only_2d"]}))
+            if body["only_2d"] and not game()["running"] and game_mode() != "backgrounds":
+                set_mode("backgrounds")
         return jsonify(settings())
+
+    def set_mode(mode):
+        """Set the game up as 2D ("backgrounds") or Full 3D (tools/game_mode.py, as the Desktop shortcuts do); None,
+        or why it couldn't."""
+        r = subprocess.run([sys.executable, str(HERE / "tools" / "game_mode.py"), mode],
+                           capture_output=True, text=True, creationflags=NO_WINDOW)
+        return ((r.stderr or r.stdout).strip().splitlines() or ["failed"])[-1] if r.returncode else None
 
     @bp.get("/game")
     def api_game():
@@ -465,18 +480,24 @@ def register(studio):
         body = request.get_json(force=True)
         action, name = body.get("action"), body.get("name")
         try:
+            only_2d = settings()["only_2d"]
             if action == "mode" and body.get("mode") in ("3d", "backgrounds"):  # as the Desktop shortcuts do
-                r = subprocess.run([sys.executable, str(HERE / "tools" / "game_mode.py"), body["mode"]],
-                                   capture_output=True, text=True, creationflags=NO_WINDOW)
-                if r.returncode:
-                    return jsonify(ok=False, message=((r.stderr or r.stdout).strip().splitlines() or ["failed"])[-1]), 409
+                if only_2d and body["mode"] == "3d":
+                    return jsonify(ok=False, message="3D fields are off: turn them on in Settings first"), 409
+                err = set_mode(body["mode"])
+                if err:
+                    return jsonify(ok=False, message=err), 409
             elif action == "start":
                 if not game()["running"]:
+                    if only_2d and game_mode() != "backgrounds":  # set up as Full 3D from a shortcut: 2D again
+                        err = set_mode("backgrounds")
+                        if err:
+                            return jsonify(ok=False, message=err), 409
                     start_game(name or "eals_1")
             elif action == "show":
                 known(name)
                 show(name)
-            elif action == "view" and body.get("view") in ("3d", "ai2d", "original"):
+            elif action == "view" and body.get("view") in ("3d", "ai2d", "original") and not (only_2d and body["view"] == "3d"):
                 live.send(f"view {body['view']}")
             elif action == "shot":
                 known(name)

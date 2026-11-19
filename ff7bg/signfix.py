@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 
 from .comfy import EDIT_VARIANTS, FAMILY_PRESETS, _edit_sample, _loaders
-from .signs import quad_of, slanted
+from .signs import reading_quad, slanted
 
 CONTEXT = 0.8      # the crop around a sign: its box and this much of its size on every side (its surroundings'
 MIN_CONTEXT = 20   # style); at least this many original pixels
@@ -106,13 +106,14 @@ def _matched(new, crop, ring):
 
 
 def _slanted_sign(out, b, say, canvas, margins, scale, paint):
-    """A sign at an angle (its corners moved): the picture around it straightened so the sign faces Qwen square
-    on, as it letters best, painted, and turned back onto the sign; only the sign goes back."""
+    """A sign at an angle (its corners moved) or with its words turned: the picture around it straightened so the
+    sign faces Qwen square on with its words level, as it letters best, painted, and turned back onto the sign;
+    only the sign goes back."""
     H, W = out.shape[:2]
     cw, ch = canvas
     l, t, r, bm = margins
     sx, sy = W / (cw + l + r), H / (ch + t + bm)
-    q = np.float32([[(l + x) * sx, (t + y) * sy] for x, y in quad_of(b)])
+    q = np.float32([[(l + x) * sx, (t + y) * sy] for x, y in reading_quad(b)])
     tl, tr, br, bl = q
     sw = float(np.linalg.norm(tr - tl) + np.linalg.norm(br - bl)) / 2
     sh = float(np.linalg.norm(bl - tl) + np.linalg.norm(br - tr)) / 2
@@ -155,7 +156,7 @@ def repaint(render, boxes, canvas, margins, scale, paint, progress=lambda i, n, 
     for i, b in enumerate(todo):
         say = b["say"].strip()
         progress(i, len(todo), say)
-        if slanted(b):
+        if slanted(b) or b.get("turn"):
             _slanted_sign(out, b, say, canvas, margins, scale, paint)
             continue
         x1, y1, x2, y2 = to_render(b, canvas, margins, (W, H))

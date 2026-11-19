@@ -128,6 +128,19 @@ def quad_of(b):
     return [[b["x1"], b["y1"]], [b["x2"], b["y1"]], [b["x2"], b["y2"]], [b["x1"], b["y2"]]]
 
 
+TURNS = (0, 90, 180, 270)  # which way a sign's words run, turned clockwise from left-to-right along its top edge
+
+
+def reading_quad(b):
+    """The corners the words start and run from: quad_of turned by the sign's "turn" (degrees clockwise), so the
+    first corner is the lettering's own top-left. del1's "Sea Plane Only" (painted on the deck) and "COSTA DEL SOL
+    PORT" (running down a wall) both read turned 90 degrees; straightened along their top edge, the fixer wrote
+    stacked level lines across them (2026-11-17)."""
+    q = quad_of(b)
+    k = (int(b.get("turn") or 0) // 90) % 4
+    return q[k:] + q[:k]
+
+
 def slanted(b, tol=0.75):
     """Whether an area's corners were moved off its box (by more than `tol` original pixels)."""
     if not b.get("quad"):
@@ -188,6 +201,12 @@ def clean_boxes(boxes, w, h):
                 box["quad"] = quad
             if quad and not slanted(box):
                 del box["quad"]  # its corners are its box's
+            try:
+                turn = int(b.get("turn") or 0) % 360
+            except (TypeError, ValueError):
+                turn = 0
+            if turn in TURNS[1:]:
+                box["turn"] = turn  # its words run turned (reading_quad)
             out.append(box)
     return out
 

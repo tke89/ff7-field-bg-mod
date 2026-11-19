@@ -26,6 +26,8 @@ from .sheets import canvas_rect, render_composite
 NAME = "syw"
 SCALE = 4
 FALLBACK = "4x-UltraSharp.safetensors"  # fields the pack doesn't have
+MIXED = "syw+digital-art"  # the pack's 4x with Upscayl Digital Art on rock and rough ground (ff7bg/texture.py)
+NAMES = (NAME, MIXED)  # the input upscalers that start from the pack
 # its folders, as 7th Heaven layers them with Advanced Texture Animations on (mod.xml): the pages (V5), their
 # palette animation frames named by the palette state's hash as FFNx looks them up (V5AA), and pages redone to go
 # with those animations, which replace V5's (V5AAF: blin68_2, datiao_8, jtempl, lastmap, trnad_1)

@@ -176,6 +176,7 @@ def missing(s, comfy):
     if s.get("family") != "upscale" or (s["upscaler"] == "seedvr2" and not s["seedvr2_input"]):
         used.append(s["input_upscaler"])
     for u in used:
+        u = "upscayl:digital-art-4x" if u == upscalers.SYW_DART else u  # SYW + Digital Art needs that model
         if u.startswith(upscalers.UPSCAYL) and u[len(upscalers.UPSCAYL):] not in upscalers.upscayl_models():
             out["tools"].append({"name": "Upscayl", "url": "https://upscayl.org",
                                  "note": "install it, or pick another upscaler"})

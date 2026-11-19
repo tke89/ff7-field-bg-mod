@@ -124,8 +124,9 @@
         <button id="btnTouchUp" class="small" title="Paint over the parts of this version that don't look right, and the AI repaints just those">Touch up</button>
         <button id="btnUseWorkflow" class="small" hidden></button>
         <span class="menu-wrap">
-        <button id="btnVerMore" class="small ghost" title="Rebuild this version's game textures, redo its doors and lights, or open its review sheet">More ▾</button>
+        <button id="btnVerMore" class="small ghost" title="Reuse this version's settings, rebuild its game textures, redo its doors and lights, or open its review sheet">More ▾</button>
         <div class="menu" id="verMore" hidden>
+        <button id="btnReuse" title="Make this version's settings (its workflow, model, repaint, seed and the rest) this field's own, so the next render uses them again. Replaces the field's own settings, if it has any.">Reuse settings<span class="hint">Render the next one with this version's recipe</span></button>
         <button id="btnRebuild" title="Cut this version into game textures again (no AI run)">Rebuild<span class="hint">Cut it into game textures again, no AI run</span></button>
         <button id="btnRedoStates" title="Repaint this version's doors, lights and animation frames with the current states settings, keeping its main image">Redo states<span class="hint">Repaint its doors, lights and animation frames</span></button>
         <button id="btnReview" title="Original, AI output and in-game result side by side, with outline checks">Review sheet<span class="hint">Original, new art and in-game result side by side</span></button>
