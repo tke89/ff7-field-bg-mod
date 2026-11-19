@@ -6,6 +6,9 @@ states pass's masked repaint (comfy.build_states_workflow): the version's own mo
 repaint only inside the marks, at the strength asked, so the new part matches its surroundings. It goes back
 faded in at its edges, so nothing outside the marks changes. The Studio makes a new version of it (run_touchup in
 studio.py).
+
+"Repaint with: Brush strokes" (BRUSH) uses no AI: the marks are brushed over (ff7bg/brush.py), for ground and walls
+that came out grainy or netted.
 """
 import math
 
@@ -15,7 +18,10 @@ import numpy as np
 CONTEXT = 0.75     # the crop around a marked area: its box and this much of its size on every side...
 MIN_CONTEXT = 32   # ...at least this many original pixels...
 MIN_CROP = 128     # ...and at least this big (original pixels): the model needs room to see the style around it
-CROP_MP = 1.0      # the model paints the crop at about this size
+CROP_MP = 1.0      # the model paints the crop at about this size, or bigger...
+BIG_MP = 4.2       # ...at the crop's own size up to this, when the painter allows (repaint's max_mp): a crop of most of
+                   # the picture was painted at 1 MP and enlarged back, so ground and walls came back softer, not fixed
+BRUSH = "brush"    # "Repaint with" for the brush strokes (no AI, ff7bg/brush.py)
 JOIN = 24          # marks closer than this (original pixels) are repainted together
 FEATHER = 3.0      # the repaint fades into what was there over this many original pixels, past the marks
 MAX_SHIFT = 12.0   # the most the colour match moves the repainted part (0-255)
@@ -85,10 +91,11 @@ def _disc(r):
     return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
 
 
-def repaint(render, mask, scale, paint, progress=lambda i, n: None):
+def repaint(render, mask, scale, paint, progress=lambda i, n: None, max_mp=CROP_MP):
     """(render with each marked area repainted, how many areas). mask: 0..1 at render size. scale: render pixels
     per original pixel. paint(crop, model mask, gen size) -> the crop repainted inside the model mask, crop size:
-    the crop and mask come at the model's size (about CROP_MP, multiples of 32)."""
+    the crop and mask come at the model's size (about CROP_MP, or the crop's own size up to max_mp when that's
+    bigger; multiples of 32)."""
     out = render.copy()
     H, W = out.shape[:2]
     boxes = areas(mask, scale)
@@ -105,6 +112,8 @@ def repaint(render, mask, scale, paint, progress=lambda i, n: None):
         if cw < 8 or ch < 8:
             continue
         k = math.sqrt(CROP_MP * 1e6 / (cw * ch))
+        if max_mp > CROP_MP:
+            k = max(k, min(1.0, math.sqrt(max_mp * 1e6 / (cw * ch))))
         gw, gh = max(256, round(cw * k / 32) * 32), max(256, round(ch * k / 32) * 32)
         marks = (m > 0.5).astype(np.uint8)
         pasted = cv2.dilate(marks, _disc(f))  # what goes back: the marks grown a little...

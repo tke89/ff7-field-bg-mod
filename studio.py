@@ -30,7 +30,7 @@ import numpy as np
 from flask import Flask, abort, jsonify, request, send_file, send_from_directory
 from PIL import Image
 
-from ff7bg import ai, looks, palettes, protect, requirements, signfix, signs, states, syw, texture, touchup, upscalers
+from ff7bg import ai, brush, looks, palettes, protect, requirements, signfix, signs, states, syw, texture, touchup, upscalers
 from ff7bg.comfy import (
     DEFAULT_SETTINGS, FAMILIES, FAMILY_PRESETS, Comfy, ComfyError, build_caption_workflow, build_states_workflow,
     build_workflow, clean_caption, edit_keep, edit_padding, tile_count, work_size,
@@ -918,10 +918,14 @@ class Worker(threading.Thread):
             s = dict(s, input_upscaler="")
         s = self.p.input_settings(name, s)  # SYW where the pack has the field, else its fallback
         if s.get("family") == "upscale" and is_local(s["upscaler"]):
-            # ImageMagick / Upscayl on the original: no ComfyUI needed
+            # ImageMagick / Upscayl / the SYW pack on the original: no ComfyUI needed
             self._stage("upscaling", 0.1)
-            img = np.asarray(Image.open(source).convert("RGB"))
-            data = _png(Image.fromarray(upscalers.upscale(img, s["upscaler"], w * s["out_scale"], h * s["out_scale"], cancelled)), 4)
+            size = (w * s["out_scale"], h * s["out_scale"])
+            if s["upscaler"] in syw.NAMES and self.p.syw_input(name) is not None:  # the pack's 4x (+ Digital Art)
+                big = self.p.enlarged_input(name, dict(s, input_upscaler=s["upscaler"]), size, cancelled=cancelled)
+            else:
+                big = upscalers.upscale(np.asarray(Image.open(source).convert("RGB")), s["upscaler"], *size, cancelled)
+            data = _png(Image.fromarray(big), 4)
             return self._new_version(name, s, job, fjob, data, pad, started)
         comfy = Comfy(self.p.comfy_url)
         if not comfy.online():
@@ -1283,10 +1287,18 @@ def api_field(name):
 
 @app.get("/api/field/<name>/texture_mask.png")
 def api_texture_mask(name):
-    """Where the SYW + Digital Art start uses Digital Art (orange, see-through elsewhere), over the canvas at 1x."""
+    """Where the SYW + Digital Art start uses Digital Art (orange, see-through elsewhere), over the canvas at 1x;
+    ?marks=1: the same as touch-up marks (red, its alpha how much), for "Find ground & walls"."""
     _field_or_404(name)
     img1x, _ = ai.default_view(project.background(name), project.jobs[name].get("defaults"))
-    rgba = texture.overlay(img1x, project.meta(name).get("text_boxes") or [])
+    boxes = project.meta(name).get("text_boxes") or []
+    if request.args.get("marks"):
+        m = texture.texture_mask(img1x, boxes)
+        rgba = np.zeros(m.shape + (4,), np.uint8)
+        rgba[..., 0], rgba[..., 1], rgba[..., 2] = 255, 60, 60
+        rgba[..., 3] = np.round(np.clip(m, 0, 1) * 255).astype(np.uint8)
+    else:
+        rgba = texture.overlay(img1x, boxes)
     resp = send_file(io.BytesIO(_png(Image.fromarray(rgba, "RGBA"))), mimetype="image/png")
     resp.headers["Cache-Control"] = "no-store"
     return resp
@@ -1450,9 +1462,12 @@ def api_field_touchup(name):
     if body.get("start") in touchup.STARTS:  # what the repaint starts from: as it is, darkness, its surroundings
         job["start"] = body["start"]
     model = str(body.get("model") or "")
-    if model:  # another model repaints: an edit model, which follows the words more closely
+    if model == touchup.BRUSH:  # brush strokes, no AI: the brush's size in original pixels
+        job["brush"] = float(np.clip(float(body.get("brush") or brush.DEFAULT), *brush.SIZES))
+    elif model:  # another model repaints: an edit model, which follows the words more closely
         if not FAMILIES.get(model, {}).get("edit"):
             return jsonify(message=f"{model} can't repaint a touch-up"), 400
+    if model:
         job["model"] = model
     added = worker.enqueue([job])
     if not added:
@@ -2146,20 +2161,23 @@ def run_touchup(w, job):
     src = vs.render_path(name, vid) if vid else None
     if not src:
         raise ComfyError("there's no version to touch up yet: render the field first")
-    comfy = Comfy(w.p.comfy_url)
-    if not comfy.online():
-        raise ComfyError(f"ComfyUI isn't reachable at {w.p.comfy_url}; start ComfyUI and try again")
     vmeta = vs.meta(name, vid)
-    seed = random.randrange(2 ** 31)  # a new try every time: the same marks again give a different repaint
-    s = touchup_model(touchup.hint_prompt(dict(touchup_settings(w.p, name, vmeta), seed=seed), job.get("hint")),
-                      job.get("model"))
-    check_requirements(comfy, s)
-    refs = [comfy.upload(STYLES / r, "ff7studio_styles") for r in s.get("style_refs", []) if (STYLES / r).exists()]
-    strength = float(job.get("strength", 0.6))
-    paint = _touchup_painter(w, name, s, comfy, refs, strength)
+    if job.get("model") == touchup.BRUSH:  # brush strokes: no AI, no ComfyUI
+        seed, strength, paint, mp = 0, 0.0, None, touchup.CROP_MP
+    else:
+        comfy = Comfy(w.p.comfy_url)
+        if not comfy.online():
+            raise ComfyError(f"ComfyUI isn't reachable at {w.p.comfy_url}; start ComfyUI and try again")
+        seed = random.randrange(2 ** 31)  # a new try every time: the same marks again give a different repaint
+        s = touchup_model(touchup.hint_prompt(dict(touchup_settings(w.p, name, vmeta), seed=seed), job.get("hint")),
+                          job.get("model"))
+        check_requirements(comfy, s)
+        refs = [comfy.upload(STYLES / r, "ff7studio_styles") for r in s.get("style_refs", []) if (STYLES / r).exists()]
+        strength = float(job.get("strength", 0.6))
+        paint, mp = _touchup_painter(w, name, s, comfy, refs, strength), touchup_mp(s)
     shown = touched_states(vmeta, job.get("states"))
     if shown:  # the viewer showed other states than the main render's: touch up those states' own art
-        return run_state_touchup(w, job, vid, vmeta, seed, strength, paint, *shown)
+        return run_state_touchup(w, job, vid, vmeta, seed, strength, paint, *shown, mp=mp)
     fjob = w.p.jobs[name]
     started = time.time()
     render = np.asarray(Image.open(src).convert("RGB"))
@@ -2172,8 +2190,13 @@ def run_touchup(w, job):
     w.band = (0.0, 0.85)
 
     try:
-        new, n = touchup.repaint(touchup.start_from(render, mask, job.get("start"), scale), mask, scale, paint,
-                                 progress=lambda i, k: w._stage(f"repainting marked area {i + 1} of {k}", i / max(k, 1)))
+        if paint is None:
+            w._stage("brushing over the marked areas", 0.1)
+            new, n = brushed(render, mask, scale, job.get("brush"))
+        else:
+            new, n = touchup.repaint(touchup.start_from(render, mask, job.get("start"), scale), mask, scale, paint,
+                                     progress=lambda i, k: w._stage(f"repainting marked area {i + 1} of {k}", i / max(k, 1)),
+                                     max_mp=mp)
     finally:
         Path(job["mask"]).unlink(missing_ok=True)
     if not n:
@@ -2181,8 +2204,7 @@ def run_touchup(w, job):
     hint = (job.get("hint") or "").strip()
     meta = {k: v for k, v in vmeta.items() if k not in ("id", "created", "result", "held_back", "try")}
     meta.update(mode="touchup", source=vid, render_seconds=round(time.time() - started, 1),
-                note=f"touched up: {n} area{'s' if n != 1 else ''} at {strength:.0%}" + _touchup_how(job) +
-                     (f", \"{hint}\"" if hint else ""),
+                note=_touchup_note(job, n, strength, hint),
                 touchup={"areas": n, "strength": strength, "hint": hint, "seed": seed, **_touchup_opts(job)})
     nvid = vs.create(name, _png(Image.fromarray(new)), meta)
     # its marks, kept so a states pass can make the touch-up again on a state's render (WholeStates)
@@ -2195,7 +2217,7 @@ def run_touchup(w, job):
     if w.p.current(name) == vid:
         w.p.make_current(name, nvid)
     job["version"] = nvid
-    job["note"] = f"{n} area{'s' if n != 1 else ''} touched up"
+    job["note"] = f"{n} area{'s' if n != 1 else ''} " + ("brushed over" if paint is None else "touched up")
 
 
 def _touchup_painter(w, name, s, comfy, refs, strength):
@@ -2215,10 +2237,33 @@ def _touchup_painter(w, name, s, comfy, refs, strength):
     return paint
 
 
+def touchup_mp(s):
+    """How big a touch-up may paint a big marked area (touchup.repaint's max_mp): at its own size up to
+    touchup.BIG_MP for the repainting models, which painted the main render at that size; the edit models keep to
+    about 1 MP, the size they work at."""
+    return touchup.CROP_MP if FAMILIES.get(s.get("family"), {}).get("edit") else touchup.BIG_MP
+
+
+def brushed(img, mask, scale, size):
+    """(img with the marked areas brushed over, how many areas): the touch-up's "Brush strokes" (ff7bg/brush.py)."""
+    n = len(touchup.areas(mask, scale))
+    return (brush.brush_over(img, mask, size or brush.DEFAULT, scale) if n else img), n
+
+
+def _touchup_note(job, n, strength, hint, label=""):
+    """A touch-up version's note: what it did, where, and how."""
+    what = f"state {label} " if label else ""
+    areas = f"{n} area{'s' if n != 1 else ''}"
+    if job.get("model") == touchup.BRUSH:
+        return f"{what}brushed over: {areas}, brush {float(job.get('brush') or brush.DEFAULT):g} px"
+    return (f"{what}touched up: {areas} at {strength:.0%}" + _touchup_how(job) +
+            (f", \"{hint}\"" if hint else ""))
+
+
 def touchup_model(s, model):
     """The settings with another model repainting (a touch-up's "Repaint with"): an edit model follows the words more
     closely than the version's own (bugin1a's open door: MOSS kept painting a door into the frame, H3 opened it)."""
-    if not model or model == s.get("family"):
+    if not model or model == s.get("family") or model == touchup.BRUSH:
         return s
     if not FAMILIES.get(model, {}).get("edit"):
         raise ComfyError(f"{model} can't repaint a touch-up: pick this version's own workflow or an edit model")
@@ -2231,6 +2276,8 @@ def touchup_model(s, model):
 
 def _touchup_opts(job):
     """A touch-up's start and model, as kept in its version's meta (states redos make it again the same way)."""
+    if job.get("model") == touchup.BRUSH:  # brush strokes: no start or AI model of their own
+        return {"model": touchup.BRUSH, "brush": float(job.get("brush") or brush.DEFAULT)}
     out = {}
     if job.get("start") in ("dark", "fill"):
         out["start"] = job["start"]
@@ -2263,7 +2310,7 @@ def touched_states(vmeta, shown):
     return (shown, changed) if changed else None
 
 
-def run_state_touchup(w, job, vid, vmeta, seed, strength, paint, shown, changed):
+def run_state_touchup(w, job, vid, vmeta, seed, strength, paint, shown, changed, mp=touchup.CROP_MP):
     """Touch up a state (2026-11-17, the user: bugin1a's open door came out as a closed grille door): the marked
     parts repainted on the picture the viewer showed (the version's game textures with those states), and the
     repaint added to those states' own art (their panels: only their tiles take it in the game). A new version with
@@ -2287,9 +2334,13 @@ def run_state_touchup(w, job, vid, vmeta, seed, strength, paint, shown, changed)
     label = ", ".join(f"{g}.{m}" for g, m in sorted(changed.items()))
     w.band = (0.0, 0.85)
     try:
-        new, n = touchup.repaint(touchup.start_from(view, mask, job.get("start"), S), mask, S, paint,
-                                 progress=lambda i, k: w._stage(f"repainting marked area {i + 1} of {k} on state {label}",
-                                                                i / max(k, 1)))
+        if paint is None:
+            w._stage(f"brushing over the marked areas on state {label}", 0.1)
+            new, n = brushed(view, mask, S, job.get("brush"))
+        else:
+            new, n = touchup.repaint(touchup.start_from(view, mask, job.get("start"), S), mask, S, paint,
+                                     progress=lambda i, k: w._stage(f"repainting marked area {i + 1} of {k} on state {label}",
+                                                                    i / max(k, 1)), max_mp=mp)
     finally:
         Path(job["mask"]).unlink(missing_ok=True)
     if not n:
@@ -2297,8 +2348,7 @@ def run_state_touchup(w, job, vid, vmeta, seed, strength, paint, shown, changed)
     hint = (job.get("hint") or "").strip()
     meta = {k: v for k, v in vmeta.items() if k not in ("id", "created", "result", "held_back", "try")}
     meta.update(mode="touchup", source=vid, render_seconds=round(time.time() - started, 1),
-                note=f"state {label} touched up: {n} area{'s' if n != 1 else ''} at {strength:.0%}" + _touchup_how(job) +
-                     (f", \"{hint}\"" if hint else ""),
+                note=_touchup_note(job, n, strength, hint, label),
                 touchup={"areas": n, "strength": strength, "hint": hint, "seed": seed,
                          "states": {str(g): m for g, m in changed.items()}, **_touchup_opts(job)})
     nvid = vs.create(name, Path(vs.render_path(name, vid)).read_bytes(), meta)
@@ -2316,7 +2366,7 @@ def run_state_touchup(w, job, vid, vmeta, seed, strength, paint, shown, changed)
     if w.p.current(name) == vid:
         w.p.make_current(name, nvid)
     job["version"] = nvid
-    job["note"] = f"state {label}: {n} area{'s' if n != 1 else ''} touched up"
+    job["note"] = f"state {label}: {n} area{'s' if n != 1 else ''} " + ("brushed over" if paint is None else "touched up")
 
 
 def _touch_state_panels(bg, rect, sdir, changed, view, new, S):
@@ -2726,9 +2776,13 @@ class WholeStates:
                 if marks.max() <= 0:
                     continue
                 t = fmeta.get("touchup") or {}
+                mask = touchup.full_mask(marks, (cw, ch), (0, 0, 0, 0), (img.shape[1], img.shape[0]))
+                if t.get("model") == touchup.BRUSH:  # brush strokes: the same filter, no AI
+                    self.w._stage("brushing over a touch-up's areas again on a state", 0.05)
+                    img, _ = brushed(img, mask, scale, t.get("brush"))
+                    continue
                 s = touchup_model(touchup.hint_prompt(dict(touchup_settings(p, name, fmeta), seed=t.get("seed", 0)),
                                                       t.get("hint")), t.get("model"))
-                mask = touchup.full_mask(marks, (cw, ch), (0, 0, 0, 0), (img.shape[1], img.shape[0]))
                 img = touchup.start_from(img, mask, t.get("start"), scale)  # as it was made: from darkness, say
 
                 def paint_area(crop, model_mask, size, s=s):
@@ -2744,7 +2798,7 @@ class WholeStates:
                     return upscalers.finish(res, s, ww, hh, lambda: self.w.cancel_flag)
 
                 self.w._stage("making a touch-up again on a state", 0.05)
-                img, _ = touchup.repaint(img, mask, scale, paint_area)
+                img, _ = touchup.repaint(img, mask, scale, paint_area, max_mp=touchup_mp(s))
         return img
 
 

@@ -1615,12 +1615,14 @@ function setTouch(on) {
     mask.height = d.h * k;
     S.touch = { field: d.name, vid: v.id, k, mask, mctx: mask.getContext("2d"), size: (S.touchPrefs || {}).size || 10,
                 erase: false, strength: (S.touchPrefs || {}).strength || 0.6, hint: "", painted: false, stroke: null, cursor: null,
-                start: (S.touchPrefs || {}).start || "current", model: (S.touchPrefs || {}).model || "" };
+                start: (S.touchPrefs || {}).start || "current", model: (S.touchPrefs || {}).model || "",
+                brush: (S.touchPrefs || {}).brush || 1.5 };
     if (S.mode !== "new") setMode("new");
     // a state's touch-up is for the frame on screen: animations hold still meanwhile
     if (playingGroups().length) { S.touchPausedAnim = true; $("#optAnimate").click(); }
   } else if (S.touch) {
-    S.touchPrefs = { size: S.touch.size, strength: S.touch.strength, start: S.touch.start, model: S.touch.model };
+    S.touchPrefs = { size: S.touch.size, strength: S.touch.strength, start: S.touch.start, model: S.touch.model,
+                     brush: S.touch.brush };
     S.touch = null;
     if (S.touchPausedAnim) { S.touchPausedAnim = false; if (!S.animate) $("#optAnimate").click(); }
   }
@@ -1662,13 +1664,16 @@ function renderTouchBar() {
       `<span class="seg small"><button data-tool="brush">Brush</button><button data-tool="erase">Eraser</button></span>` +
       `<label title="How wide the brush is. Bigger: quicker over large areas. Smaller: for fine details like a face or the edge of a sign.">` +
       `Size <input type="range" data-k="size" min="2" max="64" step="1"></label>` +
-      `<input type="text" class="touch-hint" maxlength="200" placeholder="What should be there? (optional)" ` +
+      `<button class="small ghost" data-a="ground" title="Mark the ground, rock and walls that were tightly textured in ` +
+      `the original: the parts that tend to come out grainy, speckled or netted. Signs are left out. Then rub out ` +
+      `anything that should stay as it is, like characters or faces, and press Brush over.">Find ground &amp; walls</button>` +
+      `<input type="text" class="touch-hint touch-ai" maxlength="200" placeholder="What should be there? (optional)" ` +
       `title="Optional: what the marked parts should show, e.g. &quot;a wooden barrel&quot; or &quot;a clean stone wall&quot;. ` +
       `Leave it empty to just clean them up in the scene's own style.">` +
-      `<label title="How much the AI may change the marked parts. Higher: it redraws them more freely (80–100% to replace ` +
+      `<label class="touch-ai" title="How much the AI may change the marked parts. Higher: it redraws them more freely (80–100% to replace ` +
       `something with what you typed). Lower: it stays closer to what's there and only tidies it up. Recommended: 60%.">` +
       `Change <input type="range" data-k="strength" min="0.3" max="1" step="0.05"> <b class="touch-pct"></b></label>` +
-      `<label title="What the AI starts from inside the marks.&#10;What's there: it reworks what you see (a cleaner face, a tidier ` +
+      `<label class="touch-ai" title="What the AI starts from inside the marks.&#10;What's there: it reworks what you see (a cleaner face, a tidier ` +
       `corner). Best for fixing things up.&#10;Darkness: the marked parts are blacked out first, so it paints an opening: an ` +
       `open door, a hole, a dark window. Without it, the AI tends to paint back what was there (a door in the door frame).` +
       `&#10;Its surroundings: the marked parts are filled in from around them first, to take something away or put something ` +
@@ -1678,10 +1683,17 @@ function renderTouchBar() {
       `<label title="Which model repaints the marked parts.&#10;This version's own workflow matches its style best.&#10;` +
       `An edit model follows what you type much more closely (an open door, a different object), and may match the style a ` +
       `little less. Say it as an instruction: &quot;Open the door so the doorway shows a dark corridor&quot;.&#10;` +
+      `Brush strokes: no AI. The marked parts are repainted as broad brush strokes, which takes grain and outlined ` +
+      `cells out of ground and walls and can't add anything that wasn't there. Takes a few seconds.&#10;` +
       `Recommended: this version's own; H3 Image when it won't do what you ask (bugin1a's door only opened with H3, ` +
-      `starting from Darkness).">Repaint with <select data-k="model"><option value="">This version's own</option>` +
+      `starting from Darkness); Brush strokes for grainy ground and walls.">Repaint with <select data-k="model">` +
+      `<option value="">This version's own</option>` +
       [...EDIT].map((f) => `<option value="${f}">${esc((FAMILIES[f] || {}).short || f)}</option>`).join("") +
-      `</select></label>` +
+      `<option value="brush">Brush strokes (no AI)</option></select></label>` +
+      `<label class="touch-brush" title="How big the brush strokes are, in the original picture's pixels. Bigger: ` +
+      `smoother, flatter ground with less texture left. Smaller: keeps more of the texture and only takes out the ` +
+      `finest grain. Recommended: 1.5.">Brush <input type="range" data-k="brush" min="0.5" max="4" step="0.25"> ` +
+      `<b class="touch-brush-px"></b></label>` +
       `<button class="small ghost" data-a="clear" title="Rub out all the marks">Clear</button>` +
       `<button class="small ghost" data-a="cancel" title="Close the touch-up without repainting (Esc)">Cancel</button>` +
       `<button class="small primary" data-a="go" title="Repaint only the marked parts, with the settings this version was ` +
@@ -1692,7 +1704,7 @@ function renderTouchBar() {
       r.oninput = () => { S.touch[r.dataset.k] = Number(r.value); renderTouchBar(); draw(); };
     }
     bar.querySelector(".touch-hint").oninput = (e) => { S.touch.hint = e.target.value; };
-    for (const sel of bar.querySelectorAll("select[data-k]")) sel.onchange = () => { S.touch[sel.dataset.k] = sel.value; };
+    for (const sel of bar.querySelectorAll("select[data-k]")) sel.onchange = () => { S.touch[sel.dataset.k] = sel.value; renderTouchBar(); };
     bar.querySelector('[data-a="clear"]').onclick = () => {
       S.touch.mctx.clearRect(0, 0, S.touch.mask.width, S.touch.mask.height);
       S.touch.painted = false;
@@ -1700,12 +1712,22 @@ function renderTouchBar() {
       draw();
     };
     bar.querySelector('[data-a="cancel"]').onclick = () => setTouch(false);
+    bar.querySelector('[data-a="ground"]').onclick = findGround;
     bar.querySelector('[data-a="go"]').onclick = submitTouch;
   }
   for (const b of bar.querySelectorAll("[data-tool]")) b.classList.toggle("on", (b.dataset.tool === "erase") === t.erase);
   for (const r of bar.querySelectorAll("input[type=range]")) if (document.activeElement !== r) r.value = t[r.dataset.k];
   for (const sel of bar.querySelectorAll("select[data-k]")) if (document.activeElement !== sel) sel.value = t[sel.dataset.k];
   bar.querySelector(".touch-pct").textContent = `${Math.round(t.strength * 100)}%`;
+  bar.querySelector(".touch-brush-px").textContent = `${t.brush} px`;
+  const brushing = t.model === "brush";
+  for (const el of bar.querySelectorAll(".touch-ai")) el.style.display = brushing ? "none" : "";
+  for (const el of bar.querySelectorAll(".touch-brush")) el.style.display = brushing ? "" : "none";
+  const go = bar.querySelector('[data-a="go"]');
+  go.textContent = brushing ? "Brush over marked areas" : "Repaint marked areas";
+  go.title = brushing ? "Brush over only the marked parts (no AI, a few seconds). The result is a new version; if this " +
+    "one is in the game, the new one replaces it." : "Repaint only the marked parts, with the settings this version was " +
+    "rendered with. The result is a new version; if this one is in the game, the new one replaces it.";
   const st = touchStateLabel(), stEl = bar.querySelector(".touch-state");
   stEl.textContent = st ? `on state ${st}` : "";
   stEl.hidden = !st;
@@ -1721,20 +1743,55 @@ async function submitTouch() {
     const st = touchStateLabel();
     const r = await api(`/api/field/${t.field}/touchup`, { body: {
       version: t.vid, mask: t.mask.toDataURL("image/png"), hint: t.hint.trim(), strength: t.strength,
-      states: shownStates(), start: t.start, model: t.model } });
+      states: shownStates(), start: t.start, model: t.model, brush: t.brush } });
     if (!r.added) {
       toast("This version is already being touched up. When that's done, touch up the new version it makes.");
       go.disabled = false;
       return;
     }
-    toast(st ? `Touching up state ${st}: it's in the queue. The result is a new version with that state repainted.`
-      : "Touching up: it's in the queue. The result is a new version.");
+    const how = t.model === "brush" ? "Brushing over" : "Touching up";
+    toast(st ? `${how} state ${st}: it's in the queue. The result is a new version with that state repainted.`
+      : `${how}: it's in the queue. The result is a new version.`);
     setTouch(false);
     applyDetail(r);
   } catch (e) {
     toast(`Couldn't touch up: ${e.message}`);
     go.disabled = false;
   }
+}
+
+// Touch up's "Find ground & walls": the parts tightly textured in the original (ff7bg/texture.py) added to the marks,
+// with Brush strokes picked to repaint them (it's what cleared las0_7's grain and las1_3's netting)
+async function findGround() {
+  const t = S.touch;
+  if (!t) return;
+  const img = new Image();
+  try {
+    await new Promise((ok, bad) => {
+      img.onload = ok;
+      img.onerror = () => bad(new Error("the Studio couldn't work it out"));
+      img.src = `/api/field/${t.field}/texture_mask.png?marks=1&t=${Date.now()}`;
+    });
+  } catch (e) {
+    toast(`Couldn't find the ground and walls: ${e.message}`);
+    return;
+  }
+  if (S.touch !== t) return;
+  t.mctx.drawImage(img, 0, 0, t.mask.width, t.mask.height);
+  const a = t.mctx.getImageData(0, 0, t.mask.width, t.mask.height).data;
+  let any = false;
+  for (let i = 3; i < a.length; i += 16) if (a[i] > 128) { any = true; break; }
+  if (!any) {
+    toast("This field has no tightly textured ground or walls to mark.");
+    return;
+  }
+  t.painted = true;
+  const was = t.model;
+  t.model = "brush";
+  renderTouchBar();
+  draw();
+  toast("Marked the ground and walls. Rub out anything that should stay as it is (characters, faces), then Brush over." +
+        (was !== "brush" ? " Repaint with is now Brush strokes: switch it back to use the AI instead." : ""));
 }
 
 // The states the viewer shows, {group: mask}
@@ -1878,9 +1935,12 @@ function renderOutput(v) {
   const fam = v.family, m = S.models;
   box.appendChild(slider("out_scale", v));
   const online = m && m.online;
-  const { ups, labels, local } = upscalerChoices(v.upscaler);
+  // the Upscale workflow enlarges the original art, so it can start from the SYW pack too
+  const { ups, labels, local } = upscalerChoices(v.upscaler, { syw: fam === "upscale" && !!(S.detail && S.detail.syw) });
   const about = (fam === "upscale" ? "Enlarges the original art to the final texture size. " : "Enlarges the AI's picture to the final texture size. ") +
-    (isOutside(v.upscaler) ? outsideHint(v.upscaler, local) + (fam === "upscale" ? " Works without ComfyUI." : "")
+    (v.upscaler === "syw" && fam === "upscale" ? sywHint(local) + " Works without ComfyUI."
+      : v.upscaler === "syw+digital-art" && fam === "upscale" ? sywDartHint(local) + " Works without ComfyUI."
+      : isOutside(v.upscaler) ? outsideHint(v.upscaler, local) + (fam === "upscale" ? " Works without ComfyUI." : "")
       : "SeedVR2 adds the most natural detail; 4x-UltraSharp is crisp but can look grainy; (none) is soft and adds nothing.") +
     (fam !== "upscale" ? " (The original art is enlarged once before painting, with its own setting under Advanced → Original art.)" : "");
   const hint = online || isOutside(v.upscaler)
@@ -2976,6 +3036,25 @@ async function init() {
   const source = () => startFrom() || undefined;
   $("#btnGenerate").onclick = () => queue({ names: [S.current], mode: "final", source: source() }, "Final");
   $("#btnPreview").onclick = () => queue({ names: [S.current], mode: "preview", source: source() }, "Preview");
+  // Try all upscalers: an Upscale try per upscaler (no AI painting), to compare them as versions
+  $("#btnTryUps").onclick = async () => {
+    const d = S.detail;
+    if (!d) return;
+    const { ups, labels } = upscalerChoices("", { syw: !!d.syw });
+    const list = ups.filter((u) => u && (d.syw || !u.startsWith("syw")));
+    if (!list.length) { toast("No upscalers found: start ComfyUI or install Upscayl, then press Refresh models."); return; }
+    if (!await ask(`Enlarge ${d.name}'s original art with each of these ${list.length} upscalers, without any AI ` +
+      `painting?\n\n${list.map((u) => labels[u] || u).join("\n")}\n\nEach one is added as a version to compare ` +
+      `(flick through them, or Split view); the game keeps the version it has.`, "Try them")) return;
+    let added = 0;
+    for (const u of list) {
+      try {
+        const r = await api("/api/generate", { body: { names: [d.name], mode: "preview", family: "upscale", settings: { upscaler: u } } });
+        added += r.added || 0;
+      } catch (e) { toast(`${labels[u] || u}: ${e.message}`); }
+    }
+    toast(added ? `${added} upscaler tr${added === 1 ? "y" : "ies"} queued for ${d.name}` : "Already queued");
+  };
   $("#btnTryAll").onclick = () => queue({ names: [S.current], mode: "preview", families: Object.keys(FAMILIES), source: source() },
     "A preview with each workflow");
   $("#startFrom").onchange = (e) => { S.startFrom = e.target.value; renderVersionHead(); };
