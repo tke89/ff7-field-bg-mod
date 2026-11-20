@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 
-from . import palettes
+from . import cutouts, palettes
 from .align import drift_stats, find_drift, fit_global, residuals, warp_global
 from .field import parse_background
 from .scripts import analyze
@@ -57,9 +57,10 @@ def parallax_glow(t):
 
 
 def painted(defaults):
-    """Tile filter for what the AI paints from: the view at entry (shows) without parallax_glow."""
+    """Tile filter for what the AI paints from: the view at entry (shows) without parallax_glow, and without the
+    overlays laid in front of complete scenery (field.mark_overlays: onna_5's keyhole)."""
     entry = shows(defaults)
-    return lambda t: entry(t) and not parallax_glow(t)
+    return lambda t: entry(t) and not parallax_glow(t) and not t.overlay
 
 
 def default_view(bg, defaults=None):
@@ -525,12 +526,27 @@ def build_pages(bg, main, job, mod_root, review_dir, panels=None, raw=None, anim
                      if any(x < fx + fs and fx < x + s and y < fy + fs and fy < y + s
                             for x, y, s in tiles for fx, fy, fs in footprint)), None)
 
+    # See-through walk-behind art (fences, grilles): its alpha from the new painting where the original's is a fine
+    # mesh (cutouts; filled in below, once ai_base is known). {sheet: (alpha 0-255, where it applies 0-1)}
+    fine = {}
+
+    def alpha_for(t):
+        """A static tile's alpha at the output scale: its original's, or for walk-behind meshes the new one."""
+        a = tile_alpha(cache.tile(t), scale)
+        f = fine.get(tile_sheet[id(t)]) if t.layer == 1 else None
+        if f is None:
+            return a
+        sz = t.size * scale
+        x, y = (t.dst_x - min_x) * scale, (t.dst_y - min_y) * scale
+        new_a, where = f[0][y : y + sz, x : x + sz], f[1][y : y + sz, x : x + sz]
+        return np.clip(np.round(where * new_a + (1 - where) * a), 0, 255).astype(np.uint8)
+
     def block_for(t):
         sz = t.size * scale
         x, y = (t.dst_x - min_x) * scale, (t.dst_y - min_y) * scale
 
         def from_ai():
-            return np.dstack([ai_base[y : y + sz, x : x + sz], tile_alpha(cache.tile(t), scale)])
+            return np.dstack([ai_base[y : y + sz, x : x + sz], alpha_for(t)])
 
         def unlit(block, view):
             """A panel's block with the light of the entry lights it was painted with taken out (see baked)."""
@@ -571,11 +587,18 @@ def build_pages(bg, main, job, mod_root, review_dir, panels=None, raw=None, anim
                 beneath = unlit(from_panel(t, *found), {**defaults, off_group(fp): 0})
             m = cover[y : y + sz, x : x + sz, None]
             rgb = ai_base[y : y + sz, x : x + sz] * (1 - m) + beneath[..., :3] * m
-            return np.dstack([rgb.astype(np.uint8), tile_alpha(cache.tile(t), scale)])
+            return np.dstack([rgb.astype(np.uint8), alpha_for(t)])
         return original_tile(t)
 
     entry_light = baked(defaults)  # (block_for's glow tiles first: what the main render's art goes in without)
     ai_base = ai_hi if entry_light is None else np.clip(ai_hi - entry_light, 0, 255).astype(np.uint8)
+    if scale > 1:
+        for sheet, c in canvases.items():
+            if sheet.split("_dup")[0] == "L1":  # layer 1's static, opaque-drawn tiles: the walk-behind art
+                c = c[m:-m, m:-m]
+                r = cutouts.fine_alpha(c[..., 3], c[..., :3], main["orig"], ai_base, scale)
+                if r is not None:
+                    fine[sheet] = r
     pages = swizzle(bg, scale, block_for)
     frames, too_many, anim = 0, 0, {}
     if raw is not None:

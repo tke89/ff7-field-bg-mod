@@ -31,6 +31,7 @@ class Tile:
     blending: int
     type_trans: int
     size: int
+    overlay: bool = False  # a front overlay over complete scenery (mark_overlays)
 
 
 @dataclass
@@ -149,7 +150,62 @@ def parse_background(name, data):
         pages[tex] = TexturePage(tex, depth, big, bg[pos : pos + size])
         pos += size
 
-    return Background(name, palettes, transparency, tiles, pages)
+    out = Background(name, palettes, transparency, tiles, pages)
+    mark_overlays(out)
+    return out
+
+
+def mark_overlays(bg):
+    """Mark layer 3's static tiles that lie over complete scenery as overlays (Tile.overlay).
+
+    Layer 3 is drawn in front of everything, characters too. Where it covers a gap in the scenery (zcoal_3, hill) it's
+    part of the picture; where the scenery beneath is complete, it's something laid over the field: onna_5's keyhole
+    is a screen-sized dark panel with a see-through keyhole over a whole room. Painted with the rest, the panel went
+    into the room's own art, so the game showed it as part of the room and the keyhole looked out onto a painting of
+    itself (2026-11-20). The AI paints the scenery without them; they go into the game as their original art.
+    Blended tiles count too: the keyhole's soft rim is see-through (averaging) tiles of the same layer, and left in
+    the picture it was painted onto the bathroom wall as a keyhole outline, seen through the real keyhole once the
+    room scrolled behind it (2026-11-20)."""
+    front = [t for t in bg.tiles if t.layer == 3 and not t.param]
+    if not front:
+        return
+    front_ids = {id(t) for t in front}
+    min_x = min(t.dst_x for t in bg.tiles)
+    min_y = min(t.dst_y for t in bg.tiles)
+    w = max(t.dst_x + t.size for t in bg.tiles) - min_x
+    h = max(t.dst_y + t.size for t in bg.tiles) - min_y
+    decoded = {}
+
+    def alpha(t):
+        key = (t.tex, t.palette if bg.pages[t.tex].depth < 2 else 0)
+        if key not in decoded:
+            decoded[key] = page_rgba(bg, *key)[..., 3] > 0
+        block = np.zeros((t.size, t.size), bool)
+        part = decoded[key][t.src_y : t.src_y + t.size, t.src_x : t.src_x + t.size]
+        block[: part.shape[0], : part.shape[1]] = part
+        return block
+
+    scenery = np.zeros((h, w), bool)
+    drawn = np.zeros((h, w), bool)
+    for t in bg.tiles:
+        if t.tex in bg.pages and (t.layer < 2 and not t.param or id(t) in front_ids):
+            x, y = t.dst_x - min_x, t.dst_y - min_y
+            (drawn if t.layer == 3 else scenery)[y : y + t.size, x : x + t.size] |= alpha(t)
+    # decided per piece (tiles that touch), all or nothing: ztruck's front piece is over scenery in half its area and
+    # fills a gap in the rest, so it stays in the picture whole
+    import cv2
+    n, piece = cv2.connectedComponents(cv2.dilate(drawn.astype(np.uint8), np.ones((3, 3), np.uint8)), connectivity=8)
+    over = np.zeros(n, bool)
+    for i in range(1, n):
+        m = (piece == i) & drawn
+        over[i] = m.any() and scenery[m].mean() >= 0.99
+    for t in front:
+        if t.tex not in bg.pages:
+            continue
+        a = alpha(t)
+        x, y = t.dst_x - min_x, t.dst_y - min_y
+        if a.any() and over[np.unique(piece[y : y + t.size, x : x + t.size][a])].all():
+            t.overlay = True
 
 
 def page_rgba(bg, tex, palette):

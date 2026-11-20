@@ -103,3 +103,18 @@ tiles use:
 | `blended` / `tiles` | how many of those tiles are glows (blended) |
 | `random` | the script picks values at random (a flickering light) |
 | `scripts`, `opcodes` | which entity's script does it (`name#script`), with which palette commands |
+
+## Play your fields on a Steam Deck or another PC
+
+```bat
+.venv\Scripts\python ff7bgmod.py package                  :: textures shrunk to at most 4x
+.venv\Scripts\python ff7bgmod.py package --max-scale 0    :: every field at its full size
+```
+
+Puts every field's in-game textures (what **Install to game** copies, with doors, lights and animation frames) in
+one zip, `dist\package\FF7 Field Studio fields.zip`. Its folder works with plain FFNx (copy its `field` folder into
+`ff7\workingdir\mods\Textures\`) or as a 7th Heaven mod (Import Mod → From folder). The `README.txt` inside has the
+steps, including the Steam Deck's launch options.
+
+Anything bigger than `--max-scale` is shrunk to it. A Steam Deck's 1280×800 screen shows a field at about 3.3×, so
+4× is already more than it can show, and smaller textures load faster.

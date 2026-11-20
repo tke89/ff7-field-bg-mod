@@ -8,6 +8,9 @@
 
   ai-prep  [map...] [--aspect 1:1,3:2]  every map's default view -> ai/input/<map>.png
   ai-build [map...]                     ai/output/<map>.png -> aligned FFNx pages + ai/review/<map>.jpg
+
+  package [--max-scale 4]               every field's in-game textures -> dist/package/FF7 Field Studio fields.zip
+                                        (for a Steam Deck or another PC: plain FFNx or 7th Heaven)
 """
 import argparse
 import json
@@ -195,6 +198,13 @@ def cmd_palettes(lgp, args):
     print(f"{len({r['field'] for r in rows})} fields in all; details in {out}")
 
 
+def cmd_package(lgp, args):
+    from ff7bg import package
+    r = package.build(Path(args.src), Path(args.out), max_scale=args.max_scale)
+    print(f"{r['fields']} fields, {r['textures']} textures ({r['shrunk']} shrunk to {args.max_scale}x), "
+          f"{r['bytes'] / 1e9:.2f} GB: {r['zip']}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--lgp", default=str(DEFAULT_LGP), help="path to flevel.lgp")
@@ -240,9 +250,16 @@ def main():
     p.add_argument("maps", nargs="*", help="default: all maps")
     p.add_argument("--out", default=str(HERE / "ai" / "palette_effects.csv"))
 
+    p = sub.add_parser("package", help="every field's in-game textures in one zip, for a Steam Deck or another PC")
+    p.add_argument("--src", default=str(HERE / "dist" / "mods" / "Textures" / "field"))
+    p.add_argument("--out", default=str(HERE / "dist" / "package" / "FF7 Field Studio fields.zip"))
+    p.add_argument("--max-scale", type=int, default=4,
+                   help="shrink anything bigger to this many times the original (0 keeps every size); "
+                        "4 is already more than a Steam Deck's screen shows")
+
     args = ap.parse_args()
     commands = {"list": cmd_list, "export": cmd_export, "build": cmd_build, "verify": cmd_verify,
-                "ai-prep": cmd_ai_prep, "ai-build": cmd_ai_build, "palettes": cmd_palettes}
+                "ai-prep": cmd_ai_prep, "ai-build": cmd_ai_build, "palettes": cmd_palettes, "package": cmd_package}
     with LgpArchive(args.lgp) as lgp:
         commands[args.cmd](lgp, args)
 

@@ -30,7 +30,7 @@ import numpy as np
 from flask import Flask, abort, jsonify, request, send_file, send_from_directory
 from PIL import Image
 
-from ff7bg import ai, brush, looks, palettes, protect, requirements, signfix, signs, states, syw, texture, touchup, upscalers
+from ff7bg import ai, brush, looks, palettes, protect, requirements, resize, signfix, signs, states, syw, texture, touchup, upscalers
 from ff7bg.comfy import (
     DEFAULT_SETTINGS, FAMILIES, FAMILY_PRESETS, Comfy, ComfyError, build_caption_workflow, build_states_workflow,
     build_workflow, clean_caption, edit_keep, edit_padding, tile_count, work_size,
@@ -322,8 +322,9 @@ class Project:
             return None
         job = self.jobs[name]
         inp = AI / "input" / f"{name}.png"
-        # ("painted": without the parallax layers' light, ai.painted; views from before it are made again)
-        stamp = json.dumps([job.get("defaults"), inp.stat().st_mtime if inp.exists() else 0, "painted"])
+        # ("painted": without the parallax layers' light, ai.painted; "overlays-2": without front overlays too, their
+        # see-through tiles included (onna_5's keyhole and its rim); views from before them are made again)
+        stamp = json.dumps([job.get("defaults"), inp.stat().st_mtime if inp.exists() else 0, "painted", "overlays-2"])
         big = syw.view(pack, name, self.background(name), ai.painted(job.get("defaults")), tuple(job["pad"]),
                        AI / "input_syw", stamp)
         if big is None or not mixed:
@@ -630,6 +631,8 @@ class Project:
             "status": status, "flag": (vmeta.get("result") or {}).get("flag", ""),
             "error": meta.get("error", ""), "custom": not looks.is_empty(meta.get("override")),
             "look": look_id, "look_how": how, "current": cur or "", "family": vmeta.get("family"),
+            # how many times the original the version in the game is: the field list's "in game" size
+            "scale": (vmeta.get("result") or {}).get("scale"),
             # toggled groups (count_states) and of them looping animations: the field list's states filters
             "states": self.state_counts.get(name, 0), "anims": len(job.get("animations") or {}),
             # marked to come back to (the user's review list): {"note", "at"}, kept through new versions until cleared
@@ -1340,10 +1343,11 @@ def api_field_settings(name):
 
 
 def recipe_version(name, vid):
-    """The version whose render made this one: a touch-up's or a sign fix's source, followed down to a render."""
+    """The version whose render made this one: a touch-up's, a sign fix's or a resize's source, followed down to a
+    render."""
     vs, seen = project.versions, set()
     m = vs.meta(name, vid)
-    while m.get("mode") in ("touchup", "signs") and m.get("source") and m["source"] not in seen \
+    while m.get("mode") in ("touchup", "signs", "resize") and m.get("source") and m["source"] not in seen \
             and vs.render_path(name, m["source"]):
         seen.add(m["source"])
         vid, m = m["source"], vs.meta(name, m["source"])
@@ -1473,6 +1477,34 @@ def api_field_touchup(name):
     if not added:
         path.unlink(missing_ok=True)
     return jsonify(added=added, **field_detail(name))
+
+
+@app.post("/api/resize")
+def api_resize():
+    """Enlarge fields' versions in the game with an upscaler, no AI ({"names", "how": resize.HOWS key, "upscaler",
+    "dry": true for the count and time only; "version": another version, for one field}): a new version each,
+    built, and put in the game when the one it came from was."""
+    body = request.get_json(force=True)
+    how = body.get("how") if body.get("how") in resize.HOWS else "x2"
+    up = str(body.get("upscaler") or "")
+    if not up:
+        return jsonify(message="pick an upscaler"), 400
+    names = _scope_names(body)
+    one = body.get("version") if len(names) == 1 else None
+    jobs, skipped, seconds = [], {}, 0
+    for n in names:
+        plan, why = resize_plan(n, how, one)
+        if plan is None:
+            skipped[why] = skipped.get(why, 0) + 1
+            continue
+        vid, old, new, size = plan
+        job = make_job(n, "resize", version=vid, settings={"how": how, "upscaler": up})
+        job["est"] = resize_seconds(up, n, vid, size, old, new)
+        seconds += job["est"]
+        jobs.append(job)
+    if body.get("dry"):
+        return jsonify(count=len(jobs), seconds=seconds, skipped=skipped)
+    return jsonify(added=worker.enqueue(jobs), count=len(jobs), skipped=skipped)
 
 
 @app.get("/api/captions")
@@ -2419,6 +2451,129 @@ def _touch_state_panels(bg, rect, sdir, changed, view, new, S):
 JOB_KINDS["touchup"] = {"run": run_touchup, "est": lambda name: 70}
 
 
+def resize_plan(name, how, vid=None):
+    """(version, old scale, new scale, render size at 1x with its margins) for resizing a field's version (default:
+    the one in the game), or (None, reason) when it can't be."""
+    vid = vid or project.current(name)
+    src = project.versions.render_path(name, vid) if vid else None
+    if not src:
+        return None, "no version in the game"
+    fjob = project.jobs[name]
+    frame = project.versions.meta(name, vid).get("frame") or (0, 0, 0, 0)
+    l, t, r, b = (a + c for a, c in zip(fjob["pad"], frame))
+    fw, fh = fjob["canvas"][2] + l + r, fjob["canvas"][3] + t + b
+    with Image.open(src) as im:
+        old = max(1, round(im.width / fw))
+    new = resize.fit(fw, fh, resize.new_scale(old, how))
+    if new <= old:
+        return None, f"already {old}×" if resize.new_scale(old, how) <= old else "too big to enlarge further"
+    return (vid, old, new, (fw, fh)), None
+
+
+def resize_seconds(upscaler, name, vid, size, old, new):
+    """Rough seconds to resize a version (its render, `size` at 1x with margins, and its state panels) from old to
+    new scale, and build it. Measured 2026-11-19: hyou5_2 (1.4 MP render, 48 MP of state panels) 4x -> 8x with
+    Upscayl took 114 s; ancnt2 (6.6 MP + 16 MP) 8x -> 10x with ComfyUI's 4x-UltraSharp 141 s."""
+    fw, fh = size
+    render_px = fw * fh * old * old
+    panel_px = 0
+    sj = project.versions.states_dir(name, vid) / "states.json"
+    if sj.exists():
+        try:
+            panel_px = sum(e["rect"][2] * e["rect"][3] for e in json.loads(sj.read_text())["panels"]) * old * old
+        except (OSError, ValueError, KeyError, IndexError):
+            pass
+    calls = 1 + (math.ceil(panel_px / (resize.SHEET_MP * 1e6)) if panel_px else 0)
+    in_px = render_px + panel_px
+    out_px = in_px * (new / old) ** 2
+    if is_local(upscaler):
+        up = upscalers.seconds(upscaler, in_px, out_px) + 1.5 * (calls - 1)
+    else:
+        up = 3 * calls + 6 * in_px / 1e6
+    return round(up + 5 + 0.5 * render_px * (new / old) ** 2 / 1e6)  # then the build
+
+
+def _enlarger(w, upscaler):
+    """enlarge(img, w, h) with an upscaler: one that runs here (Upscayl, ImageMagick), or a ComfyUI upscale model."""
+    cancelled = lambda: w.cancel_flag  # noqa: E731
+    if is_local(upscaler):
+        return lambda img, W, H: upscalers.upscale(img, upscaler, W, H, cancelled)
+    comfy = Comfy(w.p.comfy_url)
+    if not comfy.online():
+        raise ComfyError(f"ComfyUI isn't reachable at {w.p.comfy_url}; start ComfyUI and try again, or pick an "
+                         "upscaler that runs without it (Upscayl, ImageMagick)")
+
+    def enlarge(img, W, H):
+        path = AI / "input" / f"resize_{threading.get_ident()}.png"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(img).save(path, compress_level=1)
+        try:
+            up = comfy.upload(path, "ff7studio_resize")
+        finally:
+            path.unlink(missing_ok=True)
+        wf = resize.workflow(up, upscaler, W, H, "ff7studio/resize")
+        return np.asarray(Image.open(io.BytesIO(comfy.run(wf, None, cancelled))).convert("RGB"))
+    return enlarge
+
+
+def run_resize(w, job):
+    """Enlarge a field's version with an upscaler, no AI repaint (ff7bg/resize.py): a new version from it at the
+    new scale, its state panels enlarged the same way, built, and put in the game if the old one was."""
+    name, opts = job["name"], job.get("settings") or {}
+    vs = w.p.versions
+    plan, why = resize_plan(name, opts.get("how", "x2"), job.get("version"))
+    if plan is None:
+        job["note"] = f"left as it is: {why}"
+        return
+    vid, old, new, (fw, fh) = plan
+    up = opts.get("upscaler") or upscalers.MAGICK
+    enlarge = _enlarger(w, up)
+    started = time.time()
+    vmeta = vs.meta(name, vid)
+    w.band = (0.0, 0.6)
+    w._stage(f"enlarging {old}× → {new}×", 0.05)
+    render = np.asarray(Image.open(vs.render_path(name, vid)).convert("RGB"))
+    big = enlarge(render, fw * new, fh * new)
+    if w.cancel_flag:
+        raise InterruptedError("cancelled")
+    meta = {k: v for k, v in vmeta.items() if k not in ("id", "created", "result", "held_back", "try")}
+    meta.update(mode="resize", source=vid, render_seconds=round(time.time() - started, 1),
+                note=f"enlarged {old}× → {new}× with {upscaler_label(up)}",
+                resize={"from": old, "to": new, "upscaler": up})
+    nvid = vs.create(name, _png(Image.fromarray(big)), meta)
+    sdir = vs.states_dir(name, vid)
+    if (sdir / "states.json").exists():
+        w.band = (0.6, 0.85)
+        try:
+            n = resize.enlarge_states(sdir, vs.states_dir(name, nvid), old, new, enlarge,
+                                      progress=lambda i, k: w._stage(f"enlarging its state panels, sheet {i + 1} of {k}", i / k))
+        except ValueError as e:  # its panels don't match its render: the build paints the states afresh
+            shutil.rmtree(vs.states_dir(name, nvid), ignore_errors=True)
+            vs.update_meta(name, nvid, note=meta["note"] + f" (states not carried over: {e})")
+            n = 0
+        if w.cancel_flag:
+            raise InterruptedError("cancelled")
+    w.p.thumb(name, nvid)
+    w.band = (0.85, 1.0)
+    w.build(name, nvid)
+    if w.p.current(name) == vid:
+        w.p.make_current(name, nvid)
+    job["version"] = nvid
+    job["note"] = f"{old}× → {new}×"
+
+
+def upscaler_label(u):
+    """An upscaler's name in words."""
+    if u == upscalers.MAGICK:
+        return "ImageMagick (Lanczos)"
+    if u.startswith(upscalers.UPSCAYL):
+        return f"Upscayl {u[len(upscalers.UPSCAYL):]}"
+    return Path(u).stem
+
+
+JOB_KINDS["resize"] = {"run": run_resize, "est": lambda name: 30}
+
+
 # States as whole renders (2026-11-12, the user: "layer the original state over the original background, then
 # generate the whole image using the same seed as the non-state background"): each state is the version's main
 # render recipe (its settings, seed, description, the field's sign and moving-part boxes, its input enlargement and
@@ -2484,6 +2639,8 @@ class WholeStates:
 
     def _unusable(self):
         r, fjob = self.root, self.p.jobs[self.name]
+        if r.get("mode") == "resize":
+            return "it's an enlargement of another version (Resize)"
         if r.get("mode") not in ("final", "preview", "signs", "touchup") or not r.get("settings"):
             return "the version wasn't rendered here (imported)"
         if r.get("source") and r.get("mode") not in ("signs", "touchup"):  # (a fix-up's source is what it fixed)

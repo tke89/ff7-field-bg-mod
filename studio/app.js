@@ -344,6 +344,7 @@ function modeLabel(v) {
   if (v.mode === "imported") return /^earlier/.test(v.note || "") ? "earlier render" : "imported";
   if (v.mode === "signs") return "signs lettered";
   if (v.mode === "touchup") return "touched up";
+  if (v.mode === "resize") return "enlarged";
   return v.try ? "try" : v.mode;
 }
 // "Krea 2 final", "Qwen 2.1 try", "earlier render" (workflow not recorded)
@@ -557,8 +558,9 @@ function renderVersionHead() {
   }
   if (v.source) {
     const from = d.versions.find((x) => x.id === v.source);
-    parts.push(`started from ${from ? esc(verName(from)) : "a deleted version"}`);
+    parts.push(`${v.mode === "resize" ? "enlarged" : "started"} from ${from ? esc(verName(from)) : "a deleted version"}`);
   }
+  if (v.mode === "resize" && v.note) parts.push(esc(v.note));
   parts.push(...verBits(v).map(([, t]) => esc(t)));
   if (s.seed !== undefined) parts.push(`seed ${s.seed}`);
   if (s.style_refs) parts.push(s.style_refs.length ? `${s.style_refs.length} style image${s.style_refs.length === 1 ? "" : "s"}` : "no style images");
@@ -662,7 +664,11 @@ function renderList() {
     if (f.review) flag.title = f.review.note ? `Marked for review: ${f.review.note}` : "Marked for review";
     const tags = (f.look !== defLook ? `<span class="tag" title="Look">${esc(lookName(f.look))}</span> ` : "") +
       (f.custom ? `<span class="tag custom" title="This field changes some settings for itself">field changes</span>` : "");
-    const sub = `${f.w}×${f.h}` + (f.copies.length ? ` · +${f.copies.length} copies` : "") + (tags ? `<br>${tags}` : "");
+    const inGame = f.current && f.scale
+      ? `<br><span title="The version in the game is ${f.scale}× the size of the original">${f.w * f.scale}×${f.h * f.scale} in game (${f.scale}×)</span>`
+      : "";
+    const sub = `<span title="The original background's size">${f.w}×${f.h} original</span>` +
+      (f.copies.length ? ` · +${f.copies.length} copies` : "") + inGame + (tags ? `<br>${tags}` : "");
     const subEl = li.querySelector(".sub");
     if (subEl.dataset.html !== sub) { subEl.innerHTML = sub; subEl.dataset.html = sub; }
     li.querySelector(".sdot").className = `sdot ${statusClass(f)}`;
@@ -786,6 +792,36 @@ function clearPicks() {
   S.sel.clear();
   S.anchor = null;
   selChanged();
+}
+
+// Resize: the selected fields' versions in the game enlarged with an upscaler, no AI (ff7bg/resize.py)
+function openResize(on = true) {
+  $("#selResizeRow").hidden = !on;
+  if (!on) return;
+  const keep = $("#resizeUp").value || S.resizeUp || "";
+  const { ups, labels } = upscalerChoices("", { seedvr2: false });
+  $("#resizeUp").innerHTML = ups.map((u) => `<option value="${esc(u)}">${esc(labels[u] || u)}</option>`).join("");
+  if (keep && ups.includes(keep)) $("#resizeUp").value = keep;
+  if (!ups.length) toast("No upscalers found: start ComfyUI, or install Upscayl or ImageMagick");
+}
+
+async function resizePicked() {
+  const names = [...S.sel], how = $("#resizeHow").value, upscaler = $("#resizeUp").value;
+  if (!names.length || !upscaler) return;
+  S.resizeUp = upscaler;
+  const body = { names, how, upscaler };
+  let e;
+  try { e = await api("/api/resize", { body: { ...body, dry: true } }); } catch (err) { toast(`Couldn't resize: ${err.message}`); return; }
+  const skipped = Object.entries(e.skipped || {}).map(([why, n]) => `${n} ${why}`).join(", ");
+  if (!e.count) { toast(`Nothing to resize${skipped ? `: ${skipped}` : ""}`); return; }
+  const what = $("#resizeHow").selectedOptions[0].textContent, up = $("#resizeUp").selectedOptions[0].textContent;
+  if (!await ask(`Enlarge ${e.count} field${e.count === 1 ? "" : "s"} ${what} with ${up}?\n\n` +
+    `Each gets a new version (its doors, lights and signs enlarged too) that goes in the game; the old one is kept.` +
+    (skipped ? `\n\nLeft as they are: ${skipped}.` : "") +
+    `\n\nEstimated time: about ${fmtDuration(e.seconds)}. You can keep browsing while they run; Cancel queue stops them.`)) return;
+  const r = await api("/api/resize", { body });
+  toast(`${r.added} field${r.added === 1 ? "" : "s"} queued to resize` + (r.count > r.added ? ` (${r.count - r.added} already queued)` : ""));
+  openResize(false);
 }
 
 // Redo states for the selected fields' versions in the game (fields without states or a version are skipped)
@@ -2779,7 +2815,7 @@ function renderEstimate() {
 // studio:field (a field's details shown), studio:jobs (jobs finished), studio:list (the field list redrawn),
 // studio:mode (the viewer's mode changed; a plug-in can add a #modeSeg button with its own data-mode and cover
 // the viewport while S.mode is that)
-const JOB_LABELS = { cleanup: () => "deleting versions not in use", touchup: () => "touch-up" };
+const JOB_LABELS = { cleanup: () => "deleting versions not in use", touchup: () => "touch-up", resize: () => "resize" };
 const ALL_FIELDS = "all fields";  // the name of jobs for every field (studio.py ALL_FIELDS)
 // ...and add field list filters: an option in #filter plus LIST_FILTERS[its value] = (field summary) => shown?
 const LIST_FILTERS = {};
@@ -2947,6 +2983,9 @@ async function init() {
   $("#selFinal").onclick = () => queuePicked("final");
   $("#selPreview").onclick = () => queuePicked("preview");
   $("#selStates").onclick = redoStatesPicked;
+  $("#selResize").onclick = () => openResize($("#selResizeRow").hidden);
+  $("#resizeGo").onclick = resizePicked;
+  $("#resizeCancel").onclick = () => openResize(false);
   $("#selMark").onclick = async () => {
     const names = [...S.sel];
     await setReview(names, true);

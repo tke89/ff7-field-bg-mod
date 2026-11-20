@@ -67,10 +67,20 @@
       <div class="row-btns tight">
         <button id="selFinal" class="primary small" title="Queue a final render of every selected field, each with its own look; each scene is checked for signs afresh, and described as chosen below">Generate final</button>
         <button id="selPreview" class="small" title="Queue a preview of every selected field; each scene is checked for signs afresh, and described as chosen below">Preview</button>
+        <button id="selResize" class="small" title="Enlarge the version each selected field has in the game with an upscaler of your choice: no AI repaint, so nothing in the picture changes but its size. Its doors, lights and signs are enlarged the same way. Each makes a new version that goes in the game.">Resize…</button>
         <button id="selStates" class="small" title="Make the doors, lights, signs and animations again for the version each selected field has in the game (its 3D scene too, if it has one). Fields without any are skipped. Tip: the States filter shows only the fields that have them.">Redo states</button>
         <button id="selMark" class="small" title="Mark every selected field for review: the Marked for review filter then shows them (their notes are kept)">⚑ Mark</button>
         <button id="selUnmark" class="small ghost" title="Clear the review mark (and its note) of every selected field, e.g. once you've dealt with them">Clear marks</button>
         <button id="selClear" class="small ghost" title="Clear the selection (Esc)">Clear</button>
+      </div>
+      <div class="sel-resize" id="selResizeRow" hidden>
+        <label title="How much bigger. ×2 doubles each field's resolution (a 4× version becomes 8×). &quot;To&quot; sizes enlarge every field to that scale; fields already there or bigger are left as they are. Nothing goes past 10× (the most a render can be), or past about 120 megapixels.">Enlarge
+          <select id="resizeHow"><option value="x2">×2 (double)</option><option value="x3">×3</option><option value="x4">×4</option>
+            <option value="to4">to 4×</option><option value="to6">to 6×</option><option value="to8">to 8×</option><option value="to10">to 10×</option></select></label>
+        <label title="Which upscaler enlarges them. Upscayl's models and ImageMagick run without ComfyUI; the others are ComfyUI's upscale models. Try all upscalers (on a version's More menu) shows how each one looks on a field.">With
+          <select id="resizeUp"></select></label>
+        <button id="resizeGo" class="small primary" title="Queue the resize for the selected fields">Resize</button>
+        <button id="resizeCancel" class="small ghost" title="Close this without resizing">Cancel</button>
       </div>
       <div class="sel-opts">
         <label class="check" title="What the AI is told each scene shows, for this batch (and Generate all missing).&#10;Keep existing: every field that already has a description keeps it, so its renders stay closer to what you've had. Only fields without one get a new one.&#10;Write new: every field is described again from its original art (a few seconds each). The new words can change what the AI paints.&#10;Recommended: Keep existing, unless you've changed how descriptions are written.">Descriptions

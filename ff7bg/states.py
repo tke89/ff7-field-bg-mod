@@ -187,7 +187,7 @@ def _panel(bg, rect, tile, scale, cluster, state, rendered_defaults):
 
     def inc(t):
         if not t.param:
-            return not parallax_glow(t)  # as the main render was painted (ai.painted)
+            return not parallax_glow(t) and not t.overlay  # as the main render was painted (ai.painted)
         if t.param == cluster.param:
             return bool(state & t.state)
         return bool(others.get(t.param, 0) & t.state)
