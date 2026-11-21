@@ -530,16 +530,39 @@ def build_pages(bg, main, job, mod_root, review_dir, panels=None, raw=None, anim
     # mesh (cutouts; filled in below, once ai_base is known). {sheet: (alpha 0-255, where it applies 0-1)}
     fine = {}
 
+    # Where no static scenery lies beneath a static tile, its pixels are covered whole: the smooth edge (tile_alpha)
+    # let the empty black behind show through. slfrst_1's light is a hole in the scenery filled by two walk-behind
+    # pieces that meet over nothing; each half see-through along the join left a quarter of the black showing, a dark
+    # stair-stepped line around the light (2026-11-20). Over other scenery the edge stays smooth (it blends with the
+    # same picture, and keeps the edges over characters smooth). {id(tile): its 1x pixels with nothing beneath}
+    bare_under = {}
+    covered1 = np.zeros((h, w), bool)
+    for t in draw_order([t for t in bg.tiles if is_base(t)]):
+        x, y = t.dst_x - min_x, t.dst_y - min_y
+        own = cache.tile(t)[..., 3] > 0
+        alone = own & ~covered1[y : y + t.size, x : x + t.size]
+        if alone.any() and not own.all():  # (a whole tile's alpha is already full)
+            bare_under[id(t)] = alone
+        covered1[y : y + t.size, x : x + t.size] |= own
+
     def alpha_for(t):
-        """A static tile's alpha at the output scale: its original's, or for walk-behind meshes the new one."""
+        """A static tile's alpha at the output scale: its original's, or for walk-behind meshes the new one; full
+        where nothing lies beneath it."""
         a = tile_alpha(cache.tile(t), scale)
-        f = fine.get(tile_sheet[id(t)]) if t.layer == 1 else None
-        if f is None:
-            return a
         sz = t.size * scale
         x, y = (t.dst_x - min_x) * scale, (t.dst_y - min_y) * scale
-        new_a, where = f[0][y : y + sz, x : x + sz], f[1][y : y + sz, x : x + sz]
-        return np.clip(np.round(where * new_a + (1 - where) * a), 0, 255).astype(np.uint8)
+        f = fine.get(tile_sheet[id(t)]) if t.layer == 1 else None
+        where = None
+        if f is not None:
+            new_a, where = f[0][y : y + sz, x : x + sz], f[1][y : y + sz, x : x + sz]
+            a = np.clip(np.round(where * new_a + (1 - where) * a), 0, 255).astype(np.uint8)
+        alone = bare_under.get(id(t))
+        if alone is not None:
+            fill = np.repeat(np.repeat(alone, scale, 0), scale, 1)
+            if where is not None:
+                fill &= where < 0.5  # (a mesh's painted wires stay as found)
+            a = np.where(fill, np.uint8(255), a)
+        return a
 
     def block_for(t):
         sz = t.size * scale
