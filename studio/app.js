@@ -667,7 +667,8 @@ function renderList() {
     const inGame = f.current && f.scale
       ? `<br><span title="The version in the game is ${f.scale}× the size of the original">${f.w * f.scale}×${f.h * f.scale} in game (${f.scale}×)</span>`
       : "";
-    const sub = `<span title="The original background's size">${f.w}×${f.h} original</span>` +
+    const sub = (f.place ? `<span class="place" title="Where this is in the game (its save-screen name)">${esc(f.place)}</span><br>` : "") +
+      `<span title="The original background's size">${f.w}×${f.h} original</span>` +
       (f.copies.length ? ` · +${f.copies.length} copies` : "") + inGame + (tags ? `<br>${tags}` : "");
     const subEl = li.querySelector(".sub");
     if (subEl.dataset.html !== sub) { subEl.innerHTML = sub; subEl.dataset.html = sub; }
@@ -677,7 +678,7 @@ function renderList() {
     li.classList.toggle("picked", picked);
     const box = li.querySelector(".pick");
     if (box.checked !== picked) box.checked = picked;
-    const text = (f.name + " " + f.copies.join(" ")).toLowerCase();
+    const text = (f.name + " " + f.copies.join(" ") + " " + (f.place || "")).toLowerCase();
     const pass =
       (!q || text.includes(q)) &&
       (!lookFilter || f.look === lookFilter) &&
@@ -2764,7 +2765,7 @@ window.addEventListener("keydown", (e) => {
 function renderStatus() {
   const d = S.detail;
   if (!d) return;
-  const parts = [`<b>${d.name}</b> ${d.w}×${d.h}`];
+  const parts = [`<b>${d.name}</b>${d.place ? ` (${esc(d.place)})` : ""} ${d.w}×${d.h}`];
   if (d.copies.length) parts.push(`also used by ${d.copies.join(", ")}`);
   parts.push(`look "${esc(d.look.name)}"${d.custom ? " + field changes" : ""} · ${famShort(d.effective.family)}`);
   const cur = d.versions.find((v) => v.current);
@@ -2914,12 +2915,45 @@ async function pollQueue() {
   setTimeout(pollQueue, 1000);
 }
 
+// Restart the game standing in the open field (FF8: ff8bg/play.py writes a save there and loads it), following its
+// progress in toasts
+async function playHere() {
+  const name = S.current;
+  if (!name) return;
+  const r = await api("/api/game/play", { body: { name } });
+  if (!r.started) { toast(r.message || "The game is already on its way to a field"); return; }
+  toast(`Starting FF8 in ${name} (about 30 seconds). Leave the game window in front until you're there: ` +
+    "the game only takes the Studio's key presses while it's in front.", 9000);
+  const btn = $("#btnPlayHere");
+  btn.disabled = true;
+  let last = "";
+  for (let i = 0; i < 120; i++) {
+    await new Promise((res) => setTimeout(res, 2000));
+    const st = await api("/api/game/play");
+    if (!st.busy) {
+      if (st.ok === false) await tell(`${st.message}\n\nIf the game stopped at the load screen, pick Slot 2 and the ` +
+        "save it shows selected (save 30): that's the one made for this field.");
+      else toast(`${name}: ${st.message}`);
+      break;
+    }
+    if (st.message && st.message !== last) { toast(`${name}: ${st.message}`); last = st.message; }
+  }
+  btn.disabled = false;
+}
+
 async function pollStatus() {
   try {
     const s = await api("/api/status");
     $("#comfyStatus").classList.toggle("online", s.comfy_online);
     $("#comfyStatus").title = `ComfyUI at ${s.comfy_url}: ${s.comfy_online ? "connected" : "not reachable; start ComfyUI"}`;
     $("#btnInstall").title = `Copy the current versions' textures into ${s.game_mods}`;
+    if (s.game && s.game.title) {  // FF7 or FF8 (studio.py --game)
+      document.title = s.game.title;
+      $(".brand").textContent = s.game.title;
+    }
+    S.game = (s.game && s.game.key) || "ff7";
+    if (S.game === "ff8") $("#search").placeholder = "Search fields or places (garden, bghoke, castle…)";
+    $("#btnPlayHere").hidden = !(s.game && s.game.play);
     S.gameWindow = s.game_window;
     const gh = gameHeight();
     $("#btnGame").title = `The size the game shows it: ${gh} pixels high, so each original pixel is ` +
@@ -3022,6 +3056,7 @@ async function init() {
   $("#btnFit").onclick = fitView;
   $("#btn1x").onclick = () => setZoom(1);
   $("#btnGame").onclick = () => setZoom(gameHeight() / 240 / (window.devicePixelRatio || 1));
+  $("#btnPlayHere").onclick = playHere;
   $("#btnNative").onclick = () => setZoom((S.imgs.new ? S.imgs.new.naturalWidth / S.detail.w : 4) / (window.devicePixelRatio || 1));
   $("#leftSel").onchange = (e) => { S.left = e.target.value; renderVersions(); loadImages(false); };
   $("#rightSel").onchange = (e) => { S.view = e.target.value; renderVersions(); loadImages(false); };
@@ -3240,7 +3275,8 @@ Replace them with the ` +
   };
   watchHelp();
   $("#btnInstall").onclick = async () => {
-    if (!await ask(`Copy every field's current version into the game's FFNx folder?\n${$("#btnInstall").title.replace("Copy the current versions' textures into ", "")}\n\nThey are only used when the game runs through FFNx.`)) return;
+    const loader = S.game === "ff8" ? "Demaster" : "FFNx";
+    if (!await ask(`Copy every field's current version into the game's ${loader} folder?\n${$("#btnInstall").title.replace("Copy the current versions' textures into ", "")}\n\nThey are only used when the game runs through ${loader}.`)) return;
     const r = await api("/api/install", { body: {} });
     await tell(r.message);
   };

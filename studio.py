@@ -1,11 +1,16 @@
 """FF7 Field Studio: browse every field, restyle it with ComfyUI, and compare original vs. new
 exactly as the game will compose it.
 
-    .venv\\Scripts\\python studio.py          (then open http://127.0.0.1:8765)
+    .venv\\Scripts\\python studio.py              (FF7; then open http://127.0.0.1:8765)
+    .venv\\Scripts\\python studio.py --game ff8   (FF8 Remastered; http://127.0.0.1:8767)
 
 Settings live in named looks (studio/looks.json), assigned to fields one by one or by name
 pattern; a field can override any setting on top of its look. Every render is kept as a version
 (ai/versions/<map>/<id>); the field's current version is what dist/ and the game get.
+
+FF8 is its own project (projects/ff8: renders, field settings, looks, what's built), with its own game code in ff8bg
+(reading the fields, page layout, install); the painting engine (ff7bg) is shared. The game's own parts are behind
+GAME (ff7bg.game.Ff7Game / ff8bg.game.Ff8Game).
 """
 import argparse
 import base64
@@ -19,7 +24,6 @@ import shutil
 import sys
 import threading
 import time
-import tomllib
 import traceback
 import webbrowser
 from collections import OrderedDict, deque
@@ -35,27 +39,47 @@ from ff7bg.comfy import (
     DEFAULT_SETTINGS, FAMILIES, FAMILY_PRESETS, Comfy, ComfyError, build_caption_workflow, build_states_workflow,
     build_workflow, clean_caption, edit_keep, edit_padding, tile_count, work_size,
 )
-from ff7bg.field import parse_background
-from ff7bg.lgp import LgpArchive
-from ff7bg.lzs import decompress
+from ff7bg.game import DEFAULT_WORKDIR as FF7_WORKDIR
 from ff7bg.sheets import PageCache, canvas_rect, page_tile_source, render_composite
 from ff7bg.upscalers import UpscalerError, is_local
 from ff7bg.versions import VersionStore
 
 HERE = Path(__file__).resolve().parent
-AI = HERE / "ai"
+
+
+def _game_key():
+    """Which game this Studio works on (--game ff7|ff8), read before the paths below are set."""
+    args = sys.argv[1:]
+    for i, a in enumerate(args):
+        if a == "--game" and i + 1 < len(args):
+            return args[i + 1].lower()
+        if a.startswith("--game="):
+            return a.split("=", 1)[1].lower()
+    return "ff7"
+
+
+GAME_KEY = _game_key()
 STUDIO = HERE / "studio"
-STYLES = STUDIO / "styles"
+STYLES = STUDIO / "styles"  # style images: shared by both games
+if GAME_KEY == "ff8":
+    PROJECT_DIR = HERE / "projects" / "ff8"  # everything FF8's own: nothing in it touches FF7's fields
+    AI = PROJECT_DIR / "ai"
+    DIST = PROJECT_DIR / "dist"
+    LOOKS_FILE = PROJECT_DIR / "looks.json"  # started as a copy of FF7's looks (seed_looks), separate after
+    PLUGINS = PROJECT_DIR / "plugins"
+    LEGACY_SETTINGS = PROJECT_DIR / "settings.json"
+else:
+    PROJECT_DIR = HERE
+    AI = HERE / "ai"
+    DIST = HERE / "dist" / "mods" / "Textures"
+    LOOKS_FILE = STUDIO / "looks.json"
+    PLUGINS = STUDIO / "plugins"
+    LEGACY_SETTINGS = STUDIO / "settings.json"
 FIELDS_META = AI / "fields"
 VERSIONS = AI / "versions"
-DIST = HERE / "dist" / "mods" / "Textures"
-GAME_WORKDIR = Path(
-    r"C:\Program Files (x86)\Steam\steamapps\common\FINAL FANTASY VII Steam Edition\ff7\workingdir"
-)
-LOOKS_FILE = STUDIO / "looks.json"
+GAME_WORKDIR = FF7_WORKDIR  # FF7's FFNx folder (the 3D and models plug-ins read it)
 PREFS_FILE = AI / "prefs.json"  # the Studio's own settings: {"auto_install": bool, "syw_pack": path (optional)}
-PLUGINS = STUDIO / "plugins"
-LEGACY_SETTINGS = STUDIO / "settings.json"
+GAME = None  # the game's own parts (Ff7Game / Ff8Game), set in main()
 EDIT_FAMILIES = {name for name, f in FAMILIES.items() if f.get("edit")}
 KEEP_IN_GAME = 0.6  # a new version below this share of original outlines doesn't go in game by itself
 FLAG_KEPT = 0.8     # below this share of outlines a field is flagged (and "retry" tries again)
@@ -86,9 +110,10 @@ WHOLE_STATS = AI / "whole_stats.json"  # seconds one state's whole render takes:
 
 
 class Project:
-    def __init__(self, lgp_path):
-        self.lgp_path = Path(lgp_path)
-        self.lgp = LgpArchive(lgp_path)
+    def __init__(self, game):
+        self.game = game
+        self.lgp_path = getattr(game, "lgp_path", None)  # (FF7)
+        self.lgp = getattr(game, "lgp", None)
         self.state_counts = {}
         self.state_renders = {}  # whole renders a states pass needs per field (count_states)
         try:
@@ -103,6 +128,7 @@ class Project:
         self.ready = False
         self.status = "starting"
         FIELDS_META.mkdir(parents=True, exist_ok=True)
+        seed_looks()
         self.looks = looks.LookStore(LOOKS_FILE)
         self.looks.load(LEGACY_SETTINGS)
         self.versions = VersionStore(VERSIONS, DIST)
@@ -116,15 +142,11 @@ class Project:
         jobs_file = AI / "jobs.json"
         if not jobs_file.exists():
             self.status = "preparing field images (first run, about a minute)"
-            names = [n for n in self.lgp.names() if "." not in n and n != "maplist"]
 
-            def fields():
-                for n in names:
-                    with self.lgp_lock:
-                        raw = decompress(self.lgp.read(n))
-                    yield n, raw
+            def say(msg):
+                self.status = msg
 
-            ai.prep(fields(), AI)
+            self.game.prep(AI, say)
         self.jobs = json.loads(jobs_file.read_text())
         self.migrate()
         self.migrate_input_upscaler()
@@ -135,9 +157,8 @@ class Project:
     def count_states(self):
         """How many toggled groups (doors, lights, animations: what the states pass restyles) each field has, for the
         field list's "With states" filter. Counted from the backgrounds once (about 20 s) and kept in STATE_COUNTS
-        until flevel.lgp changes."""
-        stat = self.lgp_path.stat()
-        stamp = f"{stat.st_size}:{stat.st_mtime_ns}"
+        until the game's field data (flevel.lgp, main.zzz) changes."""
+        stamp = self.game.stamp()
         try:
             cached = json.loads(STATE_COUNTS.read_text())
             if cached.get("stamp") == stamp and cached.get("format") == 4 and set(cached.get("counts", {})) >= set(self.jobs):
@@ -239,16 +260,14 @@ class Project:
             self.looks.save()
 
     def field_raw(self, name):
-        with self.lgp_lock:
-            return decompress(self.lgp.read(name))
+        """FF7's decompressed field file (palette effects, scripts); None for FF8."""
+        return self.game.raw(name)
 
     def background(self, name):
         if name in self.bg_cache:
             self.bg_cache.move_to_end(name)
             return self.bg_cache[name]
-        with self.lgp_lock:
-            raw = decompress(self.lgp.read(name))
-        bg = parse_background(name, raw)
+        bg = self.game.background(name)
         self.bg_cache[name] = bg
         if len(self.bg_cache) > 24:
             self.bg_cache.popitem(last=False)
@@ -305,7 +324,10 @@ class Project:
         return s
 
     def syw_pack(self):
-        """The SYW Unified pack (ff7bg/syw.py): prefs' "syw_pack", else 7th Heaven's library; or None."""
+        """The SYW Unified pack (ff7bg/syw.py): prefs' "syw_pack", else 7th Heaven's library; or None (always for
+        FF8: the pack is FF7's)."""
+        if not self.game.features["syw"]:
+            return None
         return syw.find_pack(prefs().get("syw_pack"))
 
     def syw_has(self, name):
@@ -628,6 +650,7 @@ class Project:
             status = "generated" if self.versions.ids(name) else "none"
         return {
             "name": name, "copies": job["copies"], "w": job["canvas"][2], "h": job["canvas"][3],
+            "place": job.get("place"),  # FF8: the save screen's name for it ("B-Garden- Classroom")
             "status": status, "flag": (vmeta.get("result") or {}).get("flag", ""),
             "error": meta.get("error", ""), "custom": not looks.is_empty(meta.get("override")),
             "look": look_id, "look_how": how, "current": cur or "", "family": vmeta.get("family"),
@@ -1118,7 +1141,8 @@ class Worker(threading.Thread):
         self._stage("building game textures and animations", 0.97)
         shutil.rmtree(vs.pages_root(name, vid), ignore_errors=True)
         r = ai.build_pages(bg, main, fjob, vs.pages_root(name, vid), vs.review_dir(name, vid), panels,
-                           raw=self.p.field_raw(name), anim_cache=AI / "palette_states" / f"{name}.json")
+                           raw=self.p.field_raw(name), anim_cache=AI / "palette_states" / f"{name}.json",
+                           writer=GAME.write_pages)
         b, a = r["drift_before"], r["drift_after"]
         vs.update_meta(name, vid, result={
             "scale": r["scale"], "pages": r["pages"], "edges_kept": round(r["edges_kept"], 3),
@@ -1160,11 +1184,7 @@ def _include(layers, fx, params):
 
 
 def _load_pages(name, vid):
-    pages = {}
-    for f in project.versions.pages_dir(name, vid).glob(f"{name}_*_00.png"):
-        tex = int(f.stem[len(name) + 1 :].split("_")[0])
-        pages[tex] = np.asarray(Image.open(f).convert("RGBA"))
-    return pages
+    return GAME.load_pages(project.versions.pages_dir(name, vid), name, project.background(name))
 
 
 def _png(img, level=1):
@@ -1223,21 +1243,32 @@ def api_plugins():
 
 
 def game_window():
-    """How tall the game draws its picture, from FFNx.toml: the window's height, or the screen's when
-    fullscreen (only the browser knows that one). None without FFNx."""
-    try:
-        with open(GAME_WORKDIR / "FFNx.toml", "rb") as f:
-            t = tomllib.load(f)
-    except (OSError, ValueError):
-        return None
-    return {"fullscreen": bool(t.get("fullscreen")), "height": int(t.get("window_size_y") or 0)}
+    """How tall the game draws its picture (FF7: from FFNx.toml), for the "game size" zoom; or None."""
+    return GAME.window()
 
 
 @app.get("/api/status")
 def api_status():
     url = project.comfy_url
     return jsonify(ready=project.ready, status=project.status, comfy_online=Comfy(url).online(),
-                   comfy_url=url, game_mods=str(GAME_WORKDIR / "mods" / "Textures"), game_window=game_window())
+                   comfy_url=url, game_mods=str(GAME.mods_dir), game_window=game_window(),
+                   game={"key": GAME.key, "title": GAME.title, "play": GAME.features.get("play", False)})
+
+
+@app.route("/api/game/play", methods=["GET", "POST"])
+def api_game_play():
+    """GET: how the last "Play in game" is going. POST {"name"}: restart the game standing in that field (FF8:
+    ff8bg/play.py writes a save there, from prefs' "ff8_jump_base" or its default, and loads it)."""
+    player = getattr(GAME, "player", None)
+    if player is None:
+        return jsonify(started=False, busy=False, message="this game's Studio can't start it in a field")
+    if request.method == "GET":
+        return jsonify(dict(player.status, trace=player.trace[-40:]))  # (the trace: what each step saw, for diagnosis)
+    name = (request.get_json(force=True) or {}).get("name")
+    _field_or_404(name)
+    from ff8bg.play import DEFAULT_BASE
+    started = player.start(name, base=prefs().get("ff8_jump_base", DEFAULT_BASE))
+    return jsonify(started=started, **player.status)
 
 
 # ---------------------------------------------------------------- routes: fields
@@ -1709,6 +1740,8 @@ def api_strip(name):
 
 
 def palette_preview(name):
+    if not GAME.features["palettes"]:
+        return []  # FF7's palette effects; FF8's aren't read yet
     if name not in palette_previews:
         palette_previews[name] = palettes.preview(project.field_raw(name), project.background(name))
     return palette_previews[name]
@@ -1722,7 +1755,7 @@ def _frame_hashes(name, compute=False):
     """{(page, palette): {colours: hash}} of the field's animated textures, from the states build_pages keeps
     (compute: replay the field's scripts for them when no build has yet, a few seconds)."""
     path = AI / "palette_states" / f"{name}.json"
-    if not path.exists() and not compute:
+    if not GAME.features["palettes"] or (not path.exists() and not compute):
         return {}
     anim = palettes.animated_textures_cached(project.field_raw(name), project.background(name), path)
     return {k: {c: h for h, c in v.items()} for k, v in anim.items()}
@@ -3164,16 +3197,16 @@ def prefs():
 
 
 def install_field(name, copies=()):
-    """Copy one field's current textures (and its copies') from dist into the game's FFNx folder, as Install does
-    for every field. Copies only: textures from other mods in the same folders stay. Returns how many."""
-    dest = GAME_WORKDIR / "mods" / "Textures"
+    """Copy one field's current textures (and its copies') from dist into the game's mod folder (FF7: FFNx's
+    mods/Textures; FF8: Demaster's DEMASTER_EXP), as Install does for every field. Copies only: textures from other
+    mods in the same folders stay. Returns how many."""
     count = 0
     for n in (name, *copies):
         src_dir = DIST / "field" / n
         if not src_dir.exists():
             continue
         for src in src_dir.rglob("*.png"):
-            target = dest / src.relative_to(DIST)
+            target = GAME.install_target(src.relative_to(DIST))
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, target)
             count += 1
@@ -3197,16 +3230,15 @@ def api_prefs_set():
 
 @app.post("/api/install")
 def api_install():
-    dest = GAME_WORKDIR / "mods" / "Textures"
     if not (DIST / "field").exists():
         return jsonify(ok=False, message="nothing built yet")
     count = 0
     for src in (DIST / "field").rglob("*.png"):
-        target = dest / src.relative_to(DIST)
+        target = GAME.install_target(src.relative_to(DIST))
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, target)
         count += 1
-    return jsonify(ok=True, message=f"copied {count} textures to {dest}")
+    return jsonify(ok=True, message=f"copied {count} textures to {GAME.mods_dir}")
 
 
 # ---------------------------------------------------------------- main
@@ -3228,26 +3260,79 @@ def load_plugins():
             traceback.print_exc()
 
 
+def make_game(key, lgp=None, game_dir=None):
+    if key == "ff8":
+        from ff8bg.game import Ff8Game
+        return Ff8Game(game_dir) if game_dir else Ff8Game()
+    if key != "ff7":
+        raise SystemExit(f"unknown game {key!r}: ff7 or ff8")
+    from ff7bg.game import Ff7Game
+    return Ff7Game(lgp)
+
+
+def seed_looks():
+    """FF8's looks start as a copy of FF7's (the looks and the default, not FF7's by-name assignments), so the first
+    renders use the look already tuned; after that each game's looks are its own."""
+    if GAME_KEY == "ff7":
+        return
+    if LOOKS_FILE.exists():
+        data = json.loads(LOOKS_FILE.read_text())
+        if without_syw(data):
+            LOOKS_FILE.write_text(json.dumps(data, indent=1))
+        return
+    src = STUDIO / "looks.json"
+    LOOKS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if src.exists():
+        data = json.loads(src.read_text())
+        data["assignments"] = []
+        without_syw(data)
+        LOOKS_FILE.write_text(json.dumps(data, indent=1))
+
+
+def without_syw(data):
+    """FF7's SYW Unified pack as a start image means nothing for FF8: such looks start from its fallback instead
+    (what FF8 renders got anyway: Project.input_settings). Returns whether anything changed."""
+    changed = False
+
+    def fix(layer):
+        nonlocal changed
+        for part in [layer.get("settings") or {}, *(layer.get("profiles") or {}).values()]:
+            for key in ("input_upscaler", "upscaler"):
+                if part.get(key) in syw.NAMES:
+                    part[key] = syw.FALLBACK
+                    changed = True
+
+    for look in (data.get("looks") or {}).values():
+        fix(look)
+    return changed
+
+
 def main():
-    global project, worker
+    global project, worker, GAME
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, default=8765)
-    ap.add_argument("--lgp", default=str(GAME_WORKDIR / "data" / "field" / "flevel.lgp"))
+    ap.add_argument("--game", default="ff7", help="ff7 (default) or ff8 (FINAL FANTASY VIII Remastered)")
+    ap.add_argument("--port", type=int, default=None, help="default: 8765 for FF7, 8767 for FF8")
+    ap.add_argument("--lgp", default=None, help="FF7's flevel.lgp (default: the Steam release's)")
+    ap.add_argument("--game-dir", default=None, help="FF8 Remastered's folder (default: the Steam one)")
     ap.add_argument("--no-browser", action="store_true")
     args = ap.parse_args()
 
+    GAME = make_game(args.game.lower(), args.lgp, args.game_dir)
+    port = args.port or GAME.port
     STYLES.mkdir(parents=True, exist_ok=True)
-    project = Project(args.lgp)
+    AI.mkdir(parents=True, exist_ok=True)
+    project = Project(GAME)
     threading.Thread(target=project.prepare, daemon=True).start()
     worker = Worker(project)
     worker.start()
-    load_plugins()
+    if GAME.features["plugins"]:
+        load_plugins()
 
-    url = f"http://127.0.0.1:{args.port}"
-    print(f"FF7 Field Studio: {url}")
+    url = f"http://127.0.0.1:{port}"
+    print(f"{GAME.title}: {url}")
     if not args.no_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-    app.run(host="127.0.0.1", port=args.port, threaded=True)
+    app.run(host="127.0.0.1", port=port, threaded=True)
 
 
 if __name__ == "__main__":

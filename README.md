@@ -45,6 +45,25 @@ python -m venv .venv
 4. Set up FFNx once ([Getting started](docs/getting-started.md#4-ffnx)), then press **Settings ▾ → Install all to
    game**. From then on, each field's new version goes into the game as soon as it's made.
 
+### FINAL FANTASY VIII Remastered (early)
+
+**`Start FF8 Studio.bat`** opens the same Studio for FF8 Remastered (Steam) at http://127.0.0.1:8767. It's a project of
+its own: renders, field settings and looks live in `projects/ff8`, apart from FF7's, and both Studios can run at once.
+Its looks start as a copy of FF7's. The game loads the new art through
+[Demaster](https://github.com/MaKiPL/FF8_demaster) (installed in the game folder, with the game's archives unpacked
+into `DEMASTER_EXP`); the Studio installs each field's pages into `DEMASTER_EXP/textures/field_bg`.
+
+Each field opens on what its scripts show at entry, and animations (screens, flames, the library's page turning) come
+from its scripts too. Where a script decides by a story flag or by where you came from, the Studio takes the script's
+"otherwise" branch. FF8's colour effects (pulsing lights) are applied by the game over the new art, so they need
+nothing here. The field list shows each field's save-screen place name ("B-Garden- Infirmary"). Not read: seven test
+and logo rooms in older file layouts.
+
+**Play in game** (above the picture) restarts the game standing in the open field, in about half a minute: the Studio
+writes a copy of one of your saves moved to that field into slot 2, save 30, restarts the game and loads it. The story
+state is that save's (by default `slot1_save04.ff8`; set `"ff8_jump_base"` in `projects/ff8/ai/prefs.json` to use
+another). The game needs to run in a window for it (its config.txt, screenmode 2) and Steam must be running.
+
 ## Documentation
 
 | | |
@@ -64,12 +83,18 @@ studio/              the Studio's web page (index.html, app.js, app.css) and you
 ff7bgmod.py          command-line kit
 ff7bg/               the library: archive and field parsing (lgp, lzs, field, scripts), texture pages
                      (sheets), AI workflows for ComfyUI (comfy), alignment (align), building game textures
-                     (ai), the states pass (states), looks and versions
-Start Studio.bat     starts the Studio
+                     (ai), the states pass (states), looks and versions; game.py: FF7's own parts for the Studio
+ff8bg/               FF8 Remastered: archives (archive), backgrounds as the engine's tiles (field), field scripts
+                     (scripts: entry states, animations, place), text and place names (text), Demaster's page
+                     layout and install (pages), going to a field by save (saves, play, control), and its
+                     Studio game (game)
+Start Studio.bat     starts the Studio (FF7)
+Start FF8 Studio.bat starts the FF8 Studio
 ```
 
 Created on first run and not part of the repository: `ai/` (prepared inputs, every version), `dist/` (the game
-textures to install), `studio/looks.json` (your looks), `work/` (command-line exports).
+textures to install), `studio/looks.json` (your looks), `work/` (command-line exports), `projects/ff8/` (the FF8
+Studio's own ai/, dist/ and looks).
 
 ## License and legal
 

@@ -9,7 +9,7 @@
   ai-prep  [map...] [--aspect 1:1,3:2]  every map's default view -> ai/input/<map>.png
   ai-build [map...]                     ai/output/<map>.png -> aligned FFNx pages + ai/review/<map>.jpg
 
-  package [--max-scale 4]               every field's in-game textures -> dist/package/FF7 Field Studio fields.zip
+  package [--max-scale 4]               every field's in-game textures -> dist/package/HD Painterly Anime Fields.zip
                                         (for a Steam Deck or another PC: plain FFNx or 7th Heaven)
 """
 import argparse
@@ -252,7 +252,7 @@ def main():
 
     p = sub.add_parser("package", help="every field's in-game textures in one zip, for a Steam Deck or another PC")
     p.add_argument("--src", default=str(HERE / "dist" / "mods" / "Textures" / "field"))
-    p.add_argument("--out", default=str(HERE / "dist" / "package" / "FF7 Field Studio fields.zip"))
+    p.add_argument("--out", default=str(HERE / "dist" / "package" / "HD Painterly Anime Fields.zip"))
     p.add_argument("--max-scale", type=int, default=4,
                    help="shrink anything bigger to this many times the original (0 keeps every size); "
                         "4 is already more than a Steam Deck's screen shows")

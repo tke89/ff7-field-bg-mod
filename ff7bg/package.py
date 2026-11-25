@@ -22,7 +22,8 @@ import numpy as np
 from PIL import Image
 
 PAGE = 256  # a field texture page's size at 1x
-FOLDER = "FF7 Field Studio fields"  # the one folder in the zip
+NAME = "HD Painterly Anime Fields"  # the mod's name (in 7th Heaven and its catalog; the user's choice, 2026-11-21)
+FOLDER = NAME  # the one folder in the zip
 MOD_ID = "d8ae1d67-2414-4124-9de4-fc1e8be82a86"  # the same every time, so 7th Heaven sees a new package as an update
 DECK_SCALE = 4
 
@@ -55,12 +56,14 @@ def _shrink_job(job):
 
 
 def mod_xml(count, when):
+    # Version YYYY.MMDDHH: 7th Heaven offers an update when the number is higher, and a second package on the same
+    # day (2026-11-21's repack after the page fixes) has to be higher than the first (2026.1121)
     return f"""<?xml version="1.0"?>
 <ModInfo>
   <ID>{MOD_ID}</ID>
-  <Name>FF7 Field Studio fields</Name>
+  <Name>{NAME}</Name>
   <Author>FF7 Field Studio</Author>
-  <Version>{when:%Y.%m%d}</Version>
+  <Version>{when:%Y.%m%d%H}</Version>
   <ReleaseDate>{when:%Y-%m-%d}</ReleaseDate>
   <Category>Field Textures</Category>
   <Description>Remastered field backgrounds made with FF7 Field Studio: {count} fields, with their doors, lights and animations.</Description>
@@ -74,8 +77,8 @@ def mod_xml(count, when):
 
 def readme(count, max_scale, when):
     size = f"Every field is at most {max_scale}x the original size." if max_scale else "Fields are at their full size."
-    return f"""FF7 Field Studio fields
-=======================
+    return f"""{NAME}
+{"=" * len(NAME)}
 {count} remastered fields, packaged {when:%Y-%m-%d %H:%M}. {size}
 For the 2026 Steam release of FINAL FANTASY VII (Steam app 3837340). Works with plain FFNx or with 7th Heaven.
 

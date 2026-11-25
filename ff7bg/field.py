@@ -209,7 +209,11 @@ def mark_overlays(bg):
 
 
 def page_rgba(bg, tex, palette):
-    """Decode a 256x256 texture page to RGBA using the given palette."""
+    """Decode a 256x256 texture page to RGBA using the given palette. A background from another game decodes its own
+    pages (ff8bg's has decode_page)."""
+    own = getattr(bg, "decode_page", None)
+    if own is not None:
+        return own(tex, palette)
     page = bg.pages[tex]
     if page.depth == 2:
         raw = np.frombuffer(page.data, dtype="<u2").reshape(256, 256)

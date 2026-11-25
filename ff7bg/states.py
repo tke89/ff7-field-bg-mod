@@ -399,6 +399,12 @@ def run(comfy, bg, rect, main, settings, style_refs, work_dir, progress=None, ca
     # states are painted, and the scene it rests on taken, with that group off (cdef), so the art carries none of it;
     # the game draws that group's frames over it. Without whole renders there's no picture without it to take
     solid = {t.param for t in bg.tiles if t.param and not t.blending}
+    # A game whose backgrounds stack switches as layers (FF8: black silhouettes with the lit pieces drawn over them,
+    # bg.occluders == "animated") only counts groups that move: turned off, a piece that just sits on top shows art
+    # the game never does (bcform1a's train painted with its railing off had the railing's black silhouette, which
+    # came through as black outlines around the railing, 2026-11-21)
+    if getattr(bg, "occluders", None) == "animated":
+        solid &= {int(p) for p in (animated or {})}
     occ = {id(c): (_occluders(bg, rect, cache, c, defaults, solid) if use_whole else {}) for c in clusters}
 
     def cdef(c):

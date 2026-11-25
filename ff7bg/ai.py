@@ -9,7 +9,9 @@ effects baked into it, and the states the game shows on entry. Toggled states (d
 animation frames) come from the states pass (ff7bg.states) when it has run; otherwise, like
 parallax layers 2-3, they keep the original art, upscaled and color-matched to the new image.
 """
+import dataclasses
 import hashlib
+from copy import copy as shallow_copy
 import json
 from pathlib import Path
 
@@ -262,6 +264,7 @@ def prepare_main(bg, ai_path, job, rendered_defaults=None, scale=None, do_align=
 
 
 ADD_BLEND = {1, 3}  # tile blends that add light: add, add a quarter
+SUBTRACT = 2
 # Palette effects with more states than this stay still: every state is a texture FFNx loads while the field plays.
 # 203 fields have under 300; five have 600 to 13,700 (bugin3, rootmap, ancnt2, whitein, crater_2), and SYW's
 # pack turns animation off in those too.
@@ -364,9 +367,10 @@ def still_light(bg, anim, stored, pages, scale, M):
             block[..., :3] = np.clip(state_light(block[..., :3].astype(np.float32), base[ys, xs], mean[ys, xs]), 0, 255)
 
 
-def build_pages(bg, main, job, mod_root, review_dir, panels=None, raw=None, anim_cache=None):
+def build_pages(bg, main, job, mod_root, review_dir, panels=None, raw=None, anim_cache=None, writer=write_pages):
     """Cut the new art into FFNx pages for the map and its copies, and write the review sheet. With the field's
     raw data, also its palette effects as animated textures (anim_cache: where the replayed states are kept).
+    writer(name, pages, mod_root) saves the pages in the game's own layout (FF8: ff8bg.pages.write_pages).
 
     panels (from the states pass): {"images": {(param, state): (rect, RGB)},
     "off": [(rect, footprint, RGB)]}, each image covering its rect at the output scale."""
@@ -429,12 +433,66 @@ def build_pages(bg, main, job, mod_root, review_dir, panels=None, raw=None, anim
     # over empty background), so it has to carry the new art itself or that area turns black.
     # (built from the solid tiles' own upscaled alpha, so the two add up exactly at their edges)
     shown = shows(defaults)
+
+    # Where no static scenery lies beneath a static tile, its pixels are covered whole: the smooth edge (tile_alpha)
+    # let the empty black behind show through. slfrst_1's light is a hole in the scenery filled by two walk-behind
+    # pieces that meet over nothing; each half see-through along the join left a quarter of the black showing, a dark
+    # stair-stepped line around the light (2026-11-20). Over other scenery the edge stays smooth (it blends with the
+    # same picture, and keeps the edges over characters smooth). {id(tile): its 1x pixels with nothing beneath}
+    # And there the edge is drawn or not, never half (free_under, hard_over_nothing): a soft rim over nothing is half
+    # black in the game. mds7plr1's scrap piles had thick black outlines in game, gone with hard edges there
+    # (2026-11-22); the review hid them, as its static glows carry the picture into the rim and the game's don't.
+    # A walk-behind tile (layer 1) keeps its soft edge only over layer 0, the one layer surely drawn before it: the
+    # game doesn't draw layer 1 back to front, so a nearer piece drawn first blends its soft rim over black and the
+    # piece behind is then turned away there by the depth test (mds7plr1's pipe over the scrap behind it, 2026-11-22).
+    bare_under, free_under = {}, {}
+    covered1 = np.zeros((h, w), bool)
+    covered0 = np.zeros((h, w), bool)
+    for t in bg.tiles:
+        if t.layer == 0 and shown(t) and not t.blending:
+            x, y = t.dst_x - min_x, t.dst_y - min_y
+            covered0[y : y + t.size, x : x + t.size] |= cache.tile(t)[..., 3] > 0
+    free_before = {}  # id(tile) -> 1x pixels of its square nothing static was drawn on before it (layer 0's case)
+    for t in draw_order([t for t in bg.tiles if is_base(t)]):
+        x, y = t.dst_x - min_x, t.dst_y - min_y
+        own = cache.tile(t)[..., 3] > 0
+        free = ~covered1[y : y + t.size, x : x + t.size]
+        free_before[id(t)] = free
+        alone = own & free
+        if alone.any() and not own.all():  # (a whole tile's alpha is already full)
+            bare_under[id(t)] = alone
+        covered1[y : y + t.size, x : x + t.size] |= own
+
+    def hard_mask(t):
+        """1x pixels of a solid tile's square where its edge must be drawn-or-not: for layer 1 wherever layer 0
+        doesn't lie beneath, for layer 0 where nothing was drawn before it."""
+        if id(t) not in free_under:
+            x, y = t.dst_x - min_x, t.dst_y - min_y
+            if cache.tile(t)[..., 3].min() > 0:
+                free_under[id(t)] = None  # (a whole tile: no edge)
+            elif t.layer == 1:
+                free_under[id(t)] = ~covered0[y : y + t.size, x : x + t.size]
+            else:
+                free_under[id(t)] = free_before.get(id(t))
+        return free_under[id(t)]
+
+    def hard_over_nothing(t, a, keep=None):
+        """Alpha a (output scale) cut to drawn-or-not where the tile's soft rim could fall on black (hard_mask; keep:
+        0-1, where to leave it as it is: a mesh's painted wires)."""
+        free = hard_mask(t) if not t.blending else None
+        if free is None or not free.any():
+            return a
+        cut = np.repeat(np.repeat(free, scale, 0), scale, 1)
+        if keep is not None:
+            cut &= keep < 0.5
+        return np.where(cut, np.where(a >= 128, 255, 0), a).astype(np.uint8)
+
     solid = np.zeros((h * scale, w * scale), np.float32)
     for t in bg.tiles:
         if not t.blending and shown(t):
             x, y, sz = (t.dst_x - min_x) * scale, (t.dst_y - min_y) * scale, t.size * scale
             solid[y : y + sz, x : x + sz] = np.maximum(
-                solid[y : y + sz, x : x + sz], tile_alpha(cache.tile(t), scale).astype(np.float32) / 255)
+                solid[y : y + sz, x : x + sz], hard_over_nothing(t, tile_alpha(cache.tile(t), scale)).astype(np.float32) / 255)
     bare = 1 - solid
     # one glow per spot carries it: the last drawn, so averaging glows drawn after it can't halve it
     carrier = {}
@@ -449,7 +507,15 @@ def build_pages(bg, main, job, mod_root, review_dir, panels=None, raw=None, anim
         if carrier.get((t.dst_x, t.dst_y)) != id(t) or t.type_trans not in GAIN or m.max() < 0.01:
             return np.zeros((sz, sz, 4), np.uint8)
         rgb = np.clip(ai_base[y : y + sz, x : x + sz] * m[..., None] * GAIN[t.type_trans], 0, 255)
-        return np.dstack([rgb.astype(np.uint8), np.full((sz, sz), 255, np.uint8)])
+        alpha = np.full((sz, sz), 255, np.uint8)
+        if t.type_trans == 0:
+            # An averaging tile halves whatever is under it wherever it's drawn, so it's drawn only where it carries
+            # the picture (mostly nothing solid beneath) and inside its own outline; elsewhere the main render already
+            # has its look. Drawn whole, the black it carries over solid scenery halved the picture in tile-shaped
+            # blocks (FF8 bgmd1_1's out-of-focus bars; FF7 ship_2, las2_3, jun_w; 2026-11-21). An adding tile can
+            # stay whole: adding black changes nothing.
+            alpha = np.where(m > 0.5, tile_alpha(cache.tile(t), scale), 0).astype(np.uint8)
+        return np.dstack([rgb.astype(np.uint8), alpha])
 
     def state_panel(t):
         """The restyled panel holding this state tile (one per spot the state appears in)."""
@@ -482,33 +548,56 @@ def build_pages(bg, main, job, mod_root, review_dir, panels=None, raw=None, anim
     for t in bg.tiles:
         if t.param:
             by_state.setdefault((t.param, t.state), []).append(t)
-    glow_only = [k for k, ts in by_state.items()
-                 if all(t.blending and t.type_trans in ADD_BLEND and t.layer < 2 for t in ts)]
+    # Shadows the same way (switched states made only of subtracting tiles, as FF8 uses for shading: bgeat_3's glass
+    # in front of the cafeteria came out nearly black, its shading in the render and subtracted again, 2026-11-21):
+    # their art goes in with the shading added back, as a negative light
+    # A game that keeps whole scenes in switched groups (FF8, bg.entry_from_main) takes the states on at entry from
+    # the main render (block_for), except animations, whose frames come as one set from the states pass
+    entry_from_main = bool(getattr(bg, "entry_from_main", False))
+    animated_groups = {int(p) for p in (job.get("animations") or {})}
+    is_light = lambda t: t.blending and t.type_trans in ADD_BLEND | {SUBTRACT} and t.layer < 2
+    light_tiles = {k: [t for t in ts if is_light(t)] for k, ts in by_state.items()}
+    if getattr(bg, "lights", None) == "any state":
+        # A game whose states mix scenery with their own shading (FF8: bghall_4's ten frames are each solid tiles
+        # and subtracting ones, 2026-11-21) takes every state's light and shadow tiles out of the art they're
+        # painted into, not only those of states that are nothing else
+        glow_only = [k for k, ts in light_tiles.items() if ts]
+    else:
+        glow_only = [k for k, ts in by_state.items() if all(is_light(t) for t in ts)]
     lights, baked_cache = {}, {}
 
     def seen(key):
         """How much of a glow-only state's light shows at entry (0-1, 1x): what's drawn over it after (solid tiles,
-        averaging glows) hides or dims it there, as in the picture the render was painted from."""
+        averaging glows) hides or dims it there, as in the picture the render was painted from. (A shadow's tiles
+        are measured as if they added: a white mark subtracted would leave nothing to measure.)"""
+        mine = {id(t) for t in light_tiles[key]}
+        marked_bg = shallow_copy(bg)
+        marked_bg.tiles = [dataclasses.replace(t, type_trans=1) if id(t) in mine and t.type_trans == SUBTRACT else t
+                           for t in bg.tiles]
+        mine |= {id(t) for t in marked_bg.tiles if (t.param, t.state) == key and is_light(t)}
+
         def marked(only):
             def src(t):
                 tile = cache.tile(t)
                 out = np.zeros_like(tile)
-                out[..., 3] = 255 if (t.param, t.state) == key else tile[..., 3]
-                if (t.param, t.state) == key:
+                out[..., 3] = 255 if id(t) in mine else tile[..., 3]
+                if id(t) in mine:
                     out[..., :3] = 255
                 return out
-            view = lambda t: (t.param, t.state) == key or (not only and entry(t))
-            return np.asarray(render_composite(bg, rect, src, 1, view))[..., 0].astype(np.float32)
+            view = lambda t: id(t) in mine or (not only and entry(t))
+            return np.asarray(render_composite(marked_bg, rect, src, 1, view))[..., 0].astype(np.float32)
         return np.clip(marked(False) / np.maximum(marked(True), 1), 0, 1)
 
     def light_of(key):
-        """The light a glow-only state adds in the game where it shows, over the canvas at the output scale."""
+        """The light a glow-only state adds in the game where it shows, over the canvas at the output scale (negative
+        for a shadow)."""
         if key not in lights:
             out = np.zeros((h * scale, w * scale, 3), np.float32)
-            for t in by_state[key]:
-                blk = block_for(t).astype(np.float32)  # (glow tiles: never the lit art below, no loop)
+            for t in light_tiles[key]:
+                blk = block_for(t, carry=False).astype(np.float32)  # (the light alone: no lit art below, no loop)
                 x, y, sz = (t.dst_x - min_x) * scale, (t.dst_y - min_y) * scale, t.size * scale
-                out[y : y + sz, x : x + sz] += blk[..., :3] * blk[..., 3:4] / 255 * (0.25 if t.type_trans == 3 else 1)
+                sign = -1 if t.type_trans == SUBTRACT else 1
+                out[y : y + sz, x : x + sz] += sign * blk[..., :3] * blk[..., 3:4] / 255 * (0.25 if t.type_trans == 3 else 1)
             v = cv2.resize(seen(key), (w * scale, h * scale), interpolation=cv2.INTER_LINEAR)
             lights[key] = out * v[..., None]
         return lights[key]
@@ -530,21 +619,6 @@ def build_pages(bg, main, job, mod_root, review_dir, panels=None, raw=None, anim
     # mesh (cutouts; filled in below, once ai_base is known). {sheet: (alpha 0-255, where it applies 0-1)}
     fine = {}
 
-    # Where no static scenery lies beneath a static tile, its pixels are covered whole: the smooth edge (tile_alpha)
-    # let the empty black behind show through. slfrst_1's light is a hole in the scenery filled by two walk-behind
-    # pieces that meet over nothing; each half see-through along the join left a quarter of the black showing, a dark
-    # stair-stepped line around the light (2026-11-20). Over other scenery the edge stays smooth (it blends with the
-    # same picture, and keeps the edges over characters smooth). {id(tile): its 1x pixels with nothing beneath}
-    bare_under = {}
-    covered1 = np.zeros((h, w), bool)
-    for t in draw_order([t for t in bg.tiles if is_base(t)]):
-        x, y = t.dst_x - min_x, t.dst_y - min_y
-        own = cache.tile(t)[..., 3] > 0
-        alone = own & ~covered1[y : y + t.size, x : x + t.size]
-        if alone.any() and not own.all():  # (a whole tile's alpha is already full)
-            bare_under[id(t)] = alone
-        covered1[y : y + t.size, x : x + t.size] |= own
-
     def alpha_for(t):
         """A static tile's alpha at the output scale: its original's, or for walk-behind meshes the new one; full
         where nothing lies beneath it."""
@@ -562,9 +636,47 @@ def build_pages(bg, main, job, mod_root, review_dir, panels=None, raw=None, anim
             if where is not None:
                 fill &= where < 0.5  # (a mesh's painted wires stay as found)
             a = np.where(fill, np.uint8(255), a)
-        return a
+        return a  # (rims cut where they could fall on black: final_block)
 
-    def block_for(t):
+    free_cache = {}
+
+    def nothing_beneath(group):
+        """Where nothing at all is drawn at entry but this group (0-1, output scale): no solid tile and no see-through
+        one either. lastmap's light (group 4) lies over averaging tiles of another group, and carrying the picture
+        there as well brightened it 2.4% of the field (2026-11-21)."""
+        if group not in free_cache:
+            acc = np.zeros((h * scale, w * scale), np.float32)
+            for u in bg.tiles:
+                if u.param != group and shown(u):
+                    ux, uy, us = (u.dst_x - min_x) * scale, (u.dst_y - min_y) * scale, u.size * scale
+                    acc[uy : uy + us, ux : ux + us] = np.maximum(
+                        acc[uy : uy + us, ux : ux + us], tile_alpha(cache.tile(u), scale).astype(np.float32) / 255)
+            free_cache[group] = 1 - acc
+        return free_cache[group]
+
+    def carry_bare(t, block):
+        """A switched light's tile over nothing solid: the game draws it over black there, so it carries the picture
+        as well as its light (as a static glow over nothing does, glow_tile). bghall3a's fountain water is only
+        adding tiles, nothing beneath: its painted light (the render with the water on, less the one with it off)
+        came to about a third of the picture, and the water showed dark (2026-11-21)."""
+        if t.type_trans not in ADD_BLEND or t.layer >= 2:  # (scrolling layers move apart from the picture)
+            return block
+        if not defaults.get(t.param, 0):
+            # only for a group on at entry: there the render is the scene with this light (taken out: ai_base), and
+            # carries it for every state of the group; with the group off at entry it's the AI's guess at an empty
+            # black area, and carried it brightened the lights (FF7 lastmap, mktpb, blin68_2; 2026-11-21)
+            return block
+        sz = t.size * scale
+        x, y = (t.dst_x - min_x) * scale, (t.dst_y - min_y) * scale
+        m = nothing_beneath(t.param)[y : y + sz, x : x + sz]
+        if m.max() < 0.01:
+            return block
+        rgb = block[..., :3].astype(np.float32) + ai_base[y : y + sz, x : x + sz] * m[..., None] * GAIN[t.type_trans]
+        return np.dstack([np.clip(rgb, 0, 255).astype(np.uint8), block[..., 3]])
+
+    def block_for(t, carry=True):
+        """A tile's art at the output scale (carry: a switched light over nothing solid also carries the picture,
+        carry_bare; off for measuring its light alone)."""
         sz = t.size * scale
         x, y = (t.dst_x - min_x) * scale, (t.dst_y - min_y) * scale
 
@@ -590,10 +702,15 @@ def build_pages(bg, main, job, mod_root, review_dir, panels=None, raw=None, anim
             # the whole render with it on minus the one with it off (states: "light" panels)
             if t.param:
                 found = light_panel(t)
-                if found:
-                    return from_panel(t, *found)
+                block = from_panel(t, *found) if found else original_tile(t)
+                return carry_bare(t, block) if carry else block
             return glow_tile(t) if not t.param and t.layer < 2 else original_tile(t)
         if t.param:
+            if entry_from_main and defaults.get(t.param, 0) & t.state and t.param not in animated_groups:
+                # on at entry: the main render is this state's picture, and it's the one fixes land on (FF8 keeps
+                # whole scenes in switched groups: bccent1a's sign fixes went into the render while the town's
+                # tiles kept their panel's AI lettering, 2026-11-21)
+                return from_ai()
             found = state_panel(t)
             if found:  # painted with this state of its group on, the other groups as at entry
                 return unlit(from_panel(t, *found), {**defaults, t.param: t.state})
@@ -622,7 +739,17 @@ def build_pages(bg, main, job, mod_root, review_dir, panels=None, raw=None, anim
                 r = cutouts.fine_alpha(c[..., 3], c[..., :3], main["orig"], ai_base, scale)
                 if r is not None:
                     fine[sheet] = r
-    pages = swizzle(bg, scale, block_for)
+    def final_block(t):
+        """block_for with every solid tile's rim drawn-or-not where it could fall on black (hard_over_nothing): the
+        main render's, a state panel's and original art's alike."""
+        blk = block_for(t)
+        if t.blending:
+            return blk
+        blk = np.array(blk, copy=True)
+        blk[..., 3] = hard_over_nothing(t, blk[..., 3])
+        return blk
+
+    pages = swizzle(bg, scale, final_block)
     frames, too_many, anim = 0, 0, {}
     if raw is not None:
         anim = (palettes.animated_textures_cached(raw, bg, anim_cache) if anim_cache
@@ -630,9 +757,9 @@ def build_pages(bg, main, job, mod_root, review_dir, panels=None, raw=None, anim
         if sum(len(v) for v in anim.values()) > MAX_ANIMATED_FRAMES:
             still_light(bg, anim, palettes.file_palettes(raw), pages, scale, M)
             too_many, anim = sum(len(v) for v in anim.values()), {}
-    written = write_pages(bg.name, pages, mod_root)
+    written = writer(bg.name, pages, mod_root)
     for copy in job["copies"]:
-        write_pages(copy, pages, mod_root)
+        writer(copy, pages, mod_root)
     if anim:
         for (page, pal, hsh), img in animated_pages(bg, anim, palettes.file_palettes(raw), pages, scale, M):
             for n in (bg.name, *job["copies"]):

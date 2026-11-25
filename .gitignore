@@ -8,6 +8,7 @@ ai/
 ai_cli/
 dist/
 work/
+projects/
 
 # Outside tools you add yourself (tools/upscayl: upscayl-bin and its models)
 tools/

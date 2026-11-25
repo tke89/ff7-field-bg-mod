@@ -112,7 +112,7 @@ tiles use:
 ```
 
 Puts every field's in-game textures (what **Install to game** copies, with doors, lights and animation frames) in
-one zip, `dist\package\FF7 Field Studio fields.zip`. Its folder works with plain FFNx (copy its `field` folder into
+one zip, `dist\package\HD Painterly Anime Fields.zip` (the mod's name in 7th Heaven). Its folder works with plain FFNx (copy its `field` folder into
 `ff7\workingdir\mods\Textures\`) or as a 7th Heaven mod (Import Mod → From folder). The `README.txt` inside has the
 steps, including the Steam Deck's launch options.
 

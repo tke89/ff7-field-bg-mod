@@ -19,10 +19,10 @@
   <div class="pop right" id="settingsPop" hidden>
   <div class="pop-head"><b>Settings</b></div>
   <label class="check ctl"><input type="checkbox" id="prefExplain"><span>Show every explanation<div class="ctl-help"><div>Under each option: what it does, what higher and lower values change. When off, each option shows its recommended value, and its ⓘ opens the rest.</div><div class="help-rec">Recommended: off once you know the options.</div></div></span></label>
-  <label class="check ctl"><input type="checkbox" id="prefAutoInstall"><span>Keep the game's AI images up to date<div class="ctl-help"><div>When a field's version in the game changes (a new final, Use this version, a rebuild), its textures are copied into the game's FFNx folder straight away, so the game never shows an old one.</div><div class="help-rec">Recommended: on.</div></div></span></label>
+  <label class="check ctl"><input type="checkbox" id="prefAutoInstall"><span>Keep the game's AI images up to date<div class="ctl-help"><div>When a field's version in the game changes (a new final, Use this version, a rebuild), its textures are copied into the game's mod folder (FFNx's for FF7, Demaster's for FF8) straight away, so the game never shows an old one.</div><div class="help-rec">Recommended: on.</div></div></span></label>
   <div id="settingsPlugins"></div>
   <div class="pop-head"><b>Tools</b></div>
-  <div class="tool-row"><button id="btnInstall" class="small" title="Copy the current versions' textures into the game's FFNx mods folder">Install all to game</button><span class="hint">Copies every field's current version into the game again.</span></div>
+  <div class="tool-row"><button id="btnInstall" class="small" title="Copy the current versions' textures into the game's mod folder">Install all to game</button><span class="hint">Copies every field's current version into the game again.</span></div>
   <div class="tool-row"><button id="btnQueueMissing" class="small" title="Queue every field without a final-quality version, each with its own look; each scene is described and checked for signs afresh">Generate all missing</button><span class="hint">A final render of every field that has none (asks first).</span></div>
   <div class="tool-row"><button id="btnCleanup" class="small" title="Delete every version that isn't the one its field uses in the game (asks first, with what it frees)">Clean up</button><span class="hint">Deletes versions no field uses (asks first, with what it frees).</span></div>
   </div>
@@ -115,6 +115,7 @@
       <button id="btn1x" title="Original pixels at 1:1">1:1</button>
       <button id="btnNative" title="New image at native resolution">Native</button>
       <button id="btnGame" title="The size the game shows it">Game size</button>
+      <button id="btnPlayHere" hidden title="Restart the game standing in this field (a save made for it, loaded for you): about a minute">Play in game</button>
     </div>
     <div class="viewport" id="viewport">
       <canvas id="canvas"></canvas>
